@@ -39,6 +39,8 @@ foundation_documentation_tmp/
 /builder-app/web/node_modules/
 /builder-app/web/dist/
 /builder-app/web/tsconfig.tsbuildinfo
+/artifacts/tmp/
+/builder-app/web/preview-evidence/
 
 # CLINE
 CLINE.md
