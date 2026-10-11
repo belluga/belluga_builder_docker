@@ -111,6 +111,28 @@ func TestListenerDefaultsRejectExternalBind(t *testing.T) {
 	}
 }
 
+func TestLocalViewerRejectsNonLoopbackHost(t *testing.T) {
+	handler := localHostOnly(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	for _, host := range []string{"127.0.0.1:8089", "localhost:8089", "[::1]:8089"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/local-preview", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("local host %q rejected with %d", host, response.Code)
+		}
+	}
+	for _, host := range []string{"attacker.invalid:8089", "localhost.attacker.invalid:8089", "", "[::1"} {
+		request := httptest.NewRequest(http.MethodGet, "/snapshot/company/project/fingerprint/file", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("nonlocal host %q reached local viewer: %d", host, response.Code)
+		}
+	}
+}
+
 func TestBundleRejectsMissingOrExtraFiles(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "bundle")
 	foundation := filepath.Join(root, "foundation")

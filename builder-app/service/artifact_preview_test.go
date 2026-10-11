@@ -24,11 +24,11 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 		"design/landing/assets/photo.JPEG",
 		"design/landing/assets/photo.WEBP",
 	}
-	files := map[string][]byte{"design/landing/index.html": []byte("<main>trial</main>"), "design/landing/landing.css": []byte("main{color:teal}"), "design/landing/assets/marker.svg": []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"), "project_mandate.md": []byte("# Trial mandate"), "private.txt": []byte("not admitted by artifact record")}
+	files := map[string][]byte{"design/landing/index.html": []byte("<main>trial</main>"), "design/landing/landing.css": []byte("main{color:teal}"), "design/landing/assets/marker.svg": []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>"), "design/landing/assets/icons.ttf": []byte("fixture-font"), "project_mandate.md": []byte("# Trial mandate"), "private.txt": []byte("not admitted by artifact record")}
 	for _, name := range imagePaths {
 		files[name] = []byte("fixture-image")
 	}
-	artifactFiles := []string{"design/landing/index.html", "design/landing/landing.css", "design/landing/assets/marker.svg", "project_mandate.md"}
+	artifactFiles := []string{"design/landing/index.html", "design/landing/landing.css", "design/landing/assets/marker.svg", "design/landing/assets/icons.ttf", "project_mandate.md"}
 	artifactFiles = append(artifactFiles, imagePaths...)
 	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v1", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-07T00:00:00Z", Files: files, Artifacts: []registeredArtifact{{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html", Files: artifactFiles}}, Observations: map[string]json.RawMessage{}}
 	snapshotBytes, err := json.Marshal(snapshot)
@@ -101,6 +101,11 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	if asset.Code != 200 || asset.Header().Get("Content-Type") != "text/css; charset=utf-8" {
 		t.Fatalf("relative asset response=%d type=%s", asset.Code, asset.Header().Get("Content-Type"))
 	}
+	font := httptest.NewRecorder()
+	consumer.artifactHandler(font, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/assets/icons.ttf", nil))
+	if font.Code != 200 || font.Header().Get("Content-Type") != "font/ttf" {
+		t.Fatalf("admitted font response=%d type=%s", font.Code, font.Header().Get("Content-Type"))
+	}
 	svg := httptest.NewRecorder()
 	consumer.artifactHandler(svg, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/assets/marker.svg", nil))
 	if svg.Code != 200 || svg.Header().Get("Content-Type") != "image/svg+xml" || !strings.Contains(svg.Header().Get("Content-Security-Policy"), "sandbox") {
@@ -137,6 +142,36 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 			t.Fatalf("%s status=%d body=%s", request.name, denied.Code, denied.Body.String())
 		}
 	}
+	for _, state := range []struct {
+		name, readiness, fingerprint string
+	}{
+		{"superseded fingerprint", "ready", strings.Repeat("b", 64)},
+		{"failed refresh with retained fingerprint", "not_ready", fingerprint},
+	} {
+		t.Run(state.name, func(t *testing.T) {
+			changed := registry
+			changed.Projects = map[string]persistedProject{}
+			project := registry.Projects["trial-project"]
+			project.PreparationState = state.readiness
+			project.SnapshotFingerprint = state.fingerprint
+			changed.Projects["trial-project"] = project
+			data, err := json.Marshal(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(registryPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			response := httptest.NewRecorder()
+			consumer.artifactHandler(response, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
+			if response.Code != 404 {
+				t.Fatalf("stale snapshot served: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+	if err := os.WriteFile(registryPath, registryBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// A digest-mismatched immutable payload must fail closed.
 	if err := os.Chmod(filepath.Join(root, "snapshots", fingerprint+".json"), 0o600); err != nil {
 		t.Fatal(err)
@@ -162,6 +197,65 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	consumer.artifactHandler(symlinked, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
 	if symlinked.Code != 404 {
 		t.Fatalf("symlinked snapshot component status=%d", symlinked.Code)
+	}
+}
+
+func TestDetailProjectsOnlyAdmittedPortfolioAndDocuments(t *testing.T) {
+	snapshot := registeredSnapshot{
+		ProjectID: "trial-project", CompanyID: "trial-company",
+		Files: map[string][]byte{
+			"project_portfolio.json":      []byte(`{"schema_version":"1","summary":"A bounded summary"}`),
+			"project_portfolio/cover.png": []byte("png"),
+			"modules/overview.md":         []byte("# Overview"),
+			"private.md":                  []byte("not admitted"),
+		},
+		Artifacts: []registeredArtifact{
+			{ID: "portfolio", Kind: "portfolio", State: "available", Files: []string{"project_portfolio.json", "project_portfolio/cover.png"}},
+			{ID: "documents", Kind: "documents", State: "available", Files: []string{"modules/overview.md"}},
+		},
+	}
+	body, err := json.Marshal(registeredProjectDetail(snapshot, strings.Repeat("a", 64)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["portfolio_summary"] != "A bounded summary" {
+		t.Fatalf("summary missing: %s", body)
+	}
+	if got["portfolio_cover_url"] != "/snapshot/trial-company/trial-project/"+strings.Repeat("a", 64)+"/project_portfolio/cover.png" {
+		t.Fatalf("cover URL not snapshot-bound: %v", got["portfolio_cover_url"])
+	}
+	docs, ok := got["documents"].([]any)
+	if !ok || len(docs) != 1 || !strings.Contains(docs[0].(map[string]any)["url"].(string), "/modules/overview.md") {
+		t.Fatalf("documents projection invalid: %v", got["documents"])
+	}
+	if strings.Contains(string(body), "private.md") {
+		t.Fatalf("unadmitted file leaked into projection: %s", body)
+	}
+}
+
+func TestLocalProjectExperienceHasOneRoute(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("local app"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	local := httptest.NewRecorder()
+	localStaticHandler(root).ServeHTTP(local, httptest.NewRequest("GET", "/local", nil))
+	if local.Code != 200 || local.Body.String() != "local app" {
+		t.Fatalf("local /local = %d %q", local.Code, local.Body.String())
+	}
+	retired := httptest.NewRecorder()
+	localStaticHandler(root).ServeHTTP(retired, httptest.NewRequest("GET", "/projects", nil))
+	if retired.Code != 404 {
+		t.Fatalf("retired /projects route = %d", retired.Code)
+	}
+	public := httptest.NewRecorder()
+	staticHandler(root).ServeHTTP(public, httptest.NewRequest("GET", "/projects", nil))
+	if public.Code != 404 {
+		t.Fatalf("public /projects must remain unavailable, got %d", public.Code)
 	}
 }
 
@@ -398,4 +492,13 @@ func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalf
 			t.Fatalf("malformed matching scenario was not rejected: API=%d %s raw=%d %s", api.Code, api.Body.String(), raw.Code, raw.Body.String())
 		}
 	})
+}
+
+func TestPrototypeHTMLAllowsOnlyAdmittedSameOriginFonts(t *testing.T) {
+	w := httptest.NewRecorder()
+	registeredArtifactHeaders(w, "prototype")
+	policy := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(policy, "font-src 'self'") || !strings.Contains(policy, "default-src 'none'") || !strings.Contains(policy, "sandbox allow-scripts") {
+		t.Fatalf("prototype font policy does not preserve isolation: %s", policy)
+	}
 }

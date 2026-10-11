@@ -22,7 +22,7 @@ func main() {
 		mux.HandleFunc("/api/local-preview", consumer.apiHandler)
 		mux.HandleFunc("/snapshot/", consumer.artifactHandler)
 		mux.Handle("/", localStaticHandler(env("WEB_ROOT", "/web")))
-		log.Fatal((&http.Server{Addr: address, Handler: secureHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
+		log.Fatal((&http.Server{Addr: address, Handler: secureHeaders(localHostOnly(mux)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
 	}
 	if len(os.Args) > 1 && os.Args[1] == "export" {
 		flags := flag.NewFlagSet("export", flag.ExitOnError)
@@ -56,11 +56,30 @@ func main() {
 }
 
 func isLoopback(host string) bool {
-	if host == "localhost" {
+	if strings.EqualFold(host, "localhost") {
 		return true
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+func localHostOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		if strings.Contains(host, ":") {
+			var err error
+			host, _, err = net.SplitHostPort(host)
+			if err != nil {
+				writeError(w, http.StatusForbidden, "local_host_required")
+				return
+			}
+		}
+		if !isLoopback(host) {
+			writeError(w, http.StatusForbidden, "local_host_required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func env(key, fallback string) string {

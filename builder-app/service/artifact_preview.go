@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -77,6 +78,11 @@ type registeredSnapshot struct {
 	Files         map[string][]byte          `json:"files"`
 	Artifacts     []registeredArtifact       `json:"artifacts"`
 	Observations  map[string]json.RawMessage `json:"observations"`
+}
+
+type portfolioSummary struct {
+	SchemaVersion string `json:"schema_version"`
+	Summary       string `json:"summary"`
 }
 
 func (p *registeredPreview) catalog() (registrationCatalog, error) {
@@ -278,10 +284,49 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 503, "snapshot_integrity_failure")
 			return
 		}
-		writeJSON(w, 200, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "ready", "snapshot_fingerprint": fingerprint, "snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts})
+		writeJSON(w, 200, registeredProjectDetail(snapshot, fingerprint))
 		return
 	}
 	writeError(w, 404, "project_not_found")
+}
+
+func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) map[string]any {
+	result := map[string]any{
+		"schema_version": "1", "company_id": snapshot.CompanyID, "project_id": snapshot.ProjectID,
+		"registration_state": "registered", "consumer_readiness": "ready", "snapshot_fingerprint": fingerprint,
+		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
+	}
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind == "portfolio" && artifact.State == "available" {
+			for _, name := range artifact.Files {
+				if name == "project_portfolio.json" {
+					var source portfolioSummary
+					if rejectDuplicateJSONKeys(snapshot.Files[name]) == nil && json.Unmarshal(snapshot.Files[name], &source) == nil && source.SchemaVersion == "1" && strings.TrimSpace(source.Summary) != "" && utf8.ValidString(source.Summary) && utf8.RuneCountInString(source.Summary) <= 240 {
+						result["portfolio_summary"] = source.Summary
+					}
+				}
+				if name == "project_portfolio/cover.png" {
+					result["portfolio_cover_url"] = snapshotFileURL(snapshot, fingerprint, name)
+				}
+			}
+		}
+		if artifact.Kind == "documents" && artifact.State == "available" {
+			files := make([]map[string]string, 0, len(artifact.Files))
+			for _, name := range artifact.Files {
+				files = append(files, map[string]string{"path": name, "url": snapshotFileURL(snapshot, fingerprint, name)})
+			}
+			result["documents"] = files
+		}
+	}
+	return result
+}
+
+func snapshotFileURL(snapshot registeredSnapshot, fingerprint, name string) string {
+	parts := strings.Split(name, "/")
+	for i := range parts {
+		parts[i] = url.PathEscape(parts[i])
+	}
+	return "/snapshot/" + url.PathEscape(snapshot.CompanyID) + "/" + url.PathEscape(snapshot.ProjectID) + "/" + fingerprint + "/" + strings.Join(parts, "/")
 }
 
 func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (registeredSnapshot, string, error) {
@@ -598,6 +643,22 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 		writeError(w, 404, "not_found")
 		return
 	}
+	catalog, err := p.catalog()
+	if err != nil {
+		writeError(w, 503, "registration_state_unavailable")
+		return
+	}
+	current := false
+	for _, project := range catalog.Projects {
+		if project.CompanyID == parts[0] && project.ID == parts[1] && project.PreparationState == "ready" && project.SnapshotFingerprint == parts[2] {
+			current = true
+			break
+		}
+	}
+	if !current {
+		writeError(w, 404, "snapshot_unavailable")
+		return
+	}
 	snapshot, fingerprint, err := p.snapshot(parts[1], parts[0], parts[2])
 	if err != nil {
 		writeError(w, 404, "snapshot_unavailable")
@@ -627,6 +688,8 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	switch strings.ToLower(filepath.Ext(parts[3])) {
 	case ".css":
 		w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	case ".ttf":
+		w.Header().Set("Content-Type", "font/ttf")
 	case ".js":
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	case ".png":
@@ -657,7 +720,7 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 func registeredArtifactHeaders(w http.ResponseWriter, kind string) {
 	policy := "default-src 'none'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox"
 	if kind == "prototype" {
-		policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+		policy = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
 	}
 	w.Header().Set("Content-Security-Policy", policy)
 }
