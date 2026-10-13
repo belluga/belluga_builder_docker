@@ -291,6 +291,18 @@ describe("single /local Project experience", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
     expect(screen.queryByRole("navigation", { name: "Project pages" })).not.toBeInTheDocument();
   });
+  it("rejects a stale saved fingerprint instead of showing Roadmap data", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => String(input).includes("project_id=")
+        ? { ...detail("belluga", "builder"), snapshot_fingerprint: "b".repeat(64) }
+        : { companies, projects },
+    })));
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
+    expect(screen.queryByRole("region", { name: "Project Roadmap" })).not.toBeInTheDocument();
+  });
   it("rejects the artifact-only legacy link explicitly", async () => {
     history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&artifact=prototype:demo");
     render(<Projects />);
