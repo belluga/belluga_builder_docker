@@ -11,6 +11,40 @@ import (
 	"testing"
 )
 
+func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *testing.T) {
+	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","title":"Planning record","path":"todos/completed/done.md","kind":"planning"},{"id":"active","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v1", ProjectID: "project-a", CompanyID: "company-a",
+		Files: map[string][]byte{"roadmap/catalog.json": catalog},
+		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json"}}},
+	}
+	detail := registeredProjectDetail(snapshot, "fingerprint-a")
+	projection, ok := detail["roadmap"].(roadmapProjection)
+	if !ok || projection.ProjectID != snapshot.ProjectID || projection.FocusRelease != "r-01" || projection.DeliveryVerification != "unverified" || len(projection.Epics) != 1 {
+		t.Fatalf("roadmap projection is missing or unbound: %#v", detail["roadmap"])
+	}
+	release := projection.Epics[0].Releases[0]
+	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[1].RecordState != "active" {
+		t.Fatalf("roadmap claims are not truthful: %+v", release)
+	}
+
+	snapshot.ProjectID = "project-b"
+	if _, ok := registeredProjectDetail(snapshot, "fingerprint-b")["roadmap"]; ok {
+		t.Fatal("catalog for a different Project was exposed")
+	}
+}
+
+func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedCatalog(t *testing.T) {
+	for _, value := range []string{
+		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+	} {
+		if _, ok := admittedRoadmapProjection("project-a", []byte(value)); ok {
+			t.Fatalf("invalid or foreign catalog admitted: %s", value)
+		}
+	}
+}
+
 func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *testing.T) {
 	if _, err := (&registeredPreview{root: string(filepath.Separator)}).catalog(); err == nil {
 		t.Fatal("filesystem root was accepted as local Builder state")

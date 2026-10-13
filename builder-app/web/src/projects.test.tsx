@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Projects } from "./projects";
 
 const fingerprint = "a".repeat(64);
+const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
 const companies = [{ id: "belluga", name: "Belluga" }, { id: "second", name: "Second Company" }];
 const projects = [{ id: "builder", name: "Builder", company_id: "belluga", preparation_state: "ready", snapshot_fingerprint: fingerprint, artifacts: [] },
   { id: "boora", name: "Bóora!", company_id: "belluga", preparation_state: "ready", snapshot_fingerprint: fingerprint, artifacts: [] },
@@ -13,9 +14,22 @@ const theme = { tokens: [
   ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["font-family-sans", "string", "Arial"],
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
+function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", delivery_verification: "unverified", epics: [
+  { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
+    { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [{ id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed" }] },
+    { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [{ id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active" }] },
+  ] },
+  { id: "e-02", name: `${projectID} Other developers`, description: "Local projects for other developers", releases: [] },
+  { id: "e-03", name: `${projectID} Remote APIs`, description: "Remote Delphi APIs", releases: [] },
+  { id: "e-04", name: `${projectID} Internal service`, description: "Internal company service", releases: [
+    { id: "r-05", name: "Company and Project Schema Study", description: "Initial planning record", todos: [{ id: "company-schema", title: "Company and Project Schema Study", path: "todos/active/company_project_schema_study.md", kind: "planning", record_state: "active" }] },
+  ] },
+  { id: "e-05", name: `${projectID} External service`, description: "External service", releases: [] },
+] }; }
 function detail(companyID: string, projectID: string, documents: { path: string; url: string }[] = []) { return { consumer_readiness: "ready", company_id: companyID, project_id: projectID, snapshot_fingerprint: fingerprint,
   artifacts: [{ id: "system", kind: "design_system", name: "Design System", state: "available", entry_point: "design/system/examples.html", files: ["design/system/design-system.json"] },
-    { id: "landing", kind: "landing", name: "Landing", state: "available", entry_point: "design/landing/index.html" }],
+    { id: "landing", kind: "landing", name: "Landing", state: "available", entry_point: "design/landing/index.html" },
+    { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/catalog.json", files: ["roadmap/catalog.json"] }], roadmap: roadmap(projectID),
   portfolio_summary: `Summary for ${projectID}`, documents, snapshot_observations: {} }; }
 function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string }) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
@@ -24,7 +38,7 @@ function mockFetch(documents: { path: string; url: string }[] = [], documentResp
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
 })); }
 beforeEach(() => { history.replaceState({}, "", "/local"); mockFetch(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single /local Project experience", () => {
   it("selects Company and Project before entering its dedicated page", async () => {
@@ -75,6 +89,103 @@ describe("single /local Project experience", () => {
     expect(screen.queryByText("Use the admitted Project documents to review its purpose and operating context.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /View Documents/ }));
     expect(await screen.findByText("No canonical Markdown documents are admitted in this snapshot.")).toBeInTheDocument();
+  });
+  it("renders the focused Epic and Release from the Project catalog, with TODO record kind separate from delivery", async () => {
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Planned work" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
+    expect(screen.getByText(/Catalog focus: Project UI and real Roadmap/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Project UI and real Roadmap")).toBeInTheDocument();
+    const focusNote = screen.getByText(/Catalog focus: Project UI and real Roadmap/);
+    const firstRelease = screen.getByRole("button", { name: /First local viewer/ });
+    expect(Boolean(focusNote.compareDocumentPosition(firstRelease) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    expect(screen.getByText("Planning ledger")).toBeInTheDocument();
+    const completedTodo = screen.getByText("Builder genesis ledger").closest("li");
+    expect(completedTodo).not.toBeNull();
+    expect(within(completedTodo!).getByText("Local record: completed")).toBeInTheDocument();
+    expect(within(completedTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    expect(screen.getAllByText("Delivery not verified").length).toBeGreaterThan(1);
+    fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
+    expect(screen.getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study");
+    expect(screen.getByText("Company and Project Schema Study", { selector: "strong" })).toBeInTheDocument();
+    expect(screen.queryByText(/Catalog focus:/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Project Roadmap connection")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /builder Other developers/ }));
+    expect(screen.getByText("No Releases defined yet.")).toBeInTheDocument();
+    expect(screen.queryByText(/Catalog focus:/)).not.toBeInTheDocument();
+  });
+  it("uses the same admitted Epic and Release projection in Overview", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const overview = await screen.findByRole("region", { name: "Project Roadmap overview" });
+    expect(within(overview).getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
+    expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Project UI and real Roadmap");
+    expect(within(overview).queryByText("1 / 5")).not.toBeInTheDocument();
+    fireEvent.click(within(overview).getByRole("button", { name: "Next Epic" }));
+    expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveTextContent("Other developers");
+    fireEvent.click(within(overview).getByRole("button", { name: "Previous Epic" }));
+    expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveTextContent("Local projects");
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "start" });
+    fireEvent.click(within(overview).getByRole("button", { name: /builder Internal service/ }));
+    expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study");
+    fireEvent.click(within(overview).getByRole("button", { name: /builder Other developers/ }));
+    expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("No Releases defined yet.");
+  });
+  it("shows an honest Roadmap state when catalog data is absent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      const saved = detail("belluga", "builder");
+      return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available yet. Register after adding the catalog." } : item) }) };
+    }));
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText(/Roadmap catalog is not available yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/Local projects/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Project UI and real Roadmap/)).not.toBeInTheDocument();
+  });
+  it("keeps the Overview honest when its Roadmap catalog is absent", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      const saved = detail("belluga", "builder");
+      return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available yet. Register after adding the catalog." } : item) }) };
+    }));
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Roadmap catalog is not available yet"));
+    const notice = screen.getByRole("status");
+    expect(notice).toHaveClass("project-notice");
+    expect(screen.queryByText(/Local projects|Project UI and real Roadmap/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/demo|delivered|shipped/i)).not.toBeInTheDocument();
+  });
+  it("resets selected Epic and Project-bound Roadmap data when the Project changes", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      const projectID = url.searchParams.get("project_id")!;
+      const saved = detail("belluga", projectID);
+      if (projectID !== "boora") return { ok: true, json: async () => saved };
+      return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available for this Project." } : item) }) };
+    }));
+    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText("Project Roadmap connection")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
+    expect(screen.getByText("Company and Project Schema Study", { selector: "strong" })).toBeInTheDocument();
+    history.pushState({}, "", "/local?company_id=belluga&project_id=boora&page=roadmap");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(await screen.findByText("Roadmap catalog is not available for this Project.")).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Select Epic" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/builder Local projects|builder Internal service|Company and Project Schema Study|Project UI and real Roadmap|Project Roadmap connection/)).not.toBeInTheDocument();
   });
   it("shows the honest empty Documents state without an empty index column", async () => {
     history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=documents");

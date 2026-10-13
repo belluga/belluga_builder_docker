@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import { LocalArtifactPreview } from "./local-artifact-preview";
@@ -11,7 +11,11 @@ type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
 type Project = { id: string; name: string; company_id: string; preparation_state: string; preparation_diagnostic?: string; snapshot_fingerprint?: string; artifacts: Artifact[] };
 type Catalog = { companies: Company[]; projects: Project[] };
-type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; artifacts: Artifact[]; snapshot_observations?: Record<string, unknown>; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
+type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; record_state: string };
+type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
+type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
+type RoadmapProjection = { schema_version: string; project_id: string; focus_release_id: string; delivery_verification: "unverified"; epics: RoadmapEpic[] };
+type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; artifacts: Artifact[]; roadmap?: RoadmapProjection; snapshot_observations?: Record<string, unknown>; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
 type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap";
 type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; prototype: PrototypeSelection };
 type ProjectView = { key: string; detail: Detail; theme?: ProjectTheme; themeDiagnostic?: string };
@@ -66,6 +70,63 @@ function documentLabel(path: string) {
   const filename = path.split("/").pop() || path;
   const words = filename.replace(/\.md$/i, "").replace(/[_-]+/g, " ");
   return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function RoadmapView({ roadmap, detail, projectID, compact = false }: { roadmap?: RoadmapProjection; detail: Detail; projectID: string; compact?: boolean }) {
+  const roadmapArtifact = detail.artifacts.find((item) => item.kind === "roadmap");
+  const epics = roadmap?.epics || [];
+  const focusedRelease = roadmap?.focus_release_id || "";
+  const initialEpic = epics.find((epic) => epic.releases.some((release) => release.id === focusedRelease))?.id || epics[0]?.id || "";
+  const [selectedEpicID, setSelectedEpicID] = useState(initialEpic);
+  const [expandedReleaseIDs, setExpandedReleaseIDs] = useState<string[]>(focusedRelease ? [focusedRelease] : []);
+  const epicRail = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    epicRail.current?.querySelector<HTMLButtonElement>(".selected")?.scrollIntoView?.({ block: "nearest", inline: "start" });
+  }, [selectedEpicID]);
+  if (!roadmap || roadmap.project_id !== projectID || roadmap.schema_version !== "builder-roadmap-v1" || roadmap.delivery_verification !== "unverified") {
+    return <p className="project-notice roadmap-unavailable" role={roadmapArtifact?.state === "invalid" ? "alert" : "status"}>
+      {roadmapArtifact?.diagnostic || "Project Roadmap data is not available in this saved snapshot. Delivery is not verified."}
+    </p>;
+  }
+  const selectedEpic = epics.find((epic) => epic.id === selectedEpicID) || epics.find((epic) => epic.id === initialEpic);
+  const selectedEpicIndex = Math.max(0, epics.findIndex((epic) => epic.id === selectedEpic?.id));
+  const releases = selectedEpic?.releases || [];
+  const focusName = selectedEpic?.releases.find((release) => release.id === focusedRelease)?.name;
+  return <section className={`roadmap-view${compact ? " roadmap-view-compact" : ""}`} aria-label={compact ? "Project Roadmap overview" : "Project Roadmap"}>
+    {!compact && <header className="roadmap-heading"><div><span>PROJECT ROADMAP</span><h2>Planned work</h2></div><p>Delivery not verified</p></header>}
+    <div className="roadmap-rail-group">
+      <h3>Epics <span className="roadmap-epic-navigation"><button type="button" aria-label="Previous Epic" disabled={selectedEpicIndex === 0} onClick={() => { const epic = epics[selectedEpicIndex - 1]; if (epic) { setSelectedEpicID(epic.id); setExpandedReleaseIDs(epic.releases.some((release) => release.id === focusedRelease) ? [focusedRelease] : []); } }}>←</button><button type="button" aria-label="Next Epic" disabled={selectedEpicIndex >= epics.length - 1} onClick={() => { const epic = epics[selectedEpicIndex + 1]; if (epic) { setSelectedEpicID(epic.id); setExpandedReleaseIDs(epic.releases.some((release) => release.id === focusedRelease) ? [focusedRelease] : []); } }}>→</button></span></h3>
+      <div className="roadmap-rail roadmap-epic-rail" ref={epicRail} role="group" aria-label="Select Epic">
+        {epics.map((epic) => <button key={epic.id} className={epic.id === selectedEpic?.id ? "selected" : ""} aria-pressed={epic.id === selectedEpic?.id} onClick={() => { setSelectedEpicID(epic.id); setExpandedReleaseIDs(epic.releases.some((release) => release.id === focusedRelease) ? [focusedRelease] : []); }}>
+          <span>{epic.id.toUpperCase()}</span><strong>{epic.name}</strong><small>{epic.description}</small>
+        </button>)}
+      </div>
+    </div>
+    {compact && <div className="roadmap-rail-group roadmap-releases-rail">
+      <h3>Releases {selectedEpic && <span>· {selectedEpic.name}</span>}</h3>
+      <div className="roadmap-rail" role="group" aria-label="Releases for selected Epic">
+        {releases.map((release) => <div key={release.id} className={`roadmap-release-chip${release.id === focusedRelease ? " focused" : ""}`}>
+          <strong>{release.name}</strong><span>{release.description}</span><span>Delivery not verified</span>
+          {release.id === focusedRelease && <small>Current focus</small>}
+        </div>)}
+        {releases.length === 0 && <p className="roadmap-no-releases">No Releases defined yet.</p>}
+      </div>
+    </div>}
+    {!compact && <div className="roadmap-release-list" role="group" aria-label="Releases for selected Epic">
+      {focusName && <p className="roadmap-focus-note">Catalog focus: {focusName}. Focus is a navigation choice and does not indicate delivery.</p>}
+      {releases.map((release) => <section className={`roadmap-release${release.id === focusedRelease ? " focused" : ""}`} key={release.id}>
+        <button className="roadmap-release-toggle" aria-expanded={expandedReleaseIDs.includes(release.id)} onClick={() => setExpandedReleaseIDs((current) => current.includes(release.id) ? current.filter((id) => id !== release.id) : [...current, release.id])}>
+          <span className="roadmap-release-name"><span>{release.id.toUpperCase()}</span><strong>{release.name}</strong><small>{release.description}</small></span>
+          <span className="roadmap-delivery-status">Delivery not verified</span><span className="roadmap-release-chevron" aria-hidden="true">{expandedReleaseIDs.includes(release.id) ? "⌄" : "›"}</span>
+        </button>
+        {expandedReleaseIDs.includes(release.id) && <ul>{release.todos.map((todo) => <li key={todo.id}>
+          <div><strong>{todo.title}</strong><span>{todo.path}</span></div>
+          <p><span>{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}</span><span>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</span><span>Delivery not verified</span></p>
+        </li>)}</ul>}
+      </section>)}
+      {releases.length === 0 && <p className="project-notice">No Releases defined yet.</p>}
+    </div>}
+  </section>;
 }
 
 function PortalHeader({ children }: { children: ReactNode }) {
@@ -223,10 +284,11 @@ export function Projects() {
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
       <span className="project-bar-title">{project?.name}</span>
     </header>
-    <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><p>{company?.name}</p><h2>{project?.name}</h2>{pages.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigate({ page: item.id })}>{item.label}{item.id === "roadmap" && <small>Not available yet</small>}</button>)}</nav>
+    <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><p>{company?.name}</p><h2>{project?.name}</h2>{pages.map((item) => <button key={item.id} className={page === item.id ? "active" : ""} onClick={() => navigate({ page: item.id })}>{item.label}</button>)}</nav>
       <section className="project-content">{page !== "overview" && <><p className="projects-eyebrow">{company?.name} / {project?.id}</p><h1>{pages.find((item) => item.id === page)?.label}</h1></>}
         {page === "overview" && <div className="project-overview"><section className="project-hero"><div className="project-hero-copy"><span className="project-source-tag">PROJECT OVERVIEW</span><h1>{project?.name}</h1><p>{detail.portfolio_summary || (documents.length ? `Consult the admitted documents to review the purpose and direction of ${project?.name}.` : `No admitted summary or canonical documents are available for ${project?.name} yet.`)}</p></div><aside>Project identity<strong>{company?.name}</strong></aside></section>
           <div className="overview-cards"><article className="overview-card"><span aria-hidden="true">↗</span><h2>Por que existe</h2><p>{documents.length ? "Review the admitted Project documents for its purpose and operating context." : "No admitted documents are available to substantiate the Project's purpose yet."}</p><button onClick={() => navigate({ page: "documents" })}>{documents.length ? "Explore context" : "View Documents"} <b aria-hidden="true">→</b></button></article><article className="overview-card"><span aria-hidden="true">▦</span><h2>O caminho</h2><p>{documents.length ? "Consult admitted documents for recorded decisions and planning." : "There are no admitted documents to show recorded decisions or planning yet."}</p><button onClick={() => navigate({ page: "documents" })}>{documents.length ? "Read documents" : "Open Documents"} <b aria-hidden="true">→</b></button></article><article className="overview-card"><span aria-hidden="true">◇</span><h2>Artefatos visíveis</h2><p>Open the artifacts admitted to this saved Project snapshot.</p><div className="overview-card-links"><button onClick={() => navigate({ page: "design-system" })}>Design System</button><button onClick={() => navigate({ page: "prototypes" })}>Prototype</button></div></article></div>
+          <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} compact />
           <section className="project-landing-reference" aria-label="Executive Landing artifact"><div><small>SEPARATE PROJECT ARTIFACT</small><h2>Executive Landing</h2><p>The Landing is a separate artifact and is not embedded in this overview.</p></div>{(() => { const landing = available.find((item) => item.kind === "landing"); const src = landing ? artifactURL(detail, landing) : ""; return src ? <a href={src} target="_blank" rel="noreferrer">Open Landing ↗</a> : <span>{landing?.diagnostic || "Not available in this saved snapshot"}</span>; })()}</section>
           <section className="overview-status" aria-label="Saved artifact status"><div className="project-metrics"><div><strong>{available.filter((item) => item.state === "available").length}</strong><span>Available artifacts</span></div><div><strong>{available.filter((item) => item.state === "invalid").length}</strong><span>Artifacts needing attention</span></div><div><strong>{documents.length}</strong><span>Admitted documents</span></div></div><p className="project-status">Saved snapshot: {detail.snapshot_fingerprint?.slice(0, 12)} · availability does not indicate human approval or current source freshness.</p>{available.filter((item) => item.state !== "available").map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</section></div>}
         {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted to this Project's saved snapshot.</p>
@@ -236,7 +298,7 @@ export function Projects() {
         </div>}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
-        {page === "roadmap" && <p className="project-notice">Roadmap is not available in this runtime yet.</p>}
+        {page === "roadmap" && <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} />}
       </section></div>
   </main>;
 }

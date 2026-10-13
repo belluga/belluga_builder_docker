@@ -80,6 +80,64 @@ type registeredSnapshot struct {
 	Observations  map[string]json.RawMessage `json:"observations"`
 }
 
+type roadmapCatalog struct {
+	SchemaVersion string        `json:"schema_version"`
+	ProjectID     string        `json:"project_id"`
+	FocusRelease  string        `json:"focus_release_id"`
+	Epics         []roadmapCatalogEpic `json:"epics"`
+}
+
+type roadmapCatalogEpic struct {
+	ID          string                  `json:"id"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description"`
+	Releases    []roadmapCatalogRelease `json:"releases"`
+}
+
+type roadmapCatalogRelease struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	TODOs       []roadmapCatalogTODO `json:"todos"`
+}
+
+type roadmapCatalogTODO struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	Path  string `json:"path"`
+	Kind  string `json:"kind"`
+}
+
+type roadmapProjection struct {
+	SchemaVersion        string        `json:"schema_version"`
+	ProjectID            string        `json:"project_id"`
+	FocusRelease         string        `json:"focus_release_id"`
+	DeliveryVerification string        `json:"delivery_verification"`
+	Epics                []roadmapEpic `json:"epics"`
+}
+
+type roadmapEpic struct {
+	ID          string           `json:"id"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	Releases    []roadmapRelease `json:"releases"`
+}
+
+type roadmapRelease struct {
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	TODOs       []roadmapTODO `json:"todos"`
+}
+
+type roadmapTODO struct {
+	ID          string `json:"id"`
+	Title       string `json:"title"`
+	Path        string `json:"path"`
+	Kind        string `json:"kind"`
+	RecordState string `json:"record_state"`
+}
+
 type portfolioSummary struct {
 	SchemaVersion string `json:"schema_version"`
 	Summary       string `json:"summary"`
@@ -297,6 +355,15 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
 	}
 	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind == "roadmap" && artifact.State == "available" {
+			for _, name := range artifact.Files {
+				if name == "roadmap/catalog.json" {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name]); ok {
+						result["roadmap"] = projection
+					}
+				}
+			}
+		}
 		if artifact.Kind == "portfolio" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "project_portfolio.json" {
@@ -319,6 +386,34 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		}
 	}
 	return result
+}
+
+func admittedRoadmapProjection(projectID string, data []byte) (roadmapProjection, bool) {
+	var catalog roadmapCatalog
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&catalog) != nil || catalog.SchemaVersion != "builder-roadmap-v1" || catalog.ProjectID != projectID || len(catalog.Epics) == 0 {
+		return roadmapProjection{}, false
+	}
+	epics := make([]roadmapEpic, 0, len(catalog.Epics))
+	for _, sourceEpic := range catalog.Epics {
+		epic := roadmapEpic{ID: sourceEpic.ID, Name: sourceEpic.Name, Description: sourceEpic.Description, Releases: []roadmapRelease{}}
+		for _, sourceRelease := range sourceEpic.Releases {
+			release := roadmapRelease{ID: sourceRelease.ID, Name: sourceRelease.Name, Description: sourceRelease.Description, TODOs: []roadmapTODO{}}
+			for _, sourceTODO := range sourceRelease.TODOs {
+				recordState := "other"
+				if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
+					recordState = "completed"
+				} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
+					recordState = "active"
+				}
+				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: sourceTODO.Title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState})
+			}
+			epic.Releases = append(epic.Releases, release)
+		}
+		epics = append(epics, epic)
+	}
+	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, DeliveryVerification: "unverified", Epics: epics}, true
 }
 
 func snapshotFileURL(snapshot registeredSnapshot, fingerprint, name string) string {
