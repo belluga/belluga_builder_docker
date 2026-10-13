@@ -128,9 +128,10 @@ describe("single /local Project experience", () => {
     expect(within(overview).queryByText("1 / 5")).not.toBeInTheDocument();
     fireEvent.click(within(overview).getByRole("button", { name: "Next Epic" }));
     expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveTextContent("Other developers");
+    expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(within(overview).getByRole("button", { name: "Previous Epic" }));
     expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveTextContent("Local projects");
-    expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest", inline: "start" });
+    expect(scrollIntoView).not.toHaveBeenCalled();
     fireEvent.click(within(overview).getByRole("button", { name: /builder Internal service/ }));
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study");
     fireEvent.click(within(overview).getByRole("button", { name: /builder Other developers/ }));

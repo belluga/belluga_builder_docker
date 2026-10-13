@@ -81,7 +81,16 @@ function RoadmapView({ roadmap, detail, projectID, compact = false }: { roadmap?
   const [expandedReleaseIDs, setExpandedReleaseIDs] = useState<string[]>(focusedRelease ? [focusedRelease] : []);
   const epicRail = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    epicRail.current?.querySelector<HTMLButtonElement>(".selected")?.scrollIntoView?.({ block: "nearest", inline: "start" });
+    const rail = epicRail.current;
+    const selected = rail?.querySelector<HTMLButtonElement>(".selected");
+    if (!rail || !selected) return;
+    const railBounds = rail.getBoundingClientRect();
+    const selectedBounds = selected.getBoundingClientRect();
+    if (selectedBounds.left < railBounds.left) {
+      rail.scrollLeft -= railBounds.left - selectedBounds.left;
+    } else if (selectedBounds.right > railBounds.right) {
+      rail.scrollLeft += selectedBounds.right - railBounds.right;
+    }
   }, [selectedEpicID]);
   if (!roadmap || roadmap.project_id !== projectID || roadmap.schema_version !== "builder-roadmap-v1" || roadmap.delivery_verification !== "unverified") {
     return <p className="project-notice roadmap-unavailable" role={roadmapArtifact?.state === "invalid" ? "alert" : "status"}>
