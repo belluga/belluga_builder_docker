@@ -43,7 +43,7 @@ function presentationURL(props: Props, prototype: Prototype, screen: Screen, sta
   const query = new URLSearchParams({ company_id: props.companyID, project_id: props.projectID, page: "prototypes", mode: "presentation",
     artifact: `prototype:${prototype.id}`, prototype_id: prototype.id, screen_id: screen.id, state_id: state.id,
     fingerprint: props.detail?.snapshot_fingerprint || "", device: "mobile", scale: "fit" });
-  return `/local?${query}`;
+  return `/?${query}`;
 }
 
 function PrototypePresentation({ props, prototypes }: { props: Props; prototypes: Prototype[] }) {
@@ -89,7 +89,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
   const choose = (changes: Record<string, string | null>) => onNavigate(changes, true);
   return <main className="prototype-presentation">
     <header className="prototype-presentation-bar">
-      <a className="prototype-presentation-exit" href={`/local?${inspector}`}>← Sair</a>
+      <a className="prototype-presentation-exit" href={`/?${inspector}`}>← Sair</a>
       <span className="prototype-presentation-context">{props.companyName} / {props.projectName}</span>
       <label>Protótipo<select aria-label="Protótipo" value={prototype?.id || ""} onChange={(event) => {
         const next = prototypes.find((item) => item.id === event.target.value);
@@ -115,7 +115,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
     </header>
     <section ref={canvasRef} className="prototype-presentation-canvas" aria-label={`${props.companyName} / ${props.projectName} · apresentação`}>
       {!detail ? <p role="status">Carregando snapshot…</p>
-        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/local?${inspector}`}>inspetor</a>.</p>
+        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
             : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando entrada do snapshot…</p>
               : check.state === "error" ? <p role="alert">{check.message}</p>

@@ -321,15 +321,20 @@ func TestDetailProjectsOnlyAdmittedPortfolioAndDocuments(t *testing.T) {
 	}
 }
 
-func TestLocalProjectExperienceHasOneRoute(t *testing.T) {
+func TestProjectExperienceHasOneRoute(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("local app"), 0o444); err != nil {
 		t.Fatal(err)
 	}
 	local := httptest.NewRecorder()
-	localStaticHandler(root).ServeHTTP(local, httptest.NewRequest("GET", "/local", nil))
+	localStaticHandler(root).ServeHTTP(local, httptest.NewRequest("GET", "/", nil))
 	if local.Code != 200 || local.Body.String() != "local app" {
-		t.Fatalf("local /local = %d %q", local.Code, local.Body.String())
+		t.Fatalf("root / = %d %q", local.Code, local.Body.String())
+	}
+	legacy := httptest.NewRecorder()
+	localStaticHandler(root).ServeHTTP(legacy, httptest.NewRequest("GET", "/local", nil))
+	if legacy.Code != 404 {
+		t.Fatalf("retired /local route = %d", legacy.Code)
 	}
 	retired := httptest.NewRecorder()
 	localStaticHandler(root).ServeHTTP(retired, httptest.NewRequest("GET", "/projects", nil))

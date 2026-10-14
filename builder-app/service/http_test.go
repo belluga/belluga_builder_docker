@@ -156,11 +156,26 @@ func TestPublishedViewerAcceptsOnlyConfiguredHost(t *testing.T) {
 }
 
 func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
-	request := httptest.NewRequest(http.MethodGet, "/", nil)
-	response := httptest.NewRecorder()
-	registeredStaticHandler(t.TempDir(), true).ServeHTTP(response, request)
-	if response.Code != http.StatusFound || response.Header().Get("Location") != "/local" {
-		t.Fatalf("published root = %d %q", response.Code, response.Header().Get("Location"))
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("project directory"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	handler := registeredHandler(t.TempDir(), root, "builder.belluga.online")
+	for _, tc := range []struct{ path, host string; status int }{
+		{path: "/", host: "builder.belluga.online", status: http.StatusOK},
+		{path: "/local", host: "builder.belluga.online", status: http.StatusNotFound},
+		{path: "/", host: "untrusted.example", status: http.StatusForbidden},
+	} {
+		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		request.Host = tc.host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != tc.status {
+			t.Errorf("published %s on %s = %d, want %d", tc.path, tc.host, response.Code, tc.status)
+		}
+		if tc.status == http.StatusOK && response.Body.String() != "project directory" {
+			t.Errorf("published root body = %q", response.Body.String())
+		}
 	}
 }
 

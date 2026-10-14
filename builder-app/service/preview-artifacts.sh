@@ -25,4 +25,4 @@ while [ "$attempt" -lt 30 ]; do
 done
 [ -n "$served" ] || { printf '%s\n' 'local Builder consumer did not become ready' >&2; exit 70; }
 printf '%s\n' "$served"
-printf 'Local registered Project viewer: http://127.0.0.1:8089/local\nRead-only state root: %s\n' "$DELPHI_BUILDER_STATE_ROOT"
+printf 'Registered Project viewer: http://127.0.0.1:8089/\nRead-only state root: %s\n' "$DELPHI_BUILDER_STATE_ROOT"
