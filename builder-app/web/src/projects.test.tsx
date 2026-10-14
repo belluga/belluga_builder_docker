@@ -16,7 +16,11 @@ const theme = { tokens: [
 ].map(([id, type, value]) => ({ id, type, value })) };
 function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", delivery_verification: "unverified", epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
-    { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [{ id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" }] },
+    { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
+      { id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" },
+      { id: "completed-todo", title: "Published MVP task", path: "todos/completed/published.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+      { id: "promoted-todo", title: "Promotion pending task", path: "todos/promotion_lane/promoted.md", kind: "executable", record_state: "promotion_lane", local_stage: "Lane-Promoted" },
+    ] },
     { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [{ id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", local_stage: "Local-Implemented", work_state: "blocked" }] },
   ] },
   { id: "e-02", name: `${projectID} Other developers`, description: "Local projects for other developers", releases: [] },
@@ -128,6 +132,11 @@ describe("single /local Project experience", () => {
     expect(within(completedTodo!).getByText("Local record: completed")).toBeInTheDocument();
     expect(within(completedTodo!).getByText("Local stage: unknown")).toBeInTheDocument();
     expect(within(completedTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    const readyTodo = screen.getByText(/Published MVP task/).closest("tr");
+    expect(within(readyTodo!).getByText("Local stage: Production-Ready")).toHaveClass("done");
+    expect(within(readyTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    const promotedTodo = screen.getByText(/Promotion pending task/).closest("tr");
+    expect(within(promotedTodo!).getByText("Local stage: Lane-Promoted")).toHaveClass("validation");
     expect(screen.getAllByText("Delivery not verified").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Project UI and real Roadmap/ }));
     const localTodo = screen.getByText(/Project Roadmap connection/).closest("tr");

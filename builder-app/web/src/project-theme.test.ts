@@ -3,7 +3,7 @@ import { resolveProjectTheme } from "./project-theme";
 
 const builder = [
   ["color-canvas", "#061421"], ["color-surface", "#091D2B"], ["color-text-strong", "#EAF5FB"], ["color-text-secondary", "#A8C1D1"],
-  ["color-accent", "#55DFF2"], ["color-on-accent", "#06202B"], ["color-border", "#89BFD8"], ["color-focus", "#CCEAF1"],
+  ["color-accent", "#55DFF2"], ["color-on-accent", "#06202B"], ["color-border", "#89BFD8"], ["color-focus", "#CCEAF1"], ["color-success", "#66D7CB"],
 ];
 const boora = [
   ["surface", "#121116"], ["surface-container", "#211F27"], ["on-surface", "#F2EDF7"], ["on-surface-variant", "#CCC4D5"],
@@ -25,7 +25,9 @@ describe("Project Design System role adapter", () => {
     expect(b.style?.["--project-cardRadius"]).toBe("7px");
     expect(o.style?.["--project-cardRadius"]).toBe("24px");
     expect(b.style?.["--project-accent"]).toBe("#55DFF2");
+    expect(b.style?.["--project-success"]).toBe("#66D7CB");
     expect(o.style?.["--project-accent"]).toBe("#C7B8FF");
+    expect(o.style?.["--project-success"]).toBeUndefined();
   });
   it("diagnoses an unknown or wrongly typed required role", () => {
     const source = definition(builder, 7, 5, { font: "font-family-sans", body: "text-body", display: "text-display", field: "radius-small" });

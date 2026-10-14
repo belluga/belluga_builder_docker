@@ -780,6 +780,7 @@
 .roadmap-todo-stage { color: var(--project-muted); }
 .roadmap-todo-stage.doing { border-color: color-mix(in srgb, var(--project-accent) 65%, var(--project-border)); color: var(--project-accent); }
 .roadmap-todo-stage.validation { border-color: #b9933e; color: #e8c879; background: color-mix(in srgb, #b9933e 12%, transparent); }
+.roadmap-todo-stage.done { border-color: color-mix(in srgb, var(--project-success, #82e0d0) 65%, var(--project-border)); color: var(--project-success, #82e0d0); background: color-mix(in srgb, var(--project-success, #82e0d0) 12%, transparent); }
 .roadmap-todo-stage.blocked { border-color: #c77664; color: #edaa91; background: color-mix(in srgb, #c77664 12%, transparent); }
 .roadmap-context h2 { margin: 0 0 15px; padding-bottom: 13px; border-bottom: 1px solid var(--project-border); font-size: 14px; }
 .roadmap-context > div { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 9px; padding: 8px 0 16px; }
