@@ -18,12 +18,7 @@ func main() {
 		if err != nil || (!isLoopback(host) && os.Getenv("ALLOW_CONTAINER_BIND") != "true") {
 			log.Fatal("listener must use a loopback address")
 		}
-		consumer := &registeredPreview{root: stateRoot}
-		mux := http.NewServeMux()
-		mux.HandleFunc("/api/local-preview", consumer.apiHandler)
-		mux.HandleFunc("/snapshot/", consumer.artifactHandler)
-		mux.Handle("/", registeredStaticHandler(env("WEB_ROOT", "/web"), publicHost != ""))
-		log.Fatal((&http.Server{Addr: address, Handler: secureHeaders(previewHostOnly(mux, publicHost)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
+		log.Fatal((&http.Server{Addr: address, Handler: registeredHandler(stateRoot, env("WEB_ROOT", "/web"), publicHost), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
 	}
 	if len(os.Args) > 1 && os.Args[1] == "export" {
 		flags := flag.NewFlagSet("export", flag.ExitOnError)
@@ -68,18 +63,13 @@ func localHostOnly(next http.Handler) http.Handler {
 	return previewHostOnly(next, "")
 }
 
-func registeredStaticHandler(root string, published bool) http.Handler {
-	local := localStaticHandler(root)
-	if !published {
-		return local
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
-			http.Redirect(w, r, "/local", http.StatusFound)
-			return
-		}
-		local.ServeHTTP(w, r)
-	})
+func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
+	consumer := &registeredPreview{root: stateRoot}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
+	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
+	mux.Handle("/", localStaticHandler(webRoot))
+	return secureHeaders(previewHostOnly(mux, publicHost))
 }
 
 func previewHostOnly(next http.Handler, publicHost string) http.Handler {

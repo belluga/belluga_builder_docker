@@ -16,7 +16,11 @@ const theme = { tokens: [
 ].map(([id, type, value]) => ({ id, type, value })) };
 function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", delivery_verification: "unverified", epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
-    { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [{ id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" }] },
+    { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
+      { id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" },
+      { id: "completed-todo", title: "Published MVP task", path: "todos/completed/published.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+      { id: "promoted-todo", title: "Promotion pending task", path: "todos/promotion_lane/promoted.md", kind: "executable", record_state: "promotion_lane", local_stage: "Lane-Promoted" },
+    ] },
     { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [{ id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", local_stage: "Local-Implemented", work_state: "blocked" }] },
   ] },
   { id: "e-02", name: `${projectID} Other developers`, description: "Local projects for other developers", releases: [] },
@@ -42,10 +46,10 @@ function mockFetch(documents: { path: string; url: string }[] = [], documentResp
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
 })); }
-beforeEach(() => { history.replaceState({}, "", "/local"); mockFetch(); });
+beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
-describe("single /local Project experience", () => {
+describe("single root Project experience", () => {
   it("selects Company and Project before entering its dedicated page", async () => {
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Choose a company to explore its projects." })).toBeInTheDocument();
@@ -57,18 +61,18 @@ describe("single /local Project experience", () => {
     expect(document.querySelector(".portfolio-hero aside")).toHaveTextContent("Registered Projects2");
     fireEvent.click((await screen.findAllByRole("button", { name: /Explore Project/ }))[0]);
     expect(await screen.findByLabelText("Switch Project")).toHaveValue("builder");
-    expect(location.pathname).toBe("/local");
+    expect(location.pathname).toBe("/");
     expect(screen.getByRole("navigation", { name: "Project pages" })).toBeInTheDocument();
   });
   it("applies Project Design System roles to the whole Project page", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     await waitFor(() => expect(document.querySelector(".projects-project")).toBeInTheDocument());
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#32bbdd");
     expect(screen.getByText("Overview for builder")).toBeInTheDocument();
   });
   it("keeps the approved Overview narrative primary and links the Landing separately", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "The proposal" })).toBeInTheDocument();
@@ -91,14 +95,14 @@ describe("single /local Project experience", () => {
     expect(screen.getByAltText("Admitted Builder document view")).toHaveAttribute("src", `/snapshot/belluga/builder/${fingerprint}/project_overview/proposal.png`);
   });
   it("keeps Overview editorial separate from an empty Documents state", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     expect(await screen.findByText("Problem evidence")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
     expect(await screen.findByText("No canonical Markdown documents are admitted in this snapshot.")).toBeInTheDocument();
   });
   it("does not substitute portfolio text for a missing admitted Overview", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
@@ -110,7 +114,7 @@ describe("single /local Project experience", () => {
     expect(screen.queryByText("Summary for builder")).not.toBeInTheDocument();
   });
   it("renders the focused Epic and Release from the Project catalog, with TODO record kind separate from delivery", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
     expect(document.querySelector(".roadmap-release-panel")).toBeInTheDocument();
@@ -128,6 +132,11 @@ describe("single /local Project experience", () => {
     expect(within(completedTodo!).getByText("Local record: completed")).toBeInTheDocument();
     expect(within(completedTodo!).getByText("Local stage: unknown")).toBeInTheDocument();
     expect(within(completedTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    const readyTodo = screen.getByText(/Published MVP task/).closest("tr");
+    expect(within(readyTodo!).getByText("Local stage: Production-Ready")).toHaveClass("done");
+    expect(within(readyTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    const promotedTodo = screen.getByText(/Promotion pending task/).closest("tr");
+    expect(within(promotedTodo!).getByText("Local stage: Lane-Promoted")).toHaveClass("validation");
     expect(screen.getAllByText("Delivery not verified").length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /Project UI and real Roadmap/ }));
     const localTodo = screen.getByText(/Project Roadmap connection/).closest("tr");
@@ -146,7 +155,7 @@ describe("single /local Project experience", () => {
   it("uses the same admitted Epic and Release projection in Overview", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     const overview = await screen.findByRole("region", { name: "Project Roadmap overview" });
     expect(within(overview).getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
@@ -164,7 +173,7 @@ describe("single /local Project experience", () => {
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("No Releases defined yet.");
   });
   it("derives initial focus from unverified delivery and shares manual Roadmap focus by URL", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true");
     expect(location.search).not.toContain("release_id");
@@ -172,15 +181,15 @@ describe("single /local Project experience", () => {
     expect(location.search).toContain("epic_id=e-01");
     expect(location.search).toContain("release_id=r-04");
     expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap&release_id=r-05");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&release_id=r-05");
     window.dispatchEvent(new PopStateEvent("popstate"));
     await waitFor(() => expect(screen.getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study"));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-02&release_id=r-05");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-02&release_id=r-05");
     window.dispatchEvent(new PopStateEvent("popstate"));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("link is invalid"));
   });
   it("drags the Overview rails without turning a drag into an Epic selection", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     const overview = await screen.findByRole("region", { name: "Project Roadmap overview" });
     const epics = within(overview).getByRole("group", { name: "Select Epic" });
@@ -210,7 +219,7 @@ describe("single /local Project experience", () => {
       const saved = detail("belluga", "builder");
       return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available yet. Register after adding the catalog." } : item) }) };
     }));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByText(/Roadmap catalog is not available yet/)).toBeInTheDocument();
     expect(screen.queryByText(/Local projects/)).not.toBeInTheDocument();
@@ -224,7 +233,7 @@ describe("single /local Project experience", () => {
       const saved = detail("belluga", "builder");
       return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available yet. Register after adding the catalog." } : item) }) };
     }));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Roadmap catalog is not available yet"));
     const notice = screen.getByRole("status");
@@ -242,19 +251,19 @@ describe("single /local Project experience", () => {
       if (projectID !== "boora") return { ok: true, json: async () => saved };
       return { ok: true, json: async () => ({ ...saved, roadmap: undefined, artifacts: saved.artifacts.map((item) => item.kind === "roadmap" ? { ...item, state: "pending", diagnostic: "Roadmap catalog is not available for this Project." } : item) }) };
     }));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Company and Project Schema Study")).toBeInTheDocument();
-    history.pushState({}, "", "/local?company_id=belluga&project_id=boora&page=roadmap");
+    history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=roadmap");
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("Roadmap catalog is not available for this Project.")).toBeInTheDocument();
     expect(screen.queryByRole("group", { name: "Select Epic" })).not.toBeInTheDocument();
     expect(screen.queryByText(/builder Local projects|builder Internal service|Company and Project Schema Study|Project UI and real Roadmap|Project Roadmap connection/)).not.toBeInTheDocument();
   });
   it("shows the honest empty Documents state without an empty index column", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=documents");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
     expect(await screen.findByText("No canonical Markdown documents are admitted in this snapshot.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Reading is not review" })).toBeInTheDocument();
@@ -262,7 +271,7 @@ describe("single /local Project experience", () => {
   });
   it("shows readable labels while retaining the admitted document path", async () => {
     mockFetch([{ path: "modules/project_knowledge_viewer_module.md", url: "/snapshot/example/modules/project_knowledge_viewer_module.md" }]);
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=documents");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Project knowledge viewer module" })).toBeInTheDocument();
     expect(screen.getByText("modules/project_knowledge_viewer_module.md")).toBeInTheDocument();
@@ -271,7 +280,7 @@ describe("single /local Project experience", () => {
     const documentURL = "/snapshot/example/modules/project_knowledge_viewer_module.md";
     const admitted = [{ path: "modules/project_knowledge_viewer_module.md", url: documentURL }];
     mockFetch(admitted, { ok: true, body: "# Project knowledge\n\n## Decisions\n\nCurrent direction." });
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=documents");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
     fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
@@ -280,7 +289,7 @@ describe("single /local Project experience", () => {
   it("reports a failed admitted document fetch without inventing content", async () => {
     const documentURL = "/snapshot/example/modules/missing.md";
     mockFetch([{ path: "modules/missing.md", url: documentURL }]);
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=documents");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
     fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("could not be loaded");
@@ -299,10 +308,10 @@ describe("single /local Project experience", () => {
       if (url.searchParams.get("project_id") === "builder") return lateBuilder;
       return { ok: true, json: async () => ({ ...detail("belluga", "boora"), snapshot_fingerprint: booraFingerprint }) };
     }));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     await waitFor(() => expect(fetch).toHaveBeenCalledWith(expect.stringContaining("project_id=builder"), expect.anything()));
-    history.pushState({}, "", "/local?company_id=belluga&project_id=boora&page=overview");
+    history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview");
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("Overview for boora")).toBeInTheDocument();
     await act(async () => { releaseBuilder({ ok: true, json: async () => detail("belluga", "builder") }); });
@@ -329,7 +338,7 @@ describe("single /local Project experience", () => {
         artifacts: [...saved.artifacts, { id: prototype.id, kind: "prototype", name: prototype.name, state: "available", entry_point: `${prototype.root}/home.html` }],
         snapshot_observations: { prototype_status: { outcome: "go", items: [prototype] } } }) };
     }));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=prototypes");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "builder Screen / Default" })).toBeInTheDocument();
     expect(screen.getAllByLabelText("Prototype inspector")).toHaveLength(1);
@@ -341,7 +350,7 @@ describe("single /local Project experience", () => {
     expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
   });
   it("renders the admitted Design System roles without nesting its full catalog", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=design-system");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Paleta estrutural" })).toBeInTheDocument();
     expect(screen.getByText("#101820")).toBeInTheDocument();
@@ -351,7 +360,7 @@ describe("single /local Project experience", () => {
   });
   it("does not render a Project with a mismatched saved identity", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input).includes("project_id=") ? detail("second", "builder") : { companies, projects } })));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder");
     render(<Projects />);
     expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
     expect(screen.queryByRole("navigation", { name: "Project pages" })).not.toBeInTheDocument();
@@ -363,13 +372,13 @@ describe("single /local Project experience", () => {
         ? { ...detail("belluga", "builder"), snapshot_fingerprint: "b".repeat(64) }
         : { companies, projects },
     })));
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&page=roadmap");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
     expect(screen.queryByRole("region", { name: "Project Roadmap" })).not.toBeInTheDocument();
   });
   it("rejects the artifact-only legacy link explicitly", async () => {
-    history.replaceState({}, "", "/local?company_id=belluga&project_id=builder&artifact=prototype:demo");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype:demo");
     render(<Projects />);
     expect(await screen.findByRole("alert")).toHaveTextContent(/artifact-only link is incomplete/);
   });

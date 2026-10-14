@@ -17,7 +17,7 @@ describe("controlled Prototype inspector", () => {
     render(<LocalArtifactPreview {...base} />);
     expect(screen.getByRole("navigation", { name: "Telas e estados" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Home / Default" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Abrir apresentação/ })).toHaveAttribute("href", expect.stringContaining("/local?"));
+    expect(screen.getByRole("link", { name: /Abrir apresentação/ })).toHaveAttribute("href", expect.stringContaining("/?"));
     expect(screen.queryByText("Project directory")).not.toBeInTheDocument();
   });
   it("does not expose a Prototype without an admitted available artifact", () => {

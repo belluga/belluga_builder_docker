@@ -51,5 +51,7 @@ export function resolveProjectTheme(definition: unknown): { style?: ProjectTheme
     const unit = type === "number" && role !== "lineHeight" ? "px" : "";
     style[`--project-${role}`] = `${resolved}${unit}`;
   }
+  const success = value("color-status-positive", "color") ?? value("color-success", "color");
+  if (success) style["--project-success"] = success;
   return { style };
 }

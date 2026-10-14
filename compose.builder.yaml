@@ -31,4 +31,4 @@ services:
 networks:
   builder-preview-ingress:
     name: builder-preview-ingress
-    driver: bridge
+    external: true

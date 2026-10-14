@@ -944,7 +944,7 @@ func localStaticHandler(root string) http.Handler {
 			writeError(w, 404, "not_found")
 			return
 		}
-		if r.URL.Path == "/" || r.URL.Path == "/index.html" || r.URL.Path == "/local" {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			http.ServeFile(w, r, filepath.Join(root, "index.html"))
 			return
 		}
