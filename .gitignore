@@ -16,6 +16,15 @@ application/*
 AGENTS.md
 delphi-ai
 skills
+!skills/
+skills/*
+!skills/create-executive-landing/
+!skills/create-executive-landing/**
+!skills/create-prototype/
+!skills/create-prototype/**
+!skills/create-design-system/
+!skills/create-design-system/**
+!skills/deterministic-tooling-register.md
 GEMINI.md
 gemini_memory.md
 .agent
@@ -24,6 +33,15 @@ gemini_memory.md
 .delphi-locks/
 foundation_documentation_tmp/
 .playwright-mcp/
+/local-api/v1/projects/builder/artifact-status.json
+/local-api/v1/projects/builder/knowledge-status.json
+/local-api/.fixtures-artifact-status.*
+/local-api/source-bindings.json
+/builder-app/web/node_modules/
+/builder-app/web/dist/
+/builder-app/web/tsconfig.tsbuildinfo
+/artifacts/tmp/
+/builder-app/web/preview-evidence/
 
 # CLINE
 CLINE.md

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1",
+  "project_id": "builder",
+  "company_id": "belluga-solutions",
+  "sources": {
+    "default": null,
+    "company": null,
+    "project": {
+      "repository_id": "builder-foundation",
+      "checkout_root": "belluga_builder_foundation_documentation",
+      "revision": null,
+      "definition_path": "design/system/design-system.json"
+    }
+  }
+}

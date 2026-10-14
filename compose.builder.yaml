@@ -1,0 +1,49 @@
+services:
+  bundle-export:
+    image: belluga-builder-viewer-exporter:local
+    build:
+      context: ./builder-app
+      dockerfile: Dockerfile
+      target: exporter
+    command: ["--repo", "/foundation", "--out", "/bundle/data"]
+    volumes:
+      - ./belluga_builder_foundation_documentation:/foundation:ro
+      - builder-preview-bundle:/bundle
+    restart: "no"
+    network_mode: none
+
+  builder-preview:
+    image: belluga-builder-viewer:local
+    build:
+      context: ./builder-app
+      dockerfile: Dockerfile
+      target: runtime
+    depends_on:
+      bundle-export:
+        condition: service_completed_successfully
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      ALLOW_CONTAINER_BIND: "true"
+      BUNDLE_DIR: /bundle/data
+      WEB_ROOT: /web
+    volumes:
+      - builder-preview-bundle:/bundle:ro
+    ports:
+      - "127.0.0.1:8088:8080"
+    networks:
+      builder-preview-ingress:
+        aliases:
+          - builder-preview
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    restart: unless-stopped
+
+volumes:
+  builder-preview-bundle:
+    name: builder-preview-bundle
+
+networks:
+  builder-preview-ingress:
+    name: builder-preview-ingress
+    driver: bridge

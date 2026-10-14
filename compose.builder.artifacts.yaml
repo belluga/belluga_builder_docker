@@ -1,0 +1,24 @@
+services:
+  artifact-preview:
+    image: belluga-builder-artifacts:local
+    build:
+      context: ./builder-app
+      dockerfile: Dockerfile
+      target: runtime
+    user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      ALLOW_CONTAINER_BIND: "true"
+      DELPHI_BUILDER_STATE_ROOT: /state
+      WEB_ROOT: /web
+    volumes:
+      - type: bind
+        source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to a local registry state directory}
+        target: /state
+        read_only: true
+    ports:
+      - "127.0.0.1:8089:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    restart: unless-stopped

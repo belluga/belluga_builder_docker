@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+runner_directory=$(CDPATH= cd -P "$(dirname "$0")" && pwd) || { printf '%s\n' 'artifact-status: cannot resolve Builder local-api directory' >&2; exit 70; }
+repo_root=$(CDPATH= cd -P "$runner_directory/.." && pwd) || { printf '%s\n' 'artifact-status: cannot resolve Builder root' >&2; exit 70; }
+exec "$repo_root/delphi-ai/local-api/run" artifact-status "$@"
