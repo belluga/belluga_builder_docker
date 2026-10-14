@@ -1,33 +1,22 @@
 services:
-  bundle-export:
-    image: belluga-builder-viewer-exporter:local
-    build:
-      context: ./builder-app
-      dockerfile: Dockerfile
-      target: exporter
-    command: ["--repo", "/foundation", "--out", "/bundle/data"]
-    volumes:
-      - ./belluga_builder_foundation_documentation:/foundation:ro
-      - builder-preview-bundle:/bundle
-    restart: "no"
-    network_mode: none
-
   builder-preview:
-    image: belluga-builder-viewer:local
+    image: belluga-builder-mvp:local
     build:
       context: ./builder-app
       dockerfile: Dockerfile
       target: runtime
-    depends_on:
-      bundle-export:
-        condition: service_completed_successfully
+    user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
     environment:
       LISTEN_ADDR: 0.0.0.0:8080
       ALLOW_CONTAINER_BIND: "true"
-      BUNDLE_DIR: /bundle/data
+      DELPHI_BUILDER_STATE_ROOT: /state
+      PUBLIC_PREVIEW_HOST: builder.belluga.online
       WEB_ROOT: /web
     volumes:
-      - builder-preview-bundle:/bundle:ro
+      - type: bind
+        source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
+        target: /state
+        read_only: true
     ports:
       - "127.0.0.1:8088:8080"
     networks:
@@ -38,10 +27,6 @@ services:
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
     restart: unless-stopped
-
-volumes:
-  builder-preview-bundle:
-    name: builder-preview-bundle
 
 networks:
   builder-preview-ingress:

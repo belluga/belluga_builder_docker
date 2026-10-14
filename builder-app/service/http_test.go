@@ -133,6 +133,37 @@ func TestLocalViewerRejectsNonLoopbackHost(t *testing.T) {
 	}
 }
 
+func TestPublishedViewerAcceptsOnlyConfiguredHost(t *testing.T) {
+	handler := previewHostOnly(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), "builder.belluga.online")
+	for _, host := range []string{"builder.belluga.online", "builder.belluga.online:443", "BUILDER.BELLUGA.ONLINE"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/local-preview", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusNoContent {
+			t.Errorf("published host %q rejected with %d", host, response.Code)
+		}
+	}
+	for _, host := range []string{"attacker.invalid", "builder.belluga.online.attacker.invalid", "", "[::1"} {
+		request := httptest.NewRequest(http.MethodGet, "/api/local-preview", nil)
+		request.Host = host
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Errorf("unconfigured host %q accepted with %d", host, response.Code)
+		}
+	}
+}
+
+func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	response := httptest.NewRecorder()
+	registeredStaticHandler(t.TempDir(), true).ServeHTTP(response, request)
+	if response.Code != http.StatusFound || response.Header().Get("Location") != "/local" {
+		t.Fatalf("published root = %d %q", response.Code, response.Header().Get("Location"))
+	}
+}
+
 func TestBundleRejectsMissingOrExtraFiles(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "bundle")
 	foundation := filepath.Join(root, "foundation")
