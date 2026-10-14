@@ -12,6 +12,7 @@ import (
 
 func main() {
 	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_BUILDER_STATE_ROOT")); stateRoot != "" {
+		publicHost := strings.TrimSpace(os.Getenv("PUBLIC_PREVIEW_HOST"))
 		address := env("LISTEN_ADDR", "127.0.0.1:8080")
 		host, _, err := net.SplitHostPort(address)
 		if err != nil || (!isLoopback(host) && os.Getenv("ALLOW_CONTAINER_BIND") != "true") {
@@ -21,8 +22,8 @@ func main() {
 		mux := http.NewServeMux()
 		mux.HandleFunc("/api/local-preview", consumer.apiHandler)
 		mux.HandleFunc("/snapshot/", consumer.artifactHandler)
-		mux.Handle("/", localStaticHandler(env("WEB_ROOT", "/web")))
-		log.Fatal((&http.Server{Addr: address, Handler: secureHeaders(localHostOnly(mux)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
+		mux.Handle("/", registeredStaticHandler(env("WEB_ROOT", "/web"), publicHost != ""))
+		log.Fatal((&http.Server{Addr: address, Handler: secureHeaders(previewHostOnly(mux, publicHost)), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
 	}
 	if len(os.Args) > 1 && os.Args[1] == "export" {
 		flags := flag.NewFlagSet("export", flag.ExitOnError)
@@ -64,6 +65,24 @@ func isLoopback(host string) bool {
 }
 
 func localHostOnly(next http.Handler) http.Handler {
+	return previewHostOnly(next, "")
+}
+
+func registeredStaticHandler(root string, published bool) http.Handler {
+	local := localStaticHandler(root)
+	if !published {
+		return local
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			http.Redirect(w, r, "/local", http.StatusFound)
+			return
+		}
+		local.ServeHTTP(w, r)
+	})
+}
+
+func previewHostOnly(next http.Handler, publicHost string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if strings.Contains(host, ":") {
@@ -74,7 +93,7 @@ func localHostOnly(next http.Handler) http.Handler {
 				return
 			}
 		}
-		if !isLoopback(host) {
+		if !isLoopback(host) && (publicHost == "" || !strings.EqualFold(host, publicHost)) {
 			writeError(w, http.StatusForbidden, "local_host_required")
 			return
 		}
