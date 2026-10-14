@@ -154,7 +154,6 @@ export function LocalArtifactPreview(props: Props) {
     onNavigate({ artifact: `prototype:${item.id}`, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null });
   };
   return <section className="prototype-review" aria-label="Prototype inspector">
-    <header className="prototype-review-head"><div><small>ADMITTED PROTOTYPES · SAVED SNAPSHOT</small><h2>Explore screens and states</h2></div><span>{fingerprint.slice(0, 12)} · not human approval</span></header>
     {unavailable && <p className="project-notice" role="alert">{unavailable.diagnostic || "The Prototype inventory is invalid."}</p>}
     <div className="prototype-review-layout">
       <aside className="prototype-review-list">
@@ -164,14 +163,14 @@ export function LocalArtifactPreview(props: Props) {
       </aside>
       <div className="prototype-review-body">
         {prototype && screen && state ? <>
-          <div className="prototype-review-actions"><div><small>{prototype.authoring_mode === "image_first" ? "Exploração visual" : "Design System direto"}</small><h3>{prototype.name}</h3></div><a href={presentationURL(props, prototype, screen, state)} target="_blank" rel="noopener noreferrer">Abrir apresentação ↗</a></div>
-          <div className="prototype-review-columns"><nav className="prototype-review-tree" aria-label="Telas e estados">{prototype.screens.map((item) => {
+          <div className="prototype-review-actions"><div><small>PROTÓTIPO · {prototype.status === "active" ? "ATIVO" : "ARQUIVADO"}</small><h3>{prototype.name}</h3><span>{prototype.authoring_mode === "image_first" ? "Exploração visual" : "Design System direto"} · snapshot {fingerprint.slice(0, 12)}</span></div><a href={presentationURL(props, prototype, screen, state)} target="_blank" rel="noopener noreferrer">Abrir apresentação do protótipo ↗</a></div>
+          <div className="prototype-review-columns"><nav className="prototype-review-tree" aria-label="Telas e estados"><div className="prototype-review-tree-heading"><small>PROTÓTIPO · {prototype.status === "active" ? "ATIVO" : "ARQUIVADO"}</small><strong>Telas e estados</strong></div>{prototype.screens.map((item) => {
             const open = (expanded || screen.id) === item.id;
             return <div key={item.id}><button aria-expanded={open} className={screen.id === item.id ? "selected" : ""} onClick={() => {
               if (open) setExpanded("closed"); else { setExpanded(item.id); onNavigate({ artifact: `prototype:${prototype.id}`, screen_id: item.id, state_id: item.default_state_id }); }
             }}>{item.name}</button>{open && <div className="prototype-review-states">{item.states.map((candidate) => <button key={candidate.id} aria-pressed={screen.id === item.id && state.id === candidate.id} onClick={() => onNavigate({ artifact: `prototype:${prototype.id}`, screen_id: item.id, state_id: candidate.id })}>{candidate.name}</button>)}</div>}</div>;
           })}</nav>
-          <section className="prototype-review-evidence" aria-label="State evidence"><small>TELA · {screen.id}</small><h3>{screen.name} / {state.name}</h3><p>Estado padrão: {screen.default_state_id === state.id ? "sim" : "não"}</p>
+          <section className="prototype-review-evidence" aria-label="State evidence"><div className="prototype-review-evidence-heading"><div><small>TELA · {screen.id}</small><h3>{screen.name} / {state.name}</h3></div><span>Estado padrão: {screen.default_state_id === state.id ? "sim" : "não"}</span></div>
             <figure><img key={selectedImage} src={selectedImage} alt={`Imagem identificadora · ${screen.name} · ${state.name}`} onError={() => setImageError(true)} /><figcaption>Imagem identificadora deste estado</figcaption></figure>
             {imageError && <p role="alert">Não foi possível carregar a imagem identificadora deste estado.</p>}
             {state.approved_references.map((reference) => <figure key={reference.id}><img src={file(`${prototype.root}/${reference.image}`)} alt={`Referência visual aprovada · ${reference.id}`} /><figcaption>{reference.id} · <a href={file(reference.approval_evidence)} target="_blank" rel="noopener noreferrer">Abrir evidência ↗</a></figcaption></figure>)}

@@ -81,9 +81,9 @@ type registeredSnapshot struct {
 }
 
 type roadmapCatalog struct {
-	SchemaVersion string        `json:"schema_version"`
-	ProjectID     string        `json:"project_id"`
-	FocusRelease  string        `json:"focus_release_id"`
+	SchemaVersion string               `json:"schema_version"`
+	ProjectID     string               `json:"project_id"`
+	FocusRelease  string               `json:"focus_release_id"`
 	Epics         []roadmapCatalogEpic `json:"epics"`
 }
 
@@ -95,9 +95,9 @@ type roadmapCatalogEpic struct {
 }
 
 type roadmapCatalogRelease struct {
-	ID          string              `json:"id"`
-	Name        string              `json:"name"`
-	Description string              `json:"description"`
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Description string               `json:"description"`
 	TODOs       []roadmapCatalogTODO `json:"todos"`
 }
 
@@ -136,11 +136,42 @@ type roadmapTODO struct {
 	Path        string `json:"path"`
 	Kind        string `json:"kind"`
 	RecordState string `json:"record_state"`
+	LocalStage  string `json:"local_stage"`
+	WorkState   string `json:"work_state"`
+}
+
+type roadmapStatusProjection struct {
+	SchemaVersion string              `json:"schema_version"`
+	CatalogSHA256 string              `json:"catalog_sha256"`
+	TODOs         []roadmapLocalStage `json:"todos"`
+}
+
+type roadmapLocalStage struct {
+	ID        string `json:"id"`
+	Stage     string `json:"local_stage"`
+	WorkState string `json:"work_state"`
 }
 
 type portfolioSummary struct {
 	SchemaVersion string `json:"schema_version"`
 	Summary       string `json:"summary"`
+}
+
+type overviewSection struct {
+	Heading  string   `json:"heading"`
+	Body     string   `json:"body"`
+	Points   []string `json:"points"`
+	ImageAlt string   `json:"image_alt,omitempty"`
+}
+
+type overviewSource struct {
+	SchemaVersion string                     `json:"schema_version"`
+	Tagline       string                     `json:"tagline"`
+	Summary       string                     `json:"summary"`
+	DesktopAlt    string                     `json:"desktop_alt,omitempty"`
+	MobileAlt     string                     `json:"mobile_alt,omitempty"`
+	Sections      map[string]overviewSection `json:"sections"`
+	Media         map[string]string          `json:"media,omitempty"`
 }
 
 func (p *registeredPreview) catalog() (registrationCatalog, error) {
@@ -355,10 +386,31 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
 	}
 	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind == "overview" && artifact.State == "available" && artifact.Entry == "project_overview.json" {
+			if data, ok := snapshot.Files[artifact.Entry]; ok {
+				var overview overviewSource
+				decoder := json.NewDecoder(strings.NewReader(string(data)))
+				decoder.DisallowUnknownFields()
+				if rejectDuplicateJSONKeys(data) == nil && decoder.Decode(&overview) == nil && overview.SchemaVersion == "1" && len(overview.Sections) == 4 && overview.Media == nil {
+					media := map[string]string{}
+					for _, name := range artifact.Files {
+						if name == "project_overview/desktop.png" || name == "project_overview/mobile.png" || name == "project_overview/problem.png" || name == "project_overview/proposal.png" || name == "project_overview/impact.png" || name == "project_overview/audience.png" {
+							if _, exists := snapshot.Files[name]; exists {
+								media[strings.TrimSuffix(path.Base(name), ".png")] = snapshotFileURL(snapshot, fingerprint, name)
+							}
+						}
+					}
+					if media["desktop"] != "" && media["mobile"] != "" && strings.TrimSpace(overview.DesktopAlt) != "" && strings.TrimSpace(overview.MobileAlt) != "" {
+						overview.Media = media
+						result["overview"] = overview
+					}
+				}
+			}
+		}
 		if artifact.Kind == "roadmap" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "roadmap/catalog.json" {
-					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name]); ok {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"]); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
 						result["roadmap"] = projection
 					}
 				}
@@ -388,32 +440,80 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 	return result
 }
 
-func admittedRoadmapProjection(projectID string, data []byte) (roadmapProjection, bool) {
+func admittedRoadmapProjection(projectID string, data, statusData []byte) (roadmapProjection, bool) {
 	var catalog roadmapCatalog
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
-	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&catalog) != nil || catalog.SchemaVersion != "builder-roadmap-v1" || catalog.ProjectID != projectID || len(catalog.Epics) == 0 {
+	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&catalog) != nil || decoder.Decode(new(any)) != io.EOF || catalog.SchemaVersion != "builder-roadmap-v1" || catalog.ProjectID != projectID || len(catalog.Epics) == 0 {
 		return roadmapProjection{}, false
 	}
+	var status roadmapStatusProjection
+	statusDecoder := json.NewDecoder(strings.NewReader(string(statusData)))
+	statusDecoder.DisallowUnknownFields()
+	digest := sha256.Sum256(data)
+	if len(statusData) == 0 || rejectDuplicateJSONKeys(statusData) != nil || statusDecoder.Decode(&status) != nil || statusDecoder.Decode(new(any)) != io.EOF || status.SchemaVersion != "builder-roadmap-status-v1" || status.CatalogSHA256 != hex.EncodeToString(digest[:]) {
+		return roadmapProjection{}, false
+	}
+	stages := make(map[string]roadmapLocalStage, len(status.TODOs))
+	for _, row := range status.TODOs {
+		if row.ID == "" || stages[row.ID].ID != "" || !validRoadmapLocalStage(row.Stage) || (row.WorkState != "" && row.WorkState != "unknown" && row.WorkState != "blocked") {
+			return roadmapProjection{}, false
+		}
+		stages[row.ID] = row
+	}
 	epics := make([]roadmapEpic, 0, len(catalog.Epics))
+	seenTODOIDs := make(map[string]bool)
 	for _, sourceEpic := range catalog.Epics {
 		epic := roadmapEpic{ID: sourceEpic.ID, Name: sourceEpic.Name, Description: sourceEpic.Description, Releases: []roadmapRelease{}}
 		for _, sourceRelease := range sourceEpic.Releases {
 			release := roadmapRelease{ID: sourceRelease.ID, Name: sourceRelease.Name, Description: sourceRelease.Description, TODOs: []roadmapTODO{}}
 			for _, sourceTODO := range sourceRelease.TODOs {
+				if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] {
+					return roadmapProjection{}, false
+				}
+				stage, exists := stages[sourceTODO.ID]
+				if !exists {
+					return roadmapProjection{}, false
+				}
+				seenTODOIDs[sourceTODO.ID] = true
 				recordState := "other"
 				if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
 					recordState = "completed"
 				} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
 					recordState = "active"
 				}
-				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: sourceTODO.Title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState})
+				workState := stage.WorkState
+				if workState == "" {
+					workState = "unknown"
+				}
+				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: sourceTODO.Title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState, LocalStage: stage.Stage, WorkState: workState})
 			}
 			epic.Releases = append(epic.Releases, release)
 		}
 		epics = append(epics, epic)
 	}
+	if len(seenTODOIDs) != len(stages) {
+		return roadmapProjection{}, false
+	}
 	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, DeliveryVerification: "unverified", Epics: epics}, true
+}
+
+func validRoadmapLocalStage(value string) bool {
+	switch value {
+	case "Pending", "Local-Implemented", "Lane-Promoted", "Production-Ready", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func containsRoadmapFile(files []string, target string) bool {
+	for _, name := range files {
+		if name == target {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotFileURL(snapshot registeredSnapshot, fingerprint, name string) string {

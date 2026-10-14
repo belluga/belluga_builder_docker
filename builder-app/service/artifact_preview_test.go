@@ -13,10 +13,11 @@ import (
 
 func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *testing.T) {
 	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","title":"Planning record","path":"todos/completed/done.md","kind":"planning"},{"id":"active","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "done", Stage: "unknown"}, roadmapLocalStage{ID: "active", Stage: "Local-Implemented", WorkState: "blocked"})
 	snapshot := registeredSnapshot{
 		SchemaVersion: "builder-project-snapshot-v1", ProjectID: "project-a", CompanyID: "company-a",
-		Files: map[string][]byte{"roadmap/catalog.json": catalog},
-		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json"}}},
+		Files:     map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status},
+		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json"}}},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
 	projection, ok := detail["roadmap"].(roadmapProjection)
@@ -24,7 +25,7 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *test
 		t.Fatalf("roadmap projection is missing or unbound: %#v", detail["roadmap"])
 	}
 	release := projection.Epics[0].Releases[0]
-	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[1].RecordState != "active" {
+	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[0].LocalStage != "unknown" || release.TODOs[1].RecordState != "active" || release.TODOs[1].LocalStage != "Local-Implemented" || release.TODOs[1].WorkState != "blocked" {
 		t.Fatalf("roadmap claims are not truthful: %+v", release)
 	}
 
@@ -34,12 +35,61 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *test
 	}
 }
 
+func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjection(t *testing.T) {
+	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+	valid := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
+	invalid := [][]byte{
+		nil,
+		[]byte(`not-json`),
+		[]byte(`{"schema_version":"builder-roadmap-status-v1","catalog_sha256":"wrong","todos":[{"id":"todo-a","local_stage":"Pending"}]}`),
+		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}),
+		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "different-id", Stage: "Pending"}),
+		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "delivered"}),
+		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending", WorkState: "delivered"}),
+	}
+	for index, status := range invalid {
+		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json"}}}}
+		if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
+			t.Errorf("contradictory stage projection %d was exposed", index)
+		}
+	}
+	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": valid}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json"}}}}
+	if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
+		t.Fatal("projection was exposed when derived file was not admitted by the artifact")
+	}
+}
+
+func roadmapStatusForTest(catalog []byte, todos ...roadmapLocalStage) []byte {
+	digest := sha256.Sum256(catalog)
+	status, _ := json.Marshal(roadmapStatusProjection{SchemaVersion: "builder-roadmap-status-v1", CatalogSHA256: hex.EncodeToString(digest[:]), TODOs: todos})
+	return status
+}
+
+func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
+	data := []byte(`{"schema_version":"1","tagline":"Purpose","summary":"Summary","desktop_alt":"Desktop preview","mobile_alt":"Mobile preview","sections":{"problem":{"heading":"Problem","body":"Body","points":[]},"proposal":{"heading":"Proposal","body":"Body","points":[]},"impact":{"heading":"Impact","body":"Body","points":[]},"audience":{"heading":"Audience","body":"Body","points":[]}}}`)
+	snapshot := registeredSnapshot{ProjectID: "project-a", CompanyID: "company-a", Files: map[string][]byte{"project_overview.json": data, "project_overview/desktop.png": []byte("png"), "project_overview/mobile.png": []byte("png")}, Artifacts: []registeredArtifact{{ID: "overview", Kind: "overview", State: "available", Entry: "project_overview.json", Files: []string{"project_overview.json", "project_overview/desktop.png", "project_overview/mobile.png"}}}}
+	detail := registeredProjectDetail(snapshot, "fingerprint-a")
+	overview, ok := detail["overview"].(overviewSource)
+	if !ok || overview.Summary != "Summary" || !strings.Contains(overview.Media["desktop"], "fingerprint-a") || !strings.Contains(overview.Media["mobile"], "fingerprint-a") {
+		t.Fatalf("Overview not bound to snapshot: %#v", detail["overview"])
+	}
+	delete(snapshot.Files, "project_overview/mobile.png")
+	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
+		t.Fatal("Overview without mobile hero image was exposed")
+	}
+	snapshot.Artifacts[0].State = "invalid"
+	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
+		t.Fatal("invalid Overview was exposed")
+	}
+}
+
 func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedCatalog(t *testing.T) {
 	for _, value := range []string{
 		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
 		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
 	} {
-		if _, ok := admittedRoadmapProjection("project-a", []byte(value)); ok {
+		catalog := []byte(value)
+		if _, ok := admittedRoadmapProjection("project-a", catalog, roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})); ok {
 			t.Fatalf("invalid or foreign catalog admitted: %s", value)
 		}
 	}

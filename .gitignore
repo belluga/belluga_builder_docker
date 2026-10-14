@@ -34,6 +34,7 @@ gemini_memory.md
 foundation_documentation_tmp/
 .playwright-mcp/
 /local-api/v1/projects/builder/artifact-status.json
+/local-api/v1/projects/builder/knowledge-status.json
 /local-api/.fixtures-artifact-status.*
 /local-api/source-bindings.json
 /builder-app/web/node_modules/
