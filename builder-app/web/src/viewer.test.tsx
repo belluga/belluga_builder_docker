@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Viewer } from './viewer';
 
 const preview = { commit: 'cfe9a6e45ea3cc593c43ab7e2bd20ad04722d6fb', landing_version: '1.4', access_mode: 'public_preview', remote_verification: 'unverifiable', local_integrity: 'matching', bundle_fingerprint: '9f634142c941e75c80dbdbe78074fdf60f13467057ec9912d3ca12394c02b606', documents: [{ id: 'landing', title: 'Project Landing' }, { id: 'mandate', title: 'Project Mandate' }] };
@@ -45,8 +45,9 @@ describe('Viewer', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/preview/documents/landing', expect.any(Object)));
     fireEvent.click(await screen.findByRole('button', { name: /Project Mandate/ }));
     expect(await screen.findByRole('heading', { name: 'Newest document' })).toBeInTheDocument();
-    resolveOld(new Response(JSON.stringify(doc('landing', '# Old response')), { status: 200 }));
+    await act(async () => { resolveOld(new Response(JSON.stringify(doc('landing', '# Old response')), { status: 200 })); });
     expect(screen.queryByRole('heading', { name: 'Old response' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Newest document' })).toBeInTheDocument();
   });
 
   it('aborts outstanding requests when the viewer unmounts', async () => {
@@ -66,5 +67,26 @@ describe('Viewer', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 500 }))));
     render(<Viewer />);
     expect(await screen.findByRole('alert')).toHaveTextContent('Não foi possível carregar o catálogo.');
+  });
+
+  it('shows an error instead of crashing on a malformed document URL', async () => {
+    history.replaceState({}, '', '/documents/%E0');
+    vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/preview'
+      ? jsonResponse(preview)
+      : Promise.resolve(new Response('{}', { status: 404 }))));
+    render(<Viewer />);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Este documento não pertence ao catálogo publicado.');
+  });
+
+  it('keeps the viewer usable when browser history selects a malformed document URL', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => url === '/api/preview'
+      ? jsonResponse(preview)
+      : url.endsWith('/landing') ? jsonResponse(doc('landing', '# Landing'))
+        : Promise.resolve(new Response('{}', { status: 404 }))));
+    render(<Viewer />);
+    expect(await screen.findByRole('heading', { name: 'Landing' })).toBeInTheDocument();
+    history.pushState({}, '', '/documents/%E0');
+    fireEvent.popState(window);
+    expect(await screen.findByRole('alert')).toHaveTextContent('Este documento não pertence ao catálogo publicado.');
   });
 });

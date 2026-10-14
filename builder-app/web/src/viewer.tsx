@@ -6,9 +6,15 @@ type Doc = { id: string; title: string };
 type Preview = { commit: string; landing_version: string; access_mode: string; remote_verification: string; local_integrity: string; bundle_fingerprint: string; documents: Doc[] };
 type Document = { id: string; title: string; path: string; commit: string; markdown: string };
 
+function documentIdFromPath() {
+  const encoded = location.pathname.split('/').filter(Boolean)[1] ?? 'landing';
+  try { return decodeURIComponent(encoded); }
+  catch { return encoded; }
+}
+
 export function Viewer() {
   const [preview, setPreview] = useState<Preview | null>(null);
-  const [selected, setSelected] = useState(() => decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] ?? 'landing'));
+  const [selected, setSelected] = useState(documentIdFromPath);
   const [document, setDocument] = useState<Document | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -40,7 +46,7 @@ export function Viewer() {
   }
 
   useEffect(() => {
-    const onPopState = () => setSelected(decodeURIComponent(location.pathname.split('/').filter(Boolean)[1] ?? 'landing'));
+    const onPopState = () => setSelected(documentIdFromPath());
     addEventListener('popstate', onPopState);
     return () => removeEventListener('popstate', onPopState);
   }, []);
