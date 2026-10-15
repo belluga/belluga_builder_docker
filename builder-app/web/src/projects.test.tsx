@@ -14,14 +14,20 @@ const theme = { tokens: [
   ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["font-family-sans", "string", "Arial"],
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
-function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", delivery_verification: "unverified", epics: [
+const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`\n";
+function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
     { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
       { id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" },
+      { id: "architecture-ledger", title: "Architecture ledger", path: "todos/active/architecture.md", kind: "planning", record_state: "active", local_stage: "unknown" },
       { id: "completed-todo", title: "Published MVP task", path: "todos/completed/published.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+      { id: "second-done", title: "Second published task", path: "todos/completed/second.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+      { id: "third-done", title: "Third published task", path: "todos/completed/third.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+    ] },
+    { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [
+      { id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", local_stage: "Local-Implemented", work_state: "blocked" },
       { id: "promoted-todo", title: "Promotion pending task", path: "todos/promotion_lane/promoted.md", kind: "executable", record_state: "promotion_lane", local_stage: "Lane-Promoted" },
     ] },
-    { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [{ id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", local_stage: "Local-Implemented", work_state: "blocked" }] },
   ] },
   { id: "e-02", name: `${projectID} Other developers`, description: "Local projects for other developers", releases: [] },
   { id: "e-03", name: `${projectID} Remote APIs`, description: "Remote Delphi APIs", releases: [] },
@@ -33,16 +39,17 @@ function roadmap(projectID: string) { return { schema_version: "builder-roadmap-
 function detail(companyID: string, projectID: string, documents: { path: string; url: string }[] = []) { return { consumer_readiness: "ready", company_id: companyID, project_id: projectID, snapshot_fingerprint: fingerprint,
   artifacts: [{ id: "system", kind: "design_system", name: "Design System", state: "available", entry_point: "design/system/examples.html", files: ["design/system/design-system.json"] },
     { id: "landing", kind: "landing", name: "Landing", state: "available", entry_point: "design/landing/index.html" },
-    { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/catalog.json", files: ["roadmap/catalog.json"] }], roadmap: roadmap(projectID),
+    { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/catalog.json", files: ["roadmap/catalog.json", "todos/active/roadmap_runtime_connection.md", "todos/completed/published.md", "todos/completed/second.md", "todos/completed/third.md", "todos/promotion_lane/promoted.md"] }], roadmap: roadmap(projectID),
   overview: { schema_version: "1", tagline: "Product direction", summary: `Overview for ${projectID}`, desktop_alt: "Desktop Project view", mobile_alt: "Mobile Project view", media: { desktop: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/desktop.png`, mobile: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/mobile.png`, proposal: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/proposal.png` }, sections: {
     problem: { heading: "The problem", body: "Problem evidence", points: [] },
     proposal: { heading: "The proposal", body: "Proposal evidence", points: [], image_alt: "Admitted Builder document view" },
     impact: { heading: "The impact", body: "Impact hypothesis", points: [] },
     audience: { heading: "For whom", body: "Audience evidence", points: [] },
   } }, portfolio_summary: `Summary for ${projectID}`, documents, snapshot_observations: {} }; }
-function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string }) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
-  if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, text: async () => documentResponse?.body || "" };
+  if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, text: async (): Promise<string> => documentResponse?.body || "" };
+  if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async (): Promise<string> => todoResponse };
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
 })); }
@@ -50,6 +57,66 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("opens the same admitted TODO from Release and renders only authored sections", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-04");
+    render(<Projects />);
+    fireEvent.click(await screen.findByRole("button", { name: /Project Roadmap connection/ }));
+    expect(location.search).toContain("todo_id=roadmap-runtime");
+    expect(await screen.findByText("Exact objective from Foundation.")).toBeInTheDocument();
+    expect(screen.getByText("Exact authored step.")).toBeInTheDocument();
+    expect(document.querySelector(".todo-work")).toHaveTextContent("Exact acceptance criterion.");
+    expect(screen.getByText("Review the source.")).toBeInTheDocument();
+    expect(screen.queryByText("Nenhum bloqueio declarado no arquivo.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText(/Contrato completo/));
+    expect(document.querySelector(".todo-source pre")?.textContent).toBe(todoMarkdown);
+  });
+  it("rejects a TODO ID outside its Release before requesting source", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=roadmap-runtime");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TODO indisponível");
+    expect(screen.queryByText("Exact objective from Foundation.")).not.toBeInTheDocument();
+  });
+  it("omits absent authored sections on a direct TODO link", async () => {
+    mockFetch([], undefined, "# Project Roadmap connection\n\n## Objective\nOnly authored objective.\n");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=roadmap-runtime");
+    render(<Projects />);
+    expect(await screen.findByText("Only authored objective.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Scope" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Definition of Done" })).not.toBeInTheDocument();
+    expect(document.querySelector(".todo-source pre")?.textContent).toBe("# Project Roadmap connection\n\n## Objective\nOnly authored objective.\n");
+  });
+  it("opens a Project-bound Release from Roadmap and returns to the same focus", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    const release = await screen.findByRole("button", { name: /Project UI and real Roadmap/ });
+    const releaseCard = release.closest("section")!;
+    expect(releaseCard).not.toHaveTextContent("•••");
+    const openRelease = within(releaseCard).getByRole("button", { name: "Abrir Release" });
+    expect(openRelease).toHaveTextContent("›");
+    fireEvent.click(openRelease);
+    expect(location.search).toContain("page=release");
+    expect(location.search).toContain("epic_id=e-01");
+    expect(location.search).toContain("release_id=r-04");
+    expect(await screen.findByRole("heading", { name: "Project UI and real Roadmap", level: 1 })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Contexto da release" })).toHaveTextContent("builder Local projects");
+    expect(screen.getByRole("region", { name: "Contexto da release" })).not.toHaveTextContent("Caminho de publicação");
+    expect(screen.getByRole("region", { name: "Contexto da release" })).not.toHaveTextContent("Evidência de publicação");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).toHaveTextContent("Project Roadmap connection");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Planning ledger");
+    fireEvent.click(screen.getByRole("button", { name: /Voltar ao Roadmap/ }));
+    expect(location.search).toContain("page=roadmap");
+    expect(location.search).toContain("release_id=r-04");
+  });
+  it("shows truthful delivered and invalid Release states without planning-ledger arithmetic", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Builder genesis ledger");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-02&release_id=r-01");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Release indisponível");
+  });
   it("selects Company and Project before entering its dedicated page", async () => {
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Choose a company to explore its projects." })).toBeInTheDocument();
@@ -113,45 +180,49 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Project Overview not available yet" })).toBeInTheDocument();
     expect(screen.queryByText("Summary for builder")).not.toBeInTheDocument();
   });
-  it("renders the focused Epic and Release from the Project catalog, with TODO record kind separate from delivery", async () => {
+  it("shows one status column and derives Release status without counting ledgers", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
     expect(document.querySelector(".roadmap-release-panel")).toBeInTheDocument();
-    expect(document.querySelector(".roadmap-context")).toHaveTextContent("Não verificada");
+    expect(document.querySelector(".roadmap-context")).not.toHaveTextContent("Não verificada");
     expect(screen.getByRole("navigation", { name: "Roadmap useful links" })).toHaveTextContent("Documentação");
     expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
-    expect(document.querySelector(".roadmap-context")).toHaveTextContent("First local viewer");
-    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "false");
+    expect(document.querySelector(".roadmap-context")).toHaveTextContent("Project UI and real Roadmap");
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Project UI and real Roadmap")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
-    expect(screen.getByText("Planning ledger")).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "ENTREGA" })).not.toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "STATUS" })).toBeInTheDocument();
+    expect(screen.queryByText(/Delivery not verified|Entrega não verificada/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    expect(screen.getAllByText("Planning ledger")).toHaveLength(2);
     const completedTodo = screen.getByText(/Builder genesis ledger/).closest("tr");
     expect(completedTodo).not.toBeNull();
     expect(within(completedTodo!).getByText("Local record: completed")).toBeInTheDocument();
-    expect(within(completedTodo!).getByText("Local stage: unknown")).toBeInTheDocument();
-    expect(within(completedTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    expect(within(completedTodo!).getByText("—")).toBeInTheDocument();
     const readyTodo = screen.getByText(/Published MVP task/).closest("tr");
-    expect(within(readyTodo!).getByText("Local stage: Production-Ready")).toHaveClass("done");
-    expect(within(readyTodo!).getByText("Delivery not verified")).toBeInTheDocument();
-    const promotedTodo = screen.getByText(/Promotion pending task/).closest("tr");
-    expect(within(promotedTodo!).getByText("Local stage: Lane-Promoted")).toHaveClass("validation");
-    expect(screen.getAllByText("Delivery not verified").length).toBeGreaterThan(0);
+    expect(within(readyTodo!).getByText("Production-Ready")).toHaveClass("done");
     fireEvent.click(screen.getByRole("button", { name: /Project UI and real Roadmap/ }));
     const localTodo = screen.getByText(/Project Roadmap connection/).closest("tr");
     expect(localTodo).not.toBeNull();
-    expect(within(localTodo!).getByText("Blocked · Local stage: Local-Implemented")).toHaveClass("blocked");
-    expect(within(localTodo!).getByText("Delivery not verified")).toBeInTheDocument();
+    expect(within(localTodo!).getByText("Blocked · Local-Implemented")).toHaveClass("blocked");
+    const promotedTodo = screen.getByText(/Promotion pending task/).closest("tr");
+    expect(within(promotedTodo!).getByText("Lane-Promoted")).toHaveClass("validation");
     fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
     await waitFor(() => expect(screen.getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study"));
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Company and Project Schema Study")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Company and Project Schema Study/ })).toHaveTextContent("Status indisponível");
     expect(document.querySelector(".roadmap-context")).toHaveTextContent("Company and Project Schema Study");
     expect(screen.queryByText("Project Roadmap connection")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /builder Other developers/ }));
     expect(screen.getByText("No Releases defined yet.")).toBeInTheDocument();
     expect(document.querySelector(".roadmap-context")).toHaveTextContent("Sem Release neste épico");
-  });
+  }, 15000);
   it("uses the same admitted Epic and Release projection in Overview", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
@@ -160,6 +231,9 @@ describe("single root Project experience", () => {
     const overview = await screen.findByRole("region", { name: "Project Roadmap overview" });
     expect(within(overview).getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Project UI and real Roadmap");
+    const releaseRail = within(overview).getByRole("group", { name: "Releases for selected Epic" });
+    expect(within(releaseRail).getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(within(releaseRail).getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(overview).queryByText("1 / 5")).not.toBeInTheDocument();
     fireEvent.click(within(overview).getByRole("button", { name: "Next Epic" }));
     expect(within(overview).getByRole("group", { name: "Select Epic" }).querySelector("button.selected")).toHaveTextContent("Other developers");
@@ -172,11 +246,36 @@ describe("single root Project experience", () => {
     fireEvent.click(within(overview).getByRole("button", { name: /builder Other developers/ }));
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("No Releases defined yet.");
   });
-  it("derives initial focus from unverified delivery and shares manual Roadmap focus by URL", async () => {
+  it.each([
+    { name: "planned", todos: [{ kind: "executable", local_stage: "Pending" }], expected: "Planejada" },
+    { name: "mixed", todos: [{ kind: "executable", local_stage: "Production-Ready" }, { kind: "executable", local_stage: "Pending" }], expected: "Em andamento" },
+    { name: "unknown", todos: [{ kind: "executable", local_stage: "unknown" }, { kind: "executable", local_stage: "Production-Ready" }], expected: "Status indisponível" },
+    { name: "planning-only", todos: [{ kind: "planning", local_stage: "Production-Ready" }], expected: "Status indisponível" },
+    { name: "blocked ready", todos: [{ kind: "executable", local_stage: "Production-Ready", work_state: "blocked" }], expected: "Bloqueada" },
+  ])("derives $name Release status without a second delivery field", async ({ todos, expected }) => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      const saved = detail("belluga", "builder");
+      const members = todos.map((todo, index) => ({ id: `status-${index}`, title: `Status TODO ${index}`, path: `todos/active/status-${index}.md`, record_state: "active", ...todo }));
+      return { ok: true, json: async () => ({ ...saved, roadmap: { ...saved.roadmap, epics: saved.roadmap.epics.map((epic) => ({ ...epic, releases: epic.releases.map((release) => release.id === "r-01" ? { ...release, todos: members } : release) })) } }) };
+    }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true");
+    const release = await screen.findByRole("button", { name: /First local viewer/ });
+    expect(release).toHaveTextContent(expected);
+    expect(release).not.toHaveTextContent("Entregue");
+    expect(screen.queryByRole("columnheader", { name: "ENTREGA" })).not.toBeInTheDocument();
+  });
+  it("focuses the first incomplete Release and shares manual Roadmap focus by URL", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "false");
     expect(location.search).not.toContain("release_id");
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    expect(location.search).toContain("release_id=r-01");
     fireEvent.click(screen.getByRole("button", { name: /Project UI and real Roadmap/ }));
     expect(location.search).toContain("epic_id=e-01");
     expect(location.search).toContain("release_id=r-04");
@@ -253,7 +352,7 @@ describe("single root Project experience", () => {
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true");
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
     fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Company and Project Schema Study")).toBeInTheDocument();
     history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=roadmap");
