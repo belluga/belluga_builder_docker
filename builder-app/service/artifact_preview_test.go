@@ -674,6 +674,19 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	if served.Code != 200 || served.Header().Get("Content-Type") != "image/png" || served.Body.String() != string(png) {
 		t.Fatalf("PNG response=%d type=%s bytes=%q", served.Code, served.Header().Get("Content-Type"), served.Body.Bytes())
 	}
+	for _, path := range []string{
+		"/snapshot/other-company/trial-project/" + fingerprint + "/" + assetName,
+		"/snapshot/trial-company/other-project/" + fingerprint + "/" + assetName,
+		"/snapshot/trial-company/trial-project/" + strings.Repeat("0", 64) + "/" + assetName,
+		"/snapshot/trial-company/trial-project/" + fingerprint + "/design/landing/assets/unlisted.png",
+		"/snapshot/trial-company/trial-project/" + fingerprint + "/design/landing/../landing/assets/logo.png",
+	} {
+		response := httptest.NewRecorder()
+		consumer.artifactHandler(response, httptest.NewRequest("GET", path, nil))
+		if response.Code != 404 || strings.Contains(response.Body.String(), string(png)) {
+			t.Fatalf("v2 identity/path bypass at %q: %d %q", path, response.Code, response.Body.String())
+		}
+	}
 	if err := os.Chmod(blobPath, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -684,5 +697,94 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	consumer.artifactHandler(tampered, httptest.NewRequest("GET", requestPath, nil))
 	if tampered.Code != 404 || strings.Contains(tampered.Body.String(), string(png)) {
 		t.Fatalf("tampered blob was served: %d %q", tampered.Code, tampered.Body.String())
+	}
+}
+
+func TestRegisteredPreviewRejectsInvalidV2AssetReferences(t *testing.T) {
+	const assetName = "design/landing/assets/logo.png"
+	png := []byte("authored-png-bytes")
+	sum := sha256.Sum256(png)
+	valid := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files:        map[string][]byte{"design/landing/index.html": []byte("landing")},
+		Assets:       map[string]registeredAssetReference{assetName: {SHA256: hex.EncodeToString(sum[:]), Size: int64(len(png))}},
+		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html", assetName}}},
+		Observations: map[string]json.RawMessage{},
+	}
+	for name, change := range map[string]func(*registeredSnapshot){
+		"inline-and-blob-collision": func(s *registeredSnapshot) { s.Files[assetName] = png },
+		"invalid-digest": func(s *registeredSnapshot) {
+			s.Assets[assetName] = registeredAssetReference{SHA256: "wrong", Size: int64(len(png))}
+		},
+		"invalid-size": func(s *registeredSnapshot) {
+			s.Assets[assetName] = registeredAssetReference{SHA256: hex.EncodeToString(sum[:]), Size: 2<<20 + 1}
+		},
+		"aggregate-over-limit": func(s *registeredSnapshot) {
+			for i := 0; i < 17; i++ {
+				name := "design/landing/assets/" + strings.Repeat("x", i+1) + ".png"
+				s.Assets[name] = registeredAssetReference{SHA256: hex.EncodeToString(sum[:]), Size: 2 << 20}
+				s.Artifacts[0].Files = append(s.Artifacts[0].Files, name)
+			}
+		},
+		"unadmitted-asset": func(s *registeredSnapshot) { s.Artifacts[0].Files = []string{"design/landing/index.html"} },
+		"unsafe-asset-path": func(s *registeredSnapshot) {
+			s.Assets["../logo.png"] = s.Assets[assetName]
+			delete(s.Assets, assetName)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			snapshot := valid
+			snapshot.Files = map[string][]byte{"design/landing/index.html": []byte("landing")}
+			snapshot.Assets = map[string]registeredAssetReference{assetName: valid.Assets[assetName]}
+			snapshot.Artifacts = []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html", assetName}}}
+			change(&snapshot)
+			data, err := json.Marshal(snapshot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest := sha256.Sum256(data)
+			fingerprint := hex.EncodeToString(digest[:])
+			if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := (&registeredPreview{root: root}).snapshot("trial-project", "trial-company", fingerprint); err == nil {
+				t.Fatal("invalid v2 asset reference was accepted")
+			}
+		})
+	}
+}
+
+func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
+	image := registeredAssetReference{SHA256: strings.Repeat("a", 64), Size: 42}
+	overview := overviewSource{SchemaVersion: "1", DesktopAlt: "desktop", MobileAlt: "mobile", Sections: map[string]overviewSection{
+		"problem": {}, "proposal": {}, "impact": {}, "audience": {},
+	}}
+	data, err := json.Marshal(overview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files: map[string][]byte{"project_overview.json": data, "prototypes/example/index.html": []byte("prototype"), "prototypes/example/prototype.json": []byte(`{"related":[]}`)},
+		Assets: map[string]registeredAssetReference{
+			"project_overview/desktop.png": image, "project_overview/mobile.png": image,
+			"prototypes/example/screen.png": image,
+		},
+		Artifacts: []registeredArtifact{
+			{ID: "overview", Kind: "overview", State: "available", Entry: "project_overview.json", Files: []string{"project_overview.json", "project_overview/desktop.png", "project_overview/mobile.png"}},
+			{ID: "example", Kind: "prototype", State: "available", Entry: "prototypes/example/index.html", Files: []string{"prototypes/example/index.html", "prototypes/example/prototype.json", "prototypes/example/screen.png"}},
+		},
+	}
+	detail := registeredProjectDetail(snapshot, "fingerprint")
+	projected, ok := detail["overview"].(overviewSource)
+	if !ok || projected.Media["desktop"] == "" || projected.Media["mobile"] == "" {
+		t.Fatalf("v2 Overview image references were not projected: %#v", detail["overview"])
+	}
+	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1]) {
+		t.Fatal("v2 Prototype image reference was not admitted")
 	}
 }
