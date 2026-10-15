@@ -11,22 +11,29 @@ import (
 	"testing"
 )
 
-func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","title":"Planning record","path":"todos/completed/done.md","kind":"planning"},{"id":"active","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.T) {
+	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning"},{"id":"active","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
 	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "done", Stage: "unknown"}, roadmapLocalStage{ID: "active", Stage: "Local-Implemented", WorkState: "blocked"})
 	snapshot := registeredSnapshot{
 		SchemaVersion: "builder-project-snapshot-v1", ProjectID: "project-a", CompanyID: "company-a",
-		Files:     map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status},
-		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json"}}},
+		Files:     map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/completed/done.md": []byte("# Planning record\n"), "todos/active/work.md": []byte("# Work item\n")},
+		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/completed/done.md", "todos/active/work.md"}}},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
 	projection, ok := detail["roadmap"].(roadmapProjection)
-	if !ok || projection.ProjectID != snapshot.ProjectID || projection.FocusRelease != "r-01" || projection.DeliveryVerification != "unverified" || len(projection.Epics) != 1 {
+	if !ok || projection.ProjectID != snapshot.ProjectID || projection.FocusRelease != "r-01" || len(projection.Epics) != 1 {
 		t.Fatalf("roadmap projection is missing or unbound: %#v", detail["roadmap"])
+	}
+	encoded, err := json.Marshal(projection)
+	if err != nil || strings.Contains(string(encoded), "delivery_verification") {
+		t.Fatalf("roadmap still exposes a duplicate delivery status: %s, %v", encoded, err)
 	}
 	release := projection.Epics[0].Releases[0]
 	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[0].LocalStage != "unknown" || release.TODOs[1].RecordState != "active" || release.TODOs[1].LocalStage != "Local-Implemented" || release.TODOs[1].WorkState != "blocked" {
 		t.Fatalf("roadmap claims are not truthful: %+v", release)
+	}
+	if release.TODOs[1].Title != "Work item" {
+		t.Fatal("Roadmap title was not derived from the admitted TODO H1")
 	}
 
 	snapshot.ProjectID = "project-b"
@@ -36,7 +43,7 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundUnverifiedRoadmap(t *test
 }
 
 func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjection(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
 	valid := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
 	invalid := [][]byte{
 		nil,
@@ -48,7 +55,7 @@ func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjectio
 		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending", WorkState: "delivered"}),
 	}
 	for index, status := range invalid {
-		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json"}}}}
+		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Work item\n")}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/active/work.md"}}}}
 		if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
 			t.Errorf("contradictory stage projection %d was exposed", index)
 		}
@@ -85,13 +92,28 @@ func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
 
 func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedCatalog(t *testing.T) {
 	for _, value := range []string{
-		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
-		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","title":"Work item","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
 	} {
 		catalog := []byte(value)
-		if _, ok := admittedRoadmapProjection("project-a", catalog, roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})); ok {
+		if _, ok := admittedRoadmapProjection("project-a", catalog, roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}), map[string][]byte{"todos/active/work.md": []byte("# Work item\n")}, []string{"todos/active/work.md"}); ok {
 			t.Fatalf("invalid or foreign catalog admitted: %s", value)
 		}
+	}
+}
+
+func TestAdmittedRoadmapProjectionRequiresAdmittedTODOBody(t *testing.T) {
+	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
+	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
+	files := map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Authored title\n")}
+	admitted := []string{"roadmap/catalog.json", "roadmap/todo-status.json"}
+	if _, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted); ok {
+		t.Fatal("unlisted TODO body was exposed")
+	}
+	admitted = append(admitted, "todos/active/work.md")
+	projection, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted)
+	if !ok || projection.Epics[0].Releases[0].TODOs[0].Title != "Authored title" {
+		t.Fatal("admitted source H1 was not used")
 	}
 }
 
@@ -589,5 +611,78 @@ func TestPrototypeHTMLAllowsOnlyAdmittedSameOriginFonts(t *testing.T) {
 	policy := w.Header().Get("Content-Security-Policy")
 	if !strings.Contains(policy, "font-src 'self'") || !strings.Contains(policy, "default-src 'none'") || !strings.Contains(policy, "sandbox allow-scripts") {
 		t.Fatalf("prototype font policy does not preserve isolation: %s", policy)
+	}
+}
+
+func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte("authored-png-bytes")
+	sum := sha256.Sum256(png)
+	digest := hex.EncodeToString(sum[:])
+	assetName := "design/landing/assets/logo.png"
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files:        map[string][]byte{"design/landing/index.html": []byte("<img src=\"assets/logo.png\">")},
+		Assets:       map[string]registeredAssetReference{assetName: {SHA256: digest, Size: int64(len(png))}},
+		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html", assetName}}},
+		Observations: map[string]json.RawMessage{},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintHash := sha256.Sum256(data)
+	fingerprint := hex.EncodeToString(fingerprintHash[:])
+	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), data, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	registry := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
+		Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}},
+		Preferences:   map[string]persistedPreference{},
+	}
+	registryData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	consumer := &registeredPreview{root: root}
+	if _, _, err := consumer.snapshot("trial-project", "trial-company", fingerprint); err != nil {
+		t.Fatalf("manifest read eagerly required the blob: %v", err)
+	}
+	requestPath := "/snapshot/trial-company/trial-project/" + fingerprint + "/" + assetName
+	missing := httptest.NewRecorder()
+	consumer.artifactHandler(missing, httptest.NewRequest("GET", requestPath, nil))
+	if missing.Code != 404 {
+		t.Fatalf("missing blob returned %d %q", missing.Code, missing.Body.String())
+	}
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	blobPath := filepath.Join(root, "assets", digest)
+	if err := os.WriteFile(blobPath, png, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	served := httptest.NewRecorder()
+	consumer.artifactHandler(served, httptest.NewRequest("GET", requestPath, nil))
+	if served.Code != 200 || served.Header().Get("Content-Type") != "image/png" || served.Body.String() != string(png) {
+		t.Fatalf("PNG response=%d type=%s bytes=%q", served.Code, served.Header().Get("Content-Type"), served.Body.Bytes())
+	}
+	if err := os.Chmod(blobPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blobPath, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tampered := httptest.NewRecorder()
+	consumer.artifactHandler(tampered, httptest.NewRequest("GET", requestPath, nil))
+	if tampered.Code != 404 || strings.Contains(tampered.Body.String(), string(png)) {
+		t.Fatalf("tampered blob was served: %d %q", tampered.Code, tampered.Body.String())
 	}
 }

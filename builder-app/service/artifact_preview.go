@@ -71,13 +71,19 @@ type persistedProject struct {
 	Binding *persistedBinding `json:"binding"`
 }
 type registeredSnapshot struct {
-	SchemaVersion string                     `json:"schema_version"`
-	ProjectID     string                     `json:"project_id"`
-	CompanyID     string                     `json:"company_id"`
-	ObservedAt    string                     `json:"observed_at"`
-	Files         map[string][]byte          `json:"files"`
-	Artifacts     []registeredArtifact       `json:"artifacts"`
-	Observations  map[string]json.RawMessage `json:"observations"`
+	SchemaVersion string                              `json:"schema_version"`
+	ProjectID     string                              `json:"project_id"`
+	CompanyID     string                              `json:"company_id"`
+	ObservedAt    string                              `json:"observed_at"`
+	Files         map[string][]byte                   `json:"files"`
+	Assets        map[string]registeredAssetReference `json:"assets,omitempty"`
+	Artifacts     []registeredArtifact                `json:"artifacts"`
+	Observations  map[string]json.RawMessage          `json:"observations"`
+}
+
+type registeredAssetReference struct {
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
 }
 
 type roadmapCatalog struct {
@@ -102,18 +108,16 @@ type roadmapCatalogRelease struct {
 }
 
 type roadmapCatalogTODO struct {
-	ID    string `json:"id"`
-	Title string `json:"title"`
-	Path  string `json:"path"`
-	Kind  string `json:"kind"`
+	ID   string `json:"id"`
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 type roadmapProjection struct {
-	SchemaVersion        string        `json:"schema_version"`
-	ProjectID            string        `json:"project_id"`
-	FocusRelease         string        `json:"focus_release_id"`
-	DeliveryVerification string        `json:"delivery_verification"`
-	Epics                []roadmapEpic `json:"epics"`
+	SchemaVersion string        `json:"schema_version"`
+	ProjectID     string        `json:"project_id"`
+	FocusRelease  string        `json:"focus_release_id"`
+	Epics         []roadmapEpic `json:"epics"`
 }
 
 type roadmapEpic struct {
@@ -395,7 +399,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 					media := map[string]string{}
 					for _, name := range artifact.Files {
 						if name == "project_overview/desktop.png" || name == "project_overview/mobile.png" || name == "project_overview/problem.png" || name == "project_overview/proposal.png" || name == "project_overview/impact.png" || name == "project_overview/audience.png" {
-							if _, exists := snapshot.Files[name]; exists {
+							if snapshotHasFile(snapshot, name) {
 								media[strings.TrimSuffix(path.Base(name), ".png")] = snapshotFileURL(snapshot, fingerprint, name)
 							}
 						}
@@ -410,7 +414,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		if artifact.Kind == "roadmap" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "roadmap/catalog.json" {
-					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"]); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"], snapshot.Files, artifact.Files); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
 						result["roadmap"] = projection
 					}
 				}
@@ -440,7 +444,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 	return result
 }
 
-func admittedRoadmapProjection(projectID string, data, statusData []byte) (roadmapProjection, bool) {
+func admittedRoadmapProjection(projectID string, data, statusData []byte, files map[string][]byte, admitted []string) (roadmapProjection, bool) {
 	var catalog roadmapCatalog
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
@@ -468,7 +472,12 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte) (roadm
 		for _, sourceRelease := range sourceEpic.Releases {
 			release := roadmapRelease{ID: sourceRelease.ID, Name: sourceRelease.Name, Description: sourceRelease.Description, TODOs: []roadmapTODO{}}
 			for _, sourceTODO := range sourceRelease.TODOs {
-				if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] {
+				if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] || !strings.HasPrefix(sourceTODO.Path, "todos/") || !safeSnapshotPath(sourceTODO.Path) || !containsRoadmapFile(admitted, sourceTODO.Path) {
+					return roadmapProjection{}, false
+				}
+				body, admittedBody := files[sourceTODO.Path]
+				title := roadmapTODOHeading(body)
+				if !admittedBody || title == "" {
 					return roadmapProjection{}, false
 				}
 				stage, exists := stages[sourceTODO.ID]
@@ -486,7 +495,7 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte) (roadm
 				if workState == "" {
 					workState = "unknown"
 				}
-				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: sourceTODO.Title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState, LocalStage: stage.Stage, WorkState: workState})
+				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState, LocalStage: stage.Stage, WorkState: workState})
 			}
 			epic.Releases = append(epic.Releases, release)
 		}
@@ -495,7 +504,16 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte) (roadm
 	if len(seenTODOIDs) != len(stages) {
 		return roadmapProjection{}, false
 	}
-	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, DeliveryVerification: "unverified", Epics: epics}, true
+	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, Epics: epics}, true
+}
+
+func roadmapTODOHeading(content []byte) string {
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "# "))
+		}
+	}
+	return ""
 }
 
 func validRoadmapLocalStage(value string) bool {
@@ -535,7 +553,7 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 	if err := rejectLocalPathComponents(p.root, filepath.ToSlash(filepath.Join("snapshots", fingerprint+".json"))); err != nil {
 		return registeredSnapshot{}, "", err
 	}
-	data, err := readRegisteredFile(file, 32<<20)
+	data, err := readRegisteredFile(file, 64<<20)
 	if err != nil {
 		return registeredSnapshot{}, "", err
 	}
@@ -545,8 +563,12 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		return registeredSnapshot{}, "", errors.New("snapshot fingerprint mismatch")
 	}
 	var snapshot registeredSnapshot
-	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || snapshot.SchemaVersion != "builder-project-snapshot-v1" || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
+	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || (snapshot.SchemaVersion != "builder-project-snapshot-v1" && snapshot.SchemaVersion != "builder-project-snapshot-v2") || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
 		return registeredSnapshot{}, "", errors.New("snapshot identity invalid")
+	}
+	v2 := snapshot.SchemaVersion == "builder-project-snapshot-v2"
+	if (!v2 && len(data) > 64<<20) || (v2 && len(data) > 4<<20) || (!v2 && len(snapshot.Assets) != 0) {
+		return registeredSnapshot{}, "", errors.New("snapshot storage bound or version invalid")
 	}
 	var total int64
 	for name, content := range snapshot.Files {
@@ -554,10 +576,24 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 			return registeredSnapshot{}, "", errors.New("snapshot file is unsafe or too large")
 		}
 		total += int64(len(content))
-		if total > 24<<20 {
+		if total > 48<<20 || (v2 && strings.EqualFold(filepath.Ext(name), ".png")) {
 			return registeredSnapshot{}, "", errors.New("snapshot decoded content limit exceeded")
 		}
 	}
+	var assetTotal int64
+	for name, ref := range snapshot.Assets {
+		if !v2 || !safeSnapshotPath(name) || !strings.EqualFold(filepath.Ext(name), ".png") || len(ref.SHA256) != 64 || strings.ToLower(ref.SHA256) != ref.SHA256 || ref.Size <= 0 || ref.Size > 2<<20 {
+			return registeredSnapshot{}, "", errors.New("snapshot asset reference invalid")
+		}
+		if _, err := hex.DecodeString(ref.SHA256); err != nil {
+			return registeredSnapshot{}, "", errors.New("snapshot asset digest invalid")
+		}
+		assetTotal += ref.Size
+		if assetTotal > 32<<20 {
+			return registeredSnapshot{}, "", errors.New("snapshot asset aggregate limit exceeded")
+		}
+	}
+	admitted := map[string]bool{}
 	for _, artifact := range snapshot.Artifacts {
 		if artifact.ID == "" || artifact.Kind == "" || (artifact.State != "available" && artifact.State != "pending" && artifact.State != "invalid") {
 			return registeredSnapshot{}, "", errors.New("snapshot artifact state invalid")
@@ -567,16 +603,27 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 			if !safeSnapshotPath(name) || seen[name] {
 				return registeredSnapshot{}, "", errors.New("snapshot artifact file list invalid")
 			}
-			if _, exists := snapshot.Files[name]; !exists {
+			if !snapshotHasFile(snapshot, name) {
 				return registeredSnapshot{}, "", errors.New("snapshot artifact file missing")
 			}
+			if _, inline := snapshot.Files[name]; inline {
+				if _, asset := snapshot.Assets[name]; asset {
+					return registeredSnapshot{}, "", errors.New("snapshot path has multiple representations")
+				}
+			}
+			admitted[name] = true
 			seen[name] = true
 		}
 		if artifact.State == "available" && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot.Files, artifact) {
+		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact) {
 			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
+		}
+	}
+	for name := range snapshot.Assets {
+		if !admitted[name] {
+			return registeredSnapshot{}, "", errors.New("snapshot asset is not admitted by an artifact")
 		}
 	}
 	if hasAvailablePrototype(snapshot.Artifacts) && !validPrototypeStatusObservation(snapshot) {
@@ -754,7 +801,16 @@ func safeSnapshotPath(value string) bool {
 	return clean == value && clean != "." && clean != ".." && !strings.HasPrefix(clean, "../")
 }
 
-func validPrototypeRelatedFiles(files map[string][]byte, artifact registeredArtifact) bool {
+func snapshotHasFile(snapshot registeredSnapshot, name string) bool {
+	if _, ok := snapshot.Files[name]; ok {
+		return true
+	}
+	_, ok := snapshot.Assets[name]
+	return ok
+}
+
+func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact) bool {
+	files := snapshot.Files
 	entryParts := strings.Split(artifact.Entry, "/")
 	if len(entryParts) < 3 || entryParts[0] != "prototypes" {
 		return false
@@ -783,7 +839,7 @@ func validPrototypeRelatedFiles(files map[string][]byte, artifact registeredArti
 		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] || !listed[related.Path] {
 			return false
 		}
-		if _, ok := files[related.Path]; !ok {
+		if !snapshotHasFile(snapshot, related.Path) {
 			return false
 		}
 		relatedPaths[related.Path] = true
@@ -860,7 +916,8 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	content, ok := snapshot.Files[parts[3]]
-	if !ok {
+	asset, assetBacked := snapshot.Assets[parts[3]]
+	if !ok && !assetBacked {
 		writeError(w, 404, "artifact_not_admitted")
 		return
 	}
@@ -879,6 +936,23 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	if kind == "" {
 		writeError(w, 404, "artifact_not_admitted")
 		return
+	}
+	if assetBacked {
+		assetPath := filepath.Join(p.root, "assets", asset.SHA256)
+		if err := rejectLocalPathComponents(p.root, filepath.ToSlash(filepath.Join("assets", asset.SHA256))); err != nil {
+			writeError(w, 404, "snapshot_unavailable")
+			return
+		}
+		content, err = readRegisteredFile(assetPath, 2<<20)
+		if err != nil || int64(len(content)) != asset.Size {
+			writeError(w, 404, "snapshot_unavailable")
+			return
+		}
+		sum := sha256.Sum256(content)
+		if hex.EncodeToString(sum[:]) != asset.SHA256 {
+			writeError(w, 404, "snapshot_unavailable")
+			return
+		}
 	}
 	switch strings.ToLower(filepath.Ext(parts[3])) {
 	case ".css":
