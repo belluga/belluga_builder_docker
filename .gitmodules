@@ -6,9 +6,9 @@
 	path = laravel-app
 	url = https://github.com/belluga/laravel_mongodb_boilerplate.git
 	ignore = all
-[submodule "foundation_documentation"]
-	path = foundation_documentation
-	url = https://github.com/belluga/belluga_boilerplate_foundation_documentation.git
+[submodule "belluga_builder_foundation_documentation"]
+	path = belluga_builder_foundation_documentation
+	url = https://github.com/belluga/belluga_builder_foundation_documentation.git
 	ignore = all
 [submodule "web-app"]
 	path = web-app
