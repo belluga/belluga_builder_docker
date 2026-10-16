@@ -18,7 +18,7 @@ func main() {
 		if err != nil || (!isLoopback(host) && os.Getenv("ALLOW_CONTAINER_BIND") != "true") {
 			log.Fatal("listener must use a loopback address")
 		}
-		log.Fatal((&http.Server{Addr: address, Handler: registeredHandler(stateRoot, env("WEB_ROOT", "/web"), publicHost), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
+		log.Fatal((&http.Server{Addr: address, Handler: registeredHandler(stateRoot, env("WEB_ROOT", "/web"), publicHost), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 105 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
 	}
 	if len(os.Args) > 1 && os.Args[1] == "export" {
 		flags := flag.NewFlagSet("export", flag.ExitOnError)

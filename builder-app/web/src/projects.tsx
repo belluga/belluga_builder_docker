@@ -425,6 +425,7 @@ export function Projects() {
   const [selectedDoc, setSelectedDoc] = useState("");
   const [markdown, setMarkdown] = useState("");
   const [docState, setDocState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [loadedDocRevision, setLoadedDocRevision] = useState("");
   useEffect(() => {
     const update = () => { setSelection(route()); setPendingCompanyID(""); };
     addEventListener("popstate", update);
@@ -444,7 +445,7 @@ export function Projects() {
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
   const viewKey = project ? `${project.company_id}/${project.id}` : "";
   useEffect(() => {
-    setView(null); setViewState("loading"); setSelectedDoc(""); setMarkdown(""); setDocState("idle");
+    setView(null); setViewState("loading"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
     if (!project) return;
     const controller = new AbortController();
     let inFlight = false;
@@ -485,17 +486,21 @@ export function Projects() {
   const activeView = view?.key === viewKey ? view : null;
   const detail = activeView?.detail || null;
   const documents = detail?.documents || [];
+  const selectedDocument = documents.find((item) => item.path === selectedDoc);
+  const documentRevision = selectedDocument && detail ? `${detail.snapshot_fingerprint}/${selectedDocument.url}` : "";
   useEffect(() => {
-    if (!selectedDoc || !documents.some((item) => item.url === selectedDoc)) return;
+    if (!selectedDocument || !documentRevision) return;
     const controller = new AbortController();
+    setMarkdown("");
+    setLoadedDocRevision("");
     setDocState("loading");
-    fetch(selectedDoc, { signal: controller.signal }).then((response) => {
+    fetch(selectedDocument.url, { signal: controller.signal }).then((response) => {
       if (!response.ok) throw new Error("Document unavailable");
       return response.text();
-    }).then((value) => { if (!controller.signal.aborted) { setMarkdown(value); setDocState("ready"); } })
-      .catch(() => { if (!controller.signal.aborted) setDocState("error"); });
+    }).then((value) => { if (!controller.signal.aborted) { setMarkdown(value); setLoadedDocRevision(documentRevision); setDocState("ready"); } })
+      .catch(() => { if (!controller.signal.aborted) { setLoadedDocRevision(documentRevision); setDocState("error"); } });
     return () => controller.abort();
-  }, [selectedDoc, viewKey]);
+  }, [documentRevision]);
   const headings = [...markdown.matchAll(/^#{1,3}\s+(.+)$/gm)].map((match) => match[1]);
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
@@ -533,8 +538,8 @@ export function Projects() {
           <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
         {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's current published Foundation revision.</p>
-          {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.url} onClick={() => setSelectedDoc(item.url)}>{selectedDoc === item.url ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
-          {selectedDoc && <article className="project-markdown document-reader">{docState === "loading" && <p role="status">Loading document…</p>}{docState === "error" && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
+          {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.path} onClick={() => setSelectedDoc(item.path)}>{selectedDoc === item.path ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
+          {selectedDocument && <article className="project-markdown document-reader">{(docState === "loading" || loadedDocRevision !== documentRevision) && <p role="status">Loading document…</p>}{docState === "error" && loadedDocRevision === documentRevision && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && loadedDocRevision === documentRevision && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
           <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the currently published Foundation revision. Availability does not indicate human approval.</p></section>
         </div>}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}

@@ -489,6 +489,39 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Document headings" })).toHaveTextContent("Decisions");
   });
+  it("replaces an open document only after the refreshed Foundation revision is loaded", async () => {
+    const nextFingerprint = "b".repeat(64);
+    const path = "modules/project_knowledge_viewer_module.md";
+    const firstURL = `/snapshot/belluga/builder/${fingerprint}/${path}`;
+    const nextURL = `/snapshot/belluga/builder/${nextFingerprint}/${path}`;
+    let detailReads = 0;
+    let resolveNextDocument!: (value: unknown) => void;
+    const nextDocument = new Promise<unknown>((resolve) => { resolveNextDocument = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (String(input) === firstURL) return { ok: true, text: async () => "# Old Foundation content" };
+      if (String(input) === nextURL) return nextDocument as Promise<never>;
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": detailReads > 1 ? nextFingerprint : fingerprint }), json: async () => theme };
+      if (url.searchParams.has("project_id")) {
+        detailReads++;
+        const result = detail("belluga", "builder", [{ path, url: detailReads > 1 ? nextURL : firstURL }]);
+        result.snapshot_fingerprint = detailReads > 1 ? nextFingerprint : fingerprint;
+        return { ok: true, json: async () => result };
+      }
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
+    render(<Projects />);
+    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
+    expect(await screen.findByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(detailReads).toBe(2));
+    expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Loading document");
+    await act(async () => resolveNextDocument({ ok: true, text: async () => "# New Foundation content" }));
+    expect(await screen.findByRole("heading", { name: "New Foundation content" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
+  });
   it("reports a failed admitted document fetch without inventing content", async () => {
     const documentURL = "/snapshot/example/modules/missing.md";
     mockFetch([{ path: "modules/missing.md", url: documentURL }]);
