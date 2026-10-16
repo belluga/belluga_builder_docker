@@ -119,7 +119,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
             : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando entrada do snapshot…</p>
               : check.state === "error" ? <p role="alert">{check.message}</p>
-                : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={entry} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
+                : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
     </section>
   </main>;
 }

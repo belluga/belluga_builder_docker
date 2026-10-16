@@ -75,6 +75,18 @@ describe("controlled Prototype inspector", () => {
     fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
     expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ scenario_step: "1", screen_id: "details", state_id: "default" }), true);
   });
+  it("remounts the interactive frame for repeated Screen/State scenario steps", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }) })));
+    const repeated = { ...prototype, scenarios: [{ id: "tour", name: "Tour", steps: [{ screen_id: "home", state_id: "default" }, { screen_id: "home", state_id: "default" }] }] };
+    const scenarioDetail = { ...detail, snapshot_observations: { prototype_status: { outcome: "go", items: [repeated] } } };
+    const presentation = { ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "tour", scenarioStep: "0", fingerprint, device: "mobile", scale: "fit" };
+    const { rerender } = render(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={presentation} />);
+    const firstFrame = await screen.findByTitle("Demo · Home · Default");
+    rerender(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={{ ...presentation, scenarioStep: "1" }} />);
+    const secondFrame = await screen.findByTitle("Demo · Home · Default");
+    expect(secondFrame).not.toBe(firstFrame);
+    vi.unstubAllGlobals();
+  });
   it("rejects an invalid pinned scenario without fetching HTML", () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
     render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "missing", scenarioStep: "0", fingerprint, device: "mobile", scale: "fit" }} />);
