@@ -34,7 +34,11 @@ function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
 }
 type OverviewSection = { heading: string; body: string; points: string[]; image_alt?: string };
 type OverviewSource = { schema_version: string; tagline: string; summary: string; desktop_alt?: string; mobile_alt?: string; sections: Record<"problem" | "proposal" | "impact" | "audience", OverviewSection>; media?: Record<string, string> };
-type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: Record<string, unknown>; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
+type TargetObservation = { status?: unknown; reason_code?: unknown };
+type KnowledgeObservation = { landing?: TargetObservation; roadmap?: TargetObservation };
+type VisualOriginObservation = { state?: unknown; knowledge_source_state?: unknown; roadmap_source_state?: unknown; design_system_state?: unknown };
+type SnapshotObservations = { knowledge_status?: KnowledgeObservation; visual_origin?: VisualOriginObservation };
+type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; snapshot_observed_at?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: SnapshotObservations; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
 type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap" | "release" | "todo";
 type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; epicID: string; releaseID: string; todoID: string; prototype: PrototypeSelection };
 type ProjectView = { key: string; detail: Detail; theme?: ProjectTheme; themeDiagnostic?: string };
@@ -128,6 +132,44 @@ function authoredSection(source: string, heading: string) {
 function authoredField(source: string, label: string) {
   const match = source.match(new RegExp(`^- \\*\\*${label}:\\*\\*\\s*(.+)$`, "m"));
   return match?.[1]?.trim() || "";
+}
+
+function savedObservationStatus(value: unknown, known: Record<string, string>) {
+  return typeof value === "string" && Object.hasOwn(known, value) ? known[value] : "Unavailable";
+}
+
+function savedObservationTime(value?: string) {
+  const parts = value?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/);
+  if (!value || !parts) return "Observation time unavailable";
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf()) || date.getUTCFullYear() !== Number(parts[1]) || date.getUTCMonth() + 1 !== Number(parts[2]) ||
+    date.getUTCDate() !== Number(parts[3]) || date.getUTCHours() !== Number(parts[4]) || date.getUTCMinutes() !== Number(parts[5]) ||
+    date.getUTCSeconds() !== Number(parts[6])) return "Observation time unavailable";
+  return value;
+}
+
+function SnapshotStatus({ detail }: { detail: Detail }) {
+  const knowledge = detail.snapshot_observations?.knowledge_status;
+  const visual = detail.snapshot_observations?.visual_origin;
+  const reviewLabels = { current: "Current against reviewed source", review_required: "Review required", unverifiable: "Unverifiable" };
+  const originLabels = { matching: "Matches saved source observations", mismatch: "Mismatch", unverifiable: "Unverifiable" };
+  const observedAt = savedObservationTime(detail.snapshot_observed_at);
+  const timestampAvailable = observedAt !== "Observation time unavailable";
+  const landing = timestampAvailable ? savedObservationStatus(knowledge?.landing?.status, reviewLabels) : "Unavailable";
+  const roadmap = timestampAvailable ? savedObservationStatus(knowledge?.roadmap?.status, reviewLabels) : "Unavailable";
+  const origin = timestampAvailable ? savedObservationStatus(visual?.state, originLabels) : "Unavailable";
+  const needsAttention = landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
+  const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
+  return <section className="overview-status" aria-labelledby="snapshot-status-title">
+    <div className="overview-status-heading"><div><span className="project-page-tag">Saved snapshot integrity: Verified</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt}</span></div>
+    <dl className="overview-status-grid">
+      <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
+      <div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div>
+      <div><dt>Visual origin</dt><dd>{origin}</dd></div>
+    </dl>
+    <p className="overview-status-note">These are saved observations from the registration snapshot. They do not check current Foundation sources live or establish visual approval.</p>
+    {needsAttention && <p className="overview-status-next" role="status">TEACH: Check the selected Project’s source through Delphi. After correcting it and receiving explicit authorization, refresh that Project’s matching registration to capture new observations.</p>}
+  </section>;
 }
 
 function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { detail: Detail; projectID: string; epicID: string; releaseID: string; todoID: string }) {
@@ -483,6 +525,7 @@ export function Projects() {
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || ((page === "release" || page === "todo") && item.id === "roadmap") ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
       <section className="project-content">{page !== "overview" && page !== "roadmap" && page !== "release" && page !== "todo" && <header className="project-page-heading"><span className="project-page-tag">{page === "documents" ? "FOUNDATION DOCUMENTATION · SAVED SNAPSHOT" : page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{page === "documents" ? "Documents & decisions" : pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
+          <SnapshotStatus detail={detail} />
           <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
         {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted to this Project's saved snapshot.</p>

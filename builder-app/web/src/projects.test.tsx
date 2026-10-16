@@ -45,7 +45,10 @@ function detail(companyID: string, projectID: string, documents: { path: string;
     proposal: { heading: "The proposal", body: "Proposal evidence", points: [], image_alt: "Admitted Builder document view" },
     impact: { heading: "The impact", body: "Impact hypothesis", points: [] },
     audience: { heading: "For whom", body: "Audience evidence", points: [] },
-  } }, portfolio_summary: `Summary for ${projectID}`, documents, snapshot_observations: {} }; }
+  } }, portfolio_summary: `Summary for ${projectID}`, documents, snapshot_observed_at: "2026-10-15T12:00:00Z", snapshot_observations: {
+    knowledge_status: { landing: { status: "current", reason_code: "match" }, roadmap: { status: "current", reason_code: "match" } },
+    visual_origin: { state: "matching", knowledge_source_state: "matching", roadmap_source_state: "matching", design_system_state: "matching" },
+  } }; }
 function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
   if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, text: async (): Promise<string> => documentResponse?.body || "" };
@@ -57,6 +60,87 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("shows normal saved review and visual-origin observations with their snapshot time", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Saved snapshot integrity: Verified");
+    expect(status).toHaveTextContent("Observations saved 2026-10-15T12:00:00Z");
+    expect(status).toHaveTextContent("Landing reviewCurrent against reviewed source (match)");
+    expect(status).toHaveTextContent("Roadmap reviewCurrent against reviewed source (match)");
+    expect(status).toHaveTextContent("Visual originMatches saved source observations");
+    expect(status).toHaveTextContent("do not check current Foundation sources live");
+    expect(within(status).queryByText(/TEACH:/)).not.toBeInTheDocument();
+  });
+  it("warns for unverifiable review and mismatched visual origin", async () => {
+    const saved = detail("belluga", "builder");
+    saved.snapshot_observations = {
+      knowledge_status: { landing: { status: "unverifiable", reason_code: "review_missing" }, roadmap: { status: "unverifiable", reason_code: "review_missing" } },
+      visual_origin: { state: "mismatch", knowledge_source_state: "matching", roadmap_source_state: "mismatch", design_system_state: "matching" },
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Landing reviewUnverifiable (review missing)");
+    expect(status).toHaveTextContent("Roadmap reviewUnverifiable (review missing)");
+    expect(status).toHaveTextContent("Visual originMismatch");
+    expect(within(status).getByRole("status")).toHaveTextContent("Check the selected Project’s source through Delphi");
+    expect(within(status).getByRole("status")).toHaveTextContent("explicit authorization");
+  });
+  it("warns when a saved source change requires review", async () => {
+    const saved = detail("belluga", "builder");
+    saved.snapshot_observations.knowledge_status.landing = { status: "review_required", reason_code: "source_changed" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Landing reviewReview required (source changed)");
+    expect(within(status).getByRole("status")).toHaveTextContent("Check the selected Project’s source through Delphi");
+  });
+  it("renders missing observations as unavailable while retaining their valid saved time", async () => {
+    const saved = detail("belluga", "builder");
+    saved.snapshot_observations = undefined as unknown as typeof saved.snapshot_observations;
+    saved.snapshot_observed_at = "2026-10-15T12:34:56.123456789Z";
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Observations saved 2026-10-15T12:34:56.123456789Z");
+    expect(status).toHaveTextContent("Landing reviewUnavailable");
+    expect(status).toHaveTextContent("Roadmap reviewUnavailable");
+    expect(status).toHaveTextContent("Visual originUnavailable");
+    expect(within(status).getByRole("status")).toBeInTheDocument();
+  });
+  it.each(["1", "2026-02-30T12:00:00Z"])("does not trust otherwise current statuses with malformed parseable timestamp %s", async (timestamp) => {
+    const saved = detail("belluga", "builder");
+    saved.snapshot_observed_at = timestamp;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Observation time unavailable");
+    expect(status).toHaveTextContent("Landing reviewUnavailable");
+    expect(status).toHaveTextContent("Roadmap reviewUnavailable");
+    expect(status).toHaveTextContent("Visual originUnavailable");
+    expect(within(status).getByRole("status")).toBeInTheDocument();
+  });
   it("opens the same admitted TODO from Release and renders only authored sections", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-04");
     render(<Projects />);
@@ -148,7 +232,7 @@ describe("single root Project experience", () => {
 
     const narrative = document.querySelector(".overview-editorial");
     expect(narrative).toBeInTheDocument();
-    expect(document.querySelector(".overview-status")).not.toBeInTheDocument();
+    expect(document.querySelector(".overview-status")).toBeInTheDocument();
     expect(screen.queryByText(/Saved snapshot:/)).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Ver landing independente/ })).toHaveAttribute("target", "_blank");
     expect(screen.queryByRole("region", { name: "Executive Landing artifact" })).not.toBeInTheDocument();
@@ -405,7 +489,10 @@ describe("single root Project experience", () => {
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": booraFingerprint }), json: async () => booraTheme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects: booraProjects }) };
       if (url.searchParams.get("project_id") === "builder") return lateBuilder;
-      return { ok: true, json: async () => ({ ...detail("belluga", "boora"), snapshot_fingerprint: booraFingerprint }) };
+      const selected = detail("belluga", "boora");
+      selected.snapshot_observations.knowledge_status.landing = { status: "review_required", reason_code: "source_changed" };
+      selected.snapshot_observed_at = "2026-10-16T12:00:00Z";
+      return { ok: true, json: async () => ({ ...selected, snapshot_fingerprint: booraFingerprint }) };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
@@ -413,9 +500,16 @@ describe("single root Project experience", () => {
     history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview");
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("Overview for boora")).toBeInTheDocument();
+    const status = screen.getByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Landing reviewReview required (source changed)");
+    expect(status).toHaveTextContent("Observations saved 2026-10-16T12:00:00Z");
     await act(async () => { releaseBuilder({ ok: true, json: async () => detail("belluga", "builder") }); });
     expect(screen.getByText("Overview for boora")).toBeInTheDocument();
     expect(screen.queryByText("Overview for builder")).not.toBeInTheDocument();
+    const visibleStatus = screen.getByRole("region", { name: "Snapshot status" });
+    expect(visibleStatus).toHaveTextContent("Landing reviewReview required (source changed)");
+    expect(visibleStatus).toHaveTextContent("Observations saved 2026-10-16T12:00:00Z");
+    expect(visibleStatus).not.toHaveTextContent("Landing reviewCurrent against reviewed source");
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#cc99ee");
   });
   it("replaces Prototype evidence and presentation identity when switching Projects", async () => {
