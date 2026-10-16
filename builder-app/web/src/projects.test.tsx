@@ -36,7 +36,7 @@ function roadmap(projectID: string) { return { schema_version: "builder-roadmap-
   ] },
   { id: "e-05", name: `${projectID} External service`, description: "External service", releases: [] },
 ] }; }
-function detail(companyID: string, projectID: string, documents: { path: string; url: string }[] = []) { return { consumer_readiness: "ready", company_id: companyID, project_id: projectID, snapshot_fingerprint: fingerprint,
+function detail(companyID: string, projectID: string, documents: { path: string; url: string }[] = []) { return { consumer_readiness: "ready", company_id: companyID, project_id: projectID, snapshot_fingerprint: fingerprint, project_sha: "c".repeat(40),
   artifacts: [{ id: "system", kind: "design_system", name: "Design System", state: "available", entry_point: "design/system/examples.html", files: ["design/system/design-system.json"] },
     { id: "landing", kind: "landing", name: "Landing", state: "available", entry_point: "design/landing/index.html" },
     { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/catalog.json", files: ["roadmap/catalog.json", "todos/active/roadmap_runtime_connection.md", "todos/completed/published.md", "todos/completed/second.md", "todos/completed/third.md", "todos/promotion_lane/promoted.md"] }], roadmap: roadmap(projectID),
@@ -60,16 +60,36 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("keeps one live detail request during visible-tab refresh", async () => {
+    let resolveDetail!: (value: unknown) => void;
+    const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
+    const detailCalls = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("status")).toHaveTextContent("Extraindo dados dos seus TODOs");
+    fireEvent(document, new Event("visibilitychange"));
+    expect(detailCalls).toHaveBeenCalledTimes(1);
+    resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
+    expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+  });
   it("shows normal saved review and visual-origin observations with their snapshot time", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     const status = await screen.findByRole("region", { name: "Snapshot status" });
-    expect(status).toHaveTextContent("Saved snapshot integrity: Verified");
+    expect(status).toHaveTextContent("Published source · current read");
+    expect(status).toHaveTextContent("Foundation cccccccccccc");
     expect(status).toHaveTextContent("Observations saved 2026-10-15T12:00:00Z");
     expect(status).toHaveTextContent("Landing reviewCurrent against reviewed source (match)");
     expect(status).toHaveTextContent("Roadmap reviewCurrent against reviewed source (match)");
     expect(status).toHaveTextContent("Visual originMatches saved source observations");
-    expect(status).toHaveTextContent("do not check current Foundation sources live");
+    expect(status).toHaveTextContent("extracted from the published Foundation revision shown above");
     expect(within(status).queryByText(/TEACH:/)).not.toBeInTheDocument();
   });
   it("warns for unverifiable review and mismatched visual origin", async () => {
@@ -89,8 +109,8 @@ describe("single root Project experience", () => {
     expect(status).toHaveTextContent("Landing reviewUnverifiable (review missing)");
     expect(status).toHaveTextContent("Roadmap reviewUnverifiable (review missing)");
     expect(status).toHaveTextContent("Visual originMismatch");
-    expect(within(status).getByRole("status")).toHaveTextContent("Check the selected Project’s source through Delphi");
-    expect(within(status).getByRole("status")).toHaveTextContent("explicit authorization");
+    expect(within(status).getByRole("status")).toHaveTextContent("published Foundation branch through Delphi");
+    expect(within(status).getByRole("status")).toHaveTextContent("publish the change");
   });
   it("warns when a saved source change requires review", async () => {
     const saved = detail("belluga", "builder");
@@ -104,7 +124,7 @@ describe("single root Project experience", () => {
     render(<Projects />);
     const status = await screen.findByRole("region", { name: "Snapshot status" });
     expect(status).toHaveTextContent("Landing reviewReview required (source changed)");
-    expect(within(status).getByRole("status")).toHaveTextContent("Check the selected Project’s source through Delphi");
+    expect(within(status).getByRole("status")).toHaveTextContent("published Foundation branch through Delphi");
   });
   it("renders missing observations as unavailable while retaining their valid saved time", async () => {
     const saved = detail("belluga", "builder");
@@ -555,20 +575,20 @@ describe("single root Project experience", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input).includes("project_id=") ? detail("second", "builder") : { companies, projects } })));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder");
     render(<Projects />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/Não foi possível ler os dados publicados/);
     expect(screen.queryByRole("navigation", { name: "Project pages" })).not.toBeInTheDocument();
   });
-  it("rejects a stale saved fingerprint instead of showing Roadmap data", async () => {
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({
-      ok: true,
-      json: async () => String(input).includes("project_id=")
+  it("uses the live reader fingerprint without comparing it to the identity catalog", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": "b".repeat(64) }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id")
         ? { ...detail("belluga", "builder"), snapshot_fingerprint: "b".repeat(64) }
-        : { companies, projects },
-    })));
+        : { companies, projects } };
+    }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/identity\/integrity/);
-    expect(screen.queryByRole("region", { name: "Project Roadmap" })).not.toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Project Roadmap" })).toBeInTheDocument();
   });
   it("rejects the artifact-only legacy link explicitly", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype:demo");

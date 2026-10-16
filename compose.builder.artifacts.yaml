@@ -10,15 +10,45 @@ services:
       LISTEN_ADDR: 0.0.0.0:8080
       ALLOW_CONTAINER_BIND: "true"
       DELPHI_BUILDER_STATE_ROOT: /state
+      DELPHI_PROJECT_READER_URL: http://project-reader:8099
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       WEB_ROOT: /web
     volumes:
       - type: bind
         source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to a local registry state directory}
         target: /state
         read_only: true
+    networks:
+      - project-reader-private
     ports:
       - "127.0.0.1:8089:8080"
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
     restart: unless-stopped
+
+  project-reader:
+    image: belluga-delphi-project-reader:local
+    build:
+      context: ./delphi-ai/local-api
+      dockerfile: Dockerfile
+    user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
+    environment:
+      DELPHI_PROJECT_READER_LISTEN: :8099
+      DELPHI_PROJECT_READER_STATE_ROOT: /state
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
+      DELPHI_GITHUB_READ_TOKEN: ${DELPHI_GITHUB_READ_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
+        target: /state
+    networks:
+      - project-reader-private
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    restart: unless-stopped
+
+networks:
+  project-reader-private:
+    driver: bridge

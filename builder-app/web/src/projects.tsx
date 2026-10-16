@@ -12,7 +12,7 @@ import "./todo-detail.css";
 
 type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
-type Project = { id: string; name: string; company_id: string; preparation_state: string; preparation_diagnostic?: string; snapshot_fingerprint?: string; artifacts: Artifact[] };
+type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
 type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; record_state: string; local_stage: "Pending" | "Local-Implemented" | "Lane-Promoted" | "Production-Ready" | "unknown"; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
@@ -38,7 +38,7 @@ type TargetObservation = { status?: unknown; reason_code?: unknown };
 type KnowledgeObservation = { landing?: TargetObservation; roadmap?: TargetObservation };
 type VisualOriginObservation = { state?: unknown; knowledge_source_state?: unknown; roadmap_source_state?: unknown; design_system_state?: unknown };
 type SnapshotObservations = { knowledge_status?: KnowledgeObservation; visual_origin?: VisualOriginObservation };
-type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; snapshot_observed_at?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: SnapshotObservations; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
+type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; project_sha?: string; external_source_id?: string; external_source_revision?: string; snapshot_observed_at?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: SnapshotObservations; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
 type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap" | "release" | "todo";
 type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; epicID: string; releaseID: string; todoID: string; prototype: PrototypeSelection };
 type ProjectView = { key: string; detail: Detail; theme?: ProjectTheme; themeDiagnostic?: string };
@@ -161,14 +161,14 @@ function SnapshotStatus({ detail }: { detail: Detail }) {
   const needsAttention = landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
   const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
   return <section className="overview-status" aria-labelledby="snapshot-status-title">
-    <div className="overview-status-heading"><div><span className="project-page-tag">Saved snapshot integrity: Verified</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt}</span></div>
+    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · current read</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
     <dl className="overview-status-grid">
       <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
       <div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div>
       <div><dt>Visual origin</dt><dd>{origin}</dd></div>
     </dl>
-    <p className="overview-status-note">These are saved observations from the registration snapshot. They do not check current Foundation sources live or establish visual approval.</p>
-    {needsAttention && <p className="overview-status-next" role="status">TEACH: Check the selected Project’s source through Delphi. After correcting it and receiving explicit authorization, refresh that Project’s matching registration to capture new observations.</p>}
+    <p className="overview-status-note">These observations were extracted from the published Foundation revision shown above. They do not establish human approval.</p>
+    {needsAttention && <p className="overview-status-next" role="status">TEACH: Check the selected Project’s published Foundation branch through Delphi. Correct the source, publish the change, then reload this Project to read the current branch.</p>}
   </section>;
 }
 
@@ -221,7 +221,7 @@ function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { deta
 function OverviewEditorial({ detail, projectName }: { detail: Detail; projectName: string }) {
   const overview = detail.overview;
   if (!overview || overview.schema_version !== "1") return <section className="project-notice" role="status">
-    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation, validate it, then refresh the saved registration."}</p>
+    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>
   </section>;
   const sections = ["problem", "proposal", "impact", "audience"] as const;
   const labels = { problem: "Problema", proposal: "Proposta", impact: "Impacto", audience: "Para quem" };
@@ -232,7 +232,7 @@ function OverviewEditorial({ detail, projectName }: { detail: Detail; projectNam
         <span className="overview-visual-note">CONCEITO · DADOS ILUSTRATIVOS</span>
         {overview.media.desktop && <img className="overview-desktop" src={overview.media.desktop} alt={overview.desktop_alt || ""} />}
         {overview.media.mobile && <img className="overview-mobile" src={overview.media.mobile} alt={overview.mobile_alt || ""} />}
-      </div> : <p className="project-notice" role="alert">Hero images are missing from the saved Overview snapshot. Create desktop.png and mobile.png, then refresh this Project registration.</p>}
+      </div> : <p className="project-notice" role="alert">Hero images are missing from the current published Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
     </section>
     <div className="overview-editorial" aria-label="Project at a glance">{sections.map((key) => {
       const section = overview.sections[key];
@@ -374,21 +374,18 @@ function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void
   const [detail, setDetail] = useState<Detail | null>(null);
   const [coverError, setCoverError] = useState(false);
   useEffect(() => {
-    if (project.preparation_state !== "ready") return;
     const controller = new AbortController();
     fetch(`/api/local-preview?company_id=${encodeURIComponent(project.company_id)}&project_id=${encodeURIComponent(project.id)}`, { signal: controller.signal })
       .then((response) => response.ok ? response.json() as Promise<Detail> : Promise.reject())
-      .then((value) => {
-        if (!controller.signal.aborted && value.company_id === project.company_id && value.project_id === project.id && value.snapshot_fingerprint === project.snapshot_fingerprint) setDetail(value);
-      }).catch(() => undefined);
+      .then((value) => { if (!controller.signal.aborted && value.consumer_readiness === "ready" && value.company_id === project.company_id && value.project_id === project.id) setDetail(value); })
+      .catch(() => undefined);
     return () => controller.abort();
-  }, [project.company_id, project.id, project.preparation_state, project.snapshot_fingerprint]);
-  const verified = detail?.company_id === project.company_id && detail.project_id === project.id && detail.snapshot_fingerprint === project.snapshot_fingerprint ? detail : null;
+  }, [project.company_id, project.id]);
   return <button className="project-card" onClick={onOpen}>
-    {verified?.portfolio_cover_url && !coverError ? <img src={verified.portfolio_cover_url} alt="" onError={() => setCoverError(true)} /> : <span className="project-card-mark">{project.name.slice(0, 1)}</span>}
-    <small>{project.preparation_state === "ready" ? "SAVED SNAPSHOT READY" : "REGISTERED · NOT READY"}</small>
+    {detail?.portfolio_cover_url && !coverError ? <img src={detail.portfolio_cover_url} alt="" onError={() => setCoverError(true)} /> : <span className="project-card-mark">{project.name.slice(0, 1)}</span>}
+    <small>REGISTERED PROJECT</small>
     <strong>{project.name}</strong>
-    <span>{verified?.portfolio_summary || verified?.artifacts.find((item) => item.kind === "portfolio" && item.state === "invalid")?.diagnostic || project.preparation_diagnostic || "Open this registered Project for its available details."}</span>
+    <span>{detail?.portfolio_summary || "Open this registered Project to read its currently published Foundation data."}</span>
     <i><span>Explore Project</span><b aria-hidden="true">↗</b></i>
   </button>;
 }
@@ -445,23 +442,25 @@ export function Projects() {
   const company = catalog.companies.find((item) => item.id === selection.companyID);
   const project = catalog.projects.find((item) => item.company_id === selection.companyID && item.id === selection.projectID);
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
-  const viewKey = project ? `${project.company_id}/${project.id}/${project.snapshot_fingerprint || ""}` : "";
+  const viewKey = project ? `${project.company_id}/${project.id}` : "";
   useEffect(() => {
     setView(null); setViewState("loading"); setSelectedDoc(""); setMarkdown(""); setDocState("idle");
     if (!project) return;
     const controller = new AbortController();
+    let inFlight = false;
     async function load() {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const response = await fetch(`/api/local-preview?company_id=${encodeURIComponent(project!.company_id)}&project_id=${encodeURIComponent(project!.id)}`, { signal: controller.signal });
         if (!response.ok) throw new Error("Snapshot unavailable");
         const detail = await response.json() as Detail;
-        if (detail.company_id !== project!.company_id || detail.project_id !== project!.id ||
-          (project!.snapshot_fingerprint && detail.snapshot_fingerprint !== project!.snapshot_fingerprint)) throw new Error("Snapshot identity mismatch");
+        if (detail.company_id !== project!.company_id || detail.project_id !== project!.id || detail.consumer_readiness !== "ready" || !detail.snapshot_fingerprint) throw new Error("Published Project is unavailable");
         let theme: ProjectTheme | undefined;
         let themeDiagnostic: string | undefined;
         if (detail.consumer_readiness === "ready") {
           const design = detail.artifacts.find((item) => item.kind === "design_system" && item.state === "available" && item.files?.includes("design/system/design-system.json"));
-          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The admitted Design System definition is unavailable. Refresh registration after correcting the artifact.";
+          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The current published Design System definition is unavailable.";
           else {
             const definition = await fetch(snapshotFileURL(detail, "design/system/design-system.json"), { signal: controller.signal });
             if (!definition.ok || definition.headers.get("X-Builder-Snapshot-Fingerprint") !== detail.snapshot_fingerprint) throw new Error("Design System snapshot mismatch");
@@ -472,10 +471,16 @@ export function Projects() {
         if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
       } catch {
         if (!controller.signal.aborted) setViewState("error");
+      } finally {
+        inFlight = false;
       }
     }
     void load();
-    return () => controller.abort();
+    let timer: number | undefined;
+    const refresh = () => { if (document.visibilityState === "visible" && !inFlight) { setView(null); setViewState("loading"); void load(); } };
+    timer = window.setInterval(refresh, 30_000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => { controller.abort(); if (timer !== undefined) window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
   }, [viewKey]);
   const activeView = view?.key === viewKey ? view : null;
   const detail = activeView?.detail || null;
@@ -507,10 +512,9 @@ export function Projects() {
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
 
-  if (!activeView && viewState !== "error") return <main className="projects-page"><p role="status">Loading the saved Project snapshot and Design System…</p></main>;
-  if (viewState === "error" || !detail) return <main className="projects-page"><p role="alert">The saved Project snapshot is unavailable or failed identity/integrity verification.</p><a href="/">Back to Companies</a></main>;
-  if (detail.consumer_readiness !== "ready") return <main className="projects-page"><p role="alert">This Project is registered but its saved snapshot is not ready. {detail.diagnostic}</p><a href="/">Back to Companies</a></main>;
-  if (!activeView?.theme) return <main className="projects-page"><p role="alert">{activeView?.themeDiagnostic || "The Project Design System cannot be applied."}</p><p>Project: {project?.name} · saved snapshot {detail.snapshot_fingerprint?.slice(0, 12)}</p><a href="/">Back to Companies</a></main>;
+  if (!activeView && viewState !== "error") return <main className="projects-page"><p role="status">Extraindo dados dos seus TODOs…</p></main>;
+  if (viewState === "error" || !detail) return <main className="projects-page"><p role="alert">TEACH: Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.</p><a href="/">Back to Companies</a></main>;
+  if (!activeView?.theme) return <main className="projects-page"><p role="alert">{activeView?.themeDiagnostic || "The Project Design System cannot be applied."}</p><p>Project: {project?.name} · current revision {detail.snapshot_fingerprint?.slice(0, 12)}</p><a href="/">Back to Companies</a></main>;
 
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };
   if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeView.theme}><LocalArtifactPreview {...previewProps} /></div>;
@@ -528,10 +532,10 @@ export function Projects() {
           <SnapshotStatus detail={detail} />
           <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
-        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted to this Project's saved snapshot.</p>
+        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's current published Foundation revision.</p>
           {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.url} onClick={() => setSelectedDoc(item.url)}>{selectedDoc === item.url ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
           {selectedDoc && <article className="project-markdown document-reader">{docState === "loading" && <p role="status">Loading document…</p>}{docState === "error" && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
-          <section className="documents-note"><h2>Reading is not review</h2><p>This view reads files from the saved snapshot. Availability does not indicate human approval or current source freshness.</p></section>
+          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the currently published Foundation revision. Availability does not indicate human approval.</p></section>
         </div>}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
