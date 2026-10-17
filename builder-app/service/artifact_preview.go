@@ -75,6 +75,8 @@ type persistedBinding struct {
 	WorkspaceRoot        string `json:"workspace_root"`
 	ProjectRoot          string `json:"project_root"`
 	FoundationRoot       string `json:"foundation_root"`
+	RepositoryID         string `json:"repository_id,omitempty"`
+	PublicationBranch    string `json:"publication_branch,omitempty"`
 	SourceBindingsPath   string `json:"source_bindings_path,omitempty"`
 	SourceBindingsDigest string `json:"source_bindings_digest,omitempty"`
 	DefaultOwnerID       string `json:"default_owner_id,omitempty"`
@@ -248,7 +250,7 @@ func (p *registeredPreview) currentFingerprint(projectID, companyID string) (str
 		return "", errors.New("registration registry invalid")
 	}
 	project, ok := stored.Projects[projectID]
-	if !ok || project.registeredProject.CompanyID != companyID || project.registeredProject.ID != projectID || project.registeredProject.SnapshotFingerprint == "" {
+	if !ok || project.registeredProject.CompanyID != companyID || project.registeredProject.ID != projectID || project.registeredProject.SnapshotFingerprint == "" || project.Binding == nil || project.Binding.RepositoryID == "" || project.Binding.PublicationBranch == "" {
 		return "", errors.New("current Project pointer unavailable")
 	}
 	return project.registeredProject.SnapshotFingerprint, nil

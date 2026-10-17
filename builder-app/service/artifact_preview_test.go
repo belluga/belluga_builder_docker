@@ -26,6 +26,49 @@ func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T
 	}
 }
 
+func TestPathOnlyRegistryCannotServePinnedArtifact(t *testing.T) {
+	root := t.TempDir()
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files:        map[string][]byte{"design/landing/index.html": []byte("legacy content")},
+		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html"}}},
+		Observations: map[string]json.RawMessage{},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	fingerprint := hex.EncodeToString(sum[:])
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), data, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	registry := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
+		Projects: map[string]persistedProject{"trial-project": {
+			registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", SnapshotFingerprint: fingerprint},
+			Binding:           &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"},
+		}},
+		Preferences: map[string]persistedPreference{},
+	}
+	registryData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	(&registeredPreview{root: root}).artifactHandler(response, httptest.NewRequest(http.MethodGet, "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "legacy content") {
+		t.Fatalf("path-only registration served a retained snapshot: %d %s", response.Code, response.Body.String())
+	}
+}
+
 func testReaderConsumer(t *testing.T, root string) *registeredPreview {
 	t.Helper()
 	base := &registeredPreview{root: root}
@@ -205,7 +248,7 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}}, Preferences: map[string]persistedPreference{}}
+	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}}, Preferences: map[string]persistedPreference{}}
 	registryBytes, err := json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -538,7 +581,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}}, Preferences: map[string]persistedPreference{}}
+	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}}, Preferences: map[string]persistedPreference{}}
 	registryBytes, err := json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -588,7 +631,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	if err := os.WriteFile(filepath.Join(root, "snapshots", noPrototypeFingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry.Projects["trial-project"] = persistedProject{registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: noPrototypeFingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}
+	registry.Projects["trial-project"] = persistedProject{registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: noPrototypeFingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}
 	registryBytes, err = json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +719,7 @@ func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalf
 		registry := persistedRegistration{
 			SchemaVersion: "builder-project-registry-v1",
 			Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
-			Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}},
+			Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}},
 			Preferences:   map[string]persistedPreference{},
 		}
 		registryBytes, err := json.Marshal(registry)
@@ -758,7 +801,7 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	registry := persistedRegistration{
 		SchemaVersion: "builder-project-registry-v1",
 		Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
-		Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}},
+		Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}},
 		Preferences:   map[string]persistedPreference{},
 	}
 	registryData, err := json.Marshal(registry)
