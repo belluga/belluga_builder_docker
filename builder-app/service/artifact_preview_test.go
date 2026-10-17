@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -24,6 +25,103 @@ func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T
 	if !errors.Is(err, errPathOnlyReader) {
 		t.Fatalf("path-only registration did not preserve its bounded TEACH classification: %v", err)
 	}
+}
+
+func TestProjectAPIKeepsPrivateReaderResponsesBoundToSelectedProject(t *testing.T) {
+	root := t.TempDir()
+	registry := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies: map[string]registeredCompany{
+			"company-a": {ID: "company-a", Name: "Company A"},
+			"company-b": {ID: "company-b", Name: "Company B"},
+		},
+		Projects: map[string]persistedProject{}, Preferences: map[string]persistedPreference{},
+	}
+	for _, identity := range []struct{ projectID, projectName, companyID, repositoryID string }{
+		{"project-a", "Project A", "company-a", "belluga/project-a"},
+		{"project-b", "Project B", "company-b", "belluga/project-b"},
+	} {
+		registry.Projects[identity.projectID] = persistedProject{
+			registeredProject: registeredProject{ID: identity.projectID, Name: identity.projectName, CompanyID: identity.companyID, PreparationState: "ready"},
+			Binding:           &persistedBinding{WorkspaceRoot: filepath.Join(root, identity.projectID), ProjectRoot: ".", FoundationRoot: "foundation", RepositoryID: identity.repositoryID, PublicationBranch: "main"},
+		}
+	}
+	registryData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	token := strings.Repeat("t", 32)
+	projectDetails := map[string]privateReaderResponse{}
+	for _, identity := range []struct{ projectID, projectName, companyID, sha, fingerprint, summary string }{
+		{"project-a", "Project A", "company-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A"},
+		{"project-b", "Project B", "company-b", strings.Repeat("b", 40), strings.Repeat("2", 64), "portfolio bytes from Project B"},
+	} {
+		portfolio, err := json.Marshal(portfolioSummary{SchemaVersion: "1", Summary: identity.summary})
+		if err != nil {
+			t.Fatal(err)
+		}
+		projectDetails[identity.projectID] = privateReaderResponse{
+			ProjectID: identity.projectID, ProjectName: identity.projectName, CompanyID: identity.companyID,
+			ProjectSHA: identity.sha, ObservedAt: "2026-10-17T12:00:00Z", Fingerprint: identity.fingerprint,
+			Artifacts: []registeredArtifact{{ID: "portfolio", Kind: "portfolio", Name: "Portfolio", State: "available", Files: []string{"project_portfolio.json"}}},
+			Files:     map[string][]byte{"project_portfolio.json": portfolio}, Assets: map[string]registeredAssetReference{}, Observations: map[string]json.RawMessage{"fixture_status": json.RawMessage(`{"outcome":"go"}`)},
+		}
+	}
+	var failProjectB atomic.Bool
+	readerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "invalid private reader request", http.StatusUnauthorized)
+			return
+		}
+		projectID := strings.TrimPrefix(r.URL.Path, "/internal/v1/projects/")
+		if projectID == "project-b" && failProjectB.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"state": "unavailable", "teach": "synthetic source outage"})
+			return
+		}
+		response, ok := projectDetails[projectID]
+		if !ok || r.URL.Path != "/internal/v1/projects/"+projectID {
+			http.Error(w, "unknown Project", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer readerServer.Close()
+	consumer := &registeredPreview{root: root, readerURL: readerServer.URL, readerToken: token, client: readerServer.Client()}
+	requestProject := func(companyID, projectID string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		path := "/api/local-preview?company_id=" + companyID + "&project_id=" + projectID
+		consumer.apiHandler(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+	assertProject := func(companyID, projectID, sha, fingerprint, summary string) {
+		t.Helper()
+		response := requestProject(companyID, projectID)
+		var detail struct {
+			ProjectID        string `json:"project_id"`
+			CompanyID        string `json:"company_id"`
+			ProjectSHA       string `json:"project_sha"`
+			Fingerprint      string `json:"snapshot_fingerprint"`
+			PortfolioSummary string `json:"portfolio_summary"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); response.Code != http.StatusOK || err != nil || detail.ProjectID != projectID || detail.CompanyID != companyID || detail.ProjectSHA != sha || detail.Fingerprint != fingerprint || detail.PortfolioSummary != summary {
+			t.Fatalf("Builder mixed or misbound %s response: status=%d err=%v detail=%+v body=%s", projectID, response.Code, err, detail, response.Body.String())
+		}
+	}
+	assertProject("company-a", "project-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A")
+	assertProject("company-b", "project-b", strings.Repeat("b", 40), strings.Repeat("2", 64), "portfolio bytes from Project B")
+
+	failProjectB.Store(true)
+	bUnavailable := requestProject("company-b", "project-b")
+	if bUnavailable.Code != http.StatusServiceUnavailable || strings.Contains(bUnavailable.Body.String(), strings.Repeat("1", 64)) || strings.Contains(bUnavailable.Body.String(), "portfolio bytes from Project A") {
+		t.Fatalf("Project B reader outage fell back to Project A: status=%d body=%s", bUnavailable.Code, bUnavailable.Body.String())
+	}
+	assertProject("company-a", "project-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A")
 }
 
 func TestPathOnlyRegistryCannotServePinnedArtifact(t *testing.T) {
