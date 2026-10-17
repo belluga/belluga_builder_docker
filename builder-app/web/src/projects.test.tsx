@@ -386,6 +386,27 @@ describe("single root Project experience", () => {
     expect(release).not.toHaveTextContent("Entregue");
     expect(screen.queryByRole("columnheader", { name: "ENTREGA" })).not.toBeInTheDocument();
   });
+  it("updates the derived Release status when a visible Project reads a newer TODO stage", async () => {
+    let detailReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": detailReads > 1 ? "b".repeat(64) : fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      detailReads++;
+      const saved = detail("belluga", "builder");
+      saved.snapshot_fingerprint = detailReads > 1 ? "b".repeat(64) : fingerprint;
+      saved.project_sha = (detailReads > 1 ? "d" : "c").repeat(40);
+      const first = saved.roadmap.epics[0].releases[0];
+      first.todos = [{ id: "work", title: "Published work", path: "todos/active/work.md", kind: "executable", record_state: "active", local_stage: detailReads > 1 ? "Local-Implemented" : "Pending" }];
+      return { ok: true, json: async () => saved };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveTextContent("Planejada");
+    fireEvent(document, new Event("visibilitychange"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Em andamento"));
+    expect(detailReads).toBe(2);
+  });
   it("focuses the first incomplete Release and shares manual Roadmap focus by URL", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
