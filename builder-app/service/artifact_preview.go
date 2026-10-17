@@ -14,10 +14,18 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf8"
 )
 
-type registeredPreview struct{ root string }
+type registeredPreview struct {
+	root        string
+	readerURL   string
+	readerToken string
+	client      *http.Client
+}
+
+var errPathOnlyReader = errors.New("Project registration must be recreated")
 
 type registeredCompany struct {
 	ID   string `json:"id"`
@@ -45,7 +53,12 @@ type registeredProject struct {
 type registrationCatalog struct {
 	SchemaVersion string              `json:"schema_version"`
 	Companies     []registeredCompany `json:"companies"`
-	Projects      []registeredProject `json:"projects"`
+	Projects      []catalogProject    `json:"projects"`
+}
+type catalogProject struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CompanyID string `json:"company_id"`
 }
 type persistedRegistration struct {
 	SchemaVersion string                         `json:"schema_version"`
@@ -62,6 +75,8 @@ type persistedBinding struct {
 	WorkspaceRoot        string `json:"workspace_root"`
 	ProjectRoot          string `json:"project_root"`
 	FoundationRoot       string `json:"foundation_root"`
+	RepositoryID         string `json:"repository_id,omitempty"`
+	PublicationBranch    string `json:"publication_branch,omitempty"`
 	SourceBindingsPath   string `json:"source_bindings_path,omitempty"`
 	SourceBindingsDigest string `json:"source_bindings_digest,omitempty"`
 	DefaultOwnerID       string `json:"default_owner_id,omitempty"`
@@ -71,14 +86,17 @@ type persistedProject struct {
 	Binding *persistedBinding `json:"binding"`
 }
 type registeredSnapshot struct {
-	SchemaVersion string                              `json:"schema_version"`
-	ProjectID     string                              `json:"project_id"`
-	CompanyID     string                              `json:"company_id"`
-	ObservedAt    string                              `json:"observed_at"`
-	Files         map[string][]byte                   `json:"files"`
-	Assets        map[string]registeredAssetReference `json:"assets,omitempty"`
-	Artifacts     []registeredArtifact                `json:"artifacts"`
-	Observations  map[string]json.RawMessage          `json:"observations"`
+	SchemaVersion          string                              `json:"schema_version"`
+	ProjectID              string                              `json:"project_id"`
+	CompanyID              string                              `json:"company_id"`
+	ObservedAt             string                              `json:"observed_at"`
+	ProjectSHA             string                              `json:"project_sha,omitempty"`
+	ExternalSourceID       string                              `json:"external_source_id,omitempty"`
+	ExternalSourceRevision string                              `json:"external_source_revision,omitempty"`
+	Files                  map[string][]byte                   `json:"files"`
+	Assets                 map[string]registeredAssetReference `json:"assets,omitempty"`
+	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Observations           map[string]json.RawMessage          `json:"observations"`
 }
 
 type registeredAssetReference struct {
@@ -188,14 +206,14 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 	}
 	registryPath := filepath.Join(p.root, "registry.json")
 	if _, err := os.Lstat(registryPath); errors.Is(err, os.ErrNotExist) {
-		return registrationCatalog{SchemaVersion: "builder-project-registry-v1", Companies: []registeredCompany{}, Projects: []registeredProject{}}, nil
+		return registrationCatalog{SchemaVersion: "builder-project-registry-v1", Companies: []registeredCompany{}, Projects: []catalogProject{}}, nil
 	}
 	data, err := readRegisteredFile(registryPath, 128<<10)
 	var stored persistedRegistration
 	if err != nil || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &stored) != nil || stored.SchemaVersion != "builder-project-registry-v1" || stored.Companies == nil || stored.Projects == nil || stored.Preferences == nil {
 		return registrationCatalog{}, errors.New("registration registry unavailable or invalid")
 	}
-	result := registrationCatalog{SchemaVersion: stored.SchemaVersion, Companies: []registeredCompany{}, Projects: []registeredProject{}}
+	result := registrationCatalog{SchemaVersion: stored.SchemaVersion, Companies: []registeredCompany{}, Projects: []catalogProject{}}
 	for key, c := range stored.Companies {
 		if !validRegistrationID(c.ID) || key != c.ID || !validRegistrationName(c.Name) {
 			return registrationCatalog{}, errors.New("registration company identity invalid")
@@ -204,16 +222,10 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 	}
 	for key, storedProject := range stored.Projects {
 		p := storedProject.registeredProject
-		validFingerprint := len(p.SnapshotFingerprint) == 64
-		if validFingerprint {
-			_, decodeErr := hex.DecodeString(p.SnapshotFingerprint)
-			validFingerprint = decodeErr == nil && strings.ToLower(p.SnapshotFingerprint) == p.SnapshotFingerprint
-		}
-		stateValid := (p.PreparationState == "ready" && validFingerprint) || (p.PreparationState == "not_ready" && (p.SnapshotFingerprint == "" || validFingerprint))
-		if !validRegistrationID(p.ID) || key != p.ID || !validRegistrationName(p.Name) || !hasCompany(stored.Companies, p.CompanyID) || !validStoredBinding(storedProject.Binding) || !stateValid {
+		if !validRegistrationID(p.ID) || key != p.ID || !validRegistrationName(p.Name) || !hasCompany(stored.Companies, p.CompanyID) || !validStoredBinding(storedProject.Binding) {
 			return registrationCatalog{}, errors.New("registration project identity invalid")
 		}
-		result.Projects = append(result.Projects, p)
+		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID})
 	}
 	for key, preference := range stored.Preferences {
 		if !validRegistrationID(key) || key != preference.ProjectID || !validStoredBinding(preference.Binding) || preference.DeclinedAt == "" {
@@ -223,6 +235,25 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 	sort.Slice(result.Companies, func(i, j int) bool { return result.Companies[i].ID < result.Companies[j].ID })
 	sort.Slice(result.Projects, func(i, j int) bool { return result.Projects[i].ID < result.Projects[j].ID })
 	return result, nil
+}
+
+func (p *registeredPreview) currentFingerprint(projectID, companyID string) (string, error) {
+	if _, err := p.catalog(); err != nil {
+		return "", err
+	}
+	data, err := readRegisteredFile(filepath.Join(p.root, "registry.json"), 128<<10)
+	if err != nil || rejectDuplicateJSONKeys(data) != nil {
+		return "", errors.New("registration registry unavailable")
+	}
+	var stored persistedRegistration
+	if json.Unmarshal(data, &stored) != nil {
+		return "", errors.New("registration registry invalid")
+	}
+	project, ok := stored.Projects[projectID]
+	if !ok || project.registeredProject.CompanyID != companyID || project.registeredProject.ID != projectID || project.registeredProject.SnapshotFingerprint == "" || project.Binding == nil || project.Binding.RepositoryID == "" || project.Binding.PublicationBranch == "" {
+		return "", errors.New("current Project pointer unavailable")
+	}
+	return project.registeredProject.SnapshotFingerprint, nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -368,13 +399,13 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		if project.ID != projectID || project.CompanyID != companyID {
 			continue
 		}
-		if project.PreparationState != "ready" || len(project.SnapshotFingerprint) != 64 {
-			writeJSON(w, 200, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "not_ready", "artifacts": project.Artifacts, "diagnostic": project.PreparationDiagnostic})
-			return
-		}
-		snapshot, fingerprint, e := p.snapshot(project.ID, project.CompanyID, project.SnapshotFingerprint)
+		snapshot, fingerprint, e := p.readCurrent(project.ID, project.CompanyID)
 		if e != nil {
-			writeError(w, 503, "snapshot_integrity_failure")
+			if errors.Is(e, errPathOnlyReader) {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "unavailable", "diagnostic": "TEACH: This Project has an invalid path-only registration. Verify its published Foundation Git remote and branch, then register the Project again. No migration or compatibility reader is available."})
+				return
+			}
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "unavailable", "diagnostic": "TEACH: Check the governed published Foundation branch and private Delphi reader access, then retry. No older snapshot is shown as current."})
 			return
 		}
 		writeJSON(w, 200, registeredProjectDetail(snapshot, fingerprint))
@@ -383,11 +414,97 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 	writeError(w, 404, "project_not_found")
 }
 
+type privateReaderResponse struct {
+	ProjectID              string                              `json:"project_id"`
+	ProjectName            string                              `json:"project_name"`
+	CompanyID              string                              `json:"company_id"`
+	ProjectSHA             string                              `json:"project_sha"`
+	ObservedAt             string                              `json:"observed_at"`
+	Fingerprint            string                              `json:"snapshot_fingerprint"`
+	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Files                  map[string][]byte                   `json:"files"`
+	Assets                 map[string]registeredAssetReference `json:"assets"`
+	Observations           map[string]json.RawMessage          `json:"observations"`
+	ExternalSourceID       string                              `json:"external_source_id"`
+	ExternalSourceRevision string                              `json:"external_source_revision"`
+}
+
+func (p *registeredPreview) readCurrent(projectID, companyID string) (registeredSnapshot, string, error) {
+	base := strings.TrimRight(strings.TrimSpace(p.readerURL), "/")
+	token := p.readerToken
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), "/")
+	}
+	if token == "" {
+		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
+	}
+	if base == "" || token == "" || len(token) < 32 {
+		return registeredSnapshot{}, "", errors.New("private Project reader is not configured")
+	}
+	u, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return registeredSnapshot{}, "", errors.New("private Project reader endpoint is invalid")
+	}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 100 * time.Second}
+	}
+	request, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return registeredSnapshot{}, "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return registeredSnapshot{}, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusServiceUnavailable {
+			var diagnostic struct {
+				State string `json:"state"`
+				Teach string `json:"teach"`
+			}
+			if json.NewDecoder(io.LimitReader(response.Body, 1024)).Decode(&diagnostic) == nil && diagnostic.State == "unavailable" && strings.Contains(diagnostic.Teach, "invalid path-only registration") && strings.Contains(diagnostic.Teach, "re-register") {
+				return registeredSnapshot{}, "", errPathOnlyReader
+			}
+		}
+		return registeredSnapshot{}, "", errors.New("private Project reader returned unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<20+1))
+	if err != nil || len(data) > 64<<20 || rejectDuplicateJSONKeys(data) != nil {
+		return registeredSnapshot{}, "", errors.New("private Project response is invalid")
+	}
+	var source privateReaderResponse
+	if json.Unmarshal(data, &source) != nil || source.ProjectID != projectID || source.CompanyID != companyID || len(source.Fingerprint) != 64 || !validProjectSHA(source.ProjectSHA) || source.Files == nil || source.Artifacts == nil || source.Observations == nil {
+		return registeredSnapshot{}, "", errors.New("private Project response identity is invalid")
+	}
+	if _, err := hex.DecodeString(source.Fingerprint); err != nil || strings.ToLower(source.Fingerprint) != source.Fingerprint {
+		return registeredSnapshot{}, "", errors.New("private Project fingerprint is invalid")
+	}
+	return registeredSnapshot{SchemaVersion: "builder-project-snapshot-v2", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Observations: source.Observations}, source.Fingerprint, nil
+}
+
+func validProjectSHA(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded)*2 == len(value) && strings.ToLower(value) == value
+}
+
 func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) map[string]any {
 	result := map[string]any{
 		"schema_version": "1", "company_id": snapshot.CompanyID, "project_id": snapshot.ProjectID,
 		"registration_state": "registered", "consumer_readiness": "ready", "snapshot_fingerprint": fingerprint,
 		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
+		"project_sha": snapshot.ProjectSHA,
+	}
+	if snapshot.ExternalSourceID != "" {
+		result["external_source_id"] = snapshot.ExternalSourceID
+	}
+	if snapshot.ExternalSourceRevision != "" {
+		result["external_source_revision"] = snapshot.ExternalSourceRevision
 	}
 	for _, artifact := range snapshot.Artifacts {
 		if artifact.Kind == "overview" && artifact.State == "available" && artifact.Entry == "project_overview.json" {
@@ -627,9 +744,9 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		}
 	}
 	if hasAvailablePrototype(snapshot.Artifacts) && !validPrototypeStatusObservation(snapshot) {
-		diagnostic := "Saved Prototype projection does not match its admitted v3 manifest; correct the source and explicitly refresh registration."
+		diagnostic := "Current Prototype projection does not match its admitted v3 manifest; correct the source and publish the Foundation branch."
 		if savedPrototypeSchema(snapshot) == "2" {
-			diagnostic = "Saved Prototype schema v2 is not available after the v3 cutover. TEACH: run fresh Prototype status; adapt every offending v2 catalog/manifest, including archived candidates, to schema_version 3; confirm the complete collection is go; then explicitly refresh registration. Registration alone cannot repair source."
+			diagnostic = "Prototype schema v2 is not available after the v3 cutover. TEACH: run fresh Prototype status; adapt every offending v2 catalog/manifest, including archived candidates, to schema_version 3; confirm the complete collection is go; then publish the Foundation branch and reload this Project."
 		}
 		for i := range snapshot.Artifacts {
 			artifact := &snapshot.Artifacts[i]
@@ -894,19 +1011,8 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 		writeError(w, 404, "not_found")
 		return
 	}
-	catalog, err := p.catalog()
-	if err != nil {
-		writeError(w, 503, "registration_state_unavailable")
-		return
-	}
-	current := false
-	for _, project := range catalog.Projects {
-		if project.CompanyID == parts[0] && project.ID == parts[1] && project.PreparationState == "ready" && project.SnapshotFingerprint == parts[2] {
-			current = true
-			break
-		}
-	}
-	if !current {
+	currentFingerprint, err := p.currentFingerprint(parts[1], parts[0])
+	if err != nil || currentFingerprint != parts[2] {
 		writeError(w, 404, "snapshot_unavailable")
 		return
 	}

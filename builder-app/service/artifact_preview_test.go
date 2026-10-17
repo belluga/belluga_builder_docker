@@ -4,12 +4,111 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"state": "unavailable", "teach": "This Project has an invalid path-only registration. TEACH: re-register the Project."})
+	}))
+	defer server.Close()
+	consumer := &registeredPreview{readerURL: server.URL, readerToken: strings.Repeat("t", 32), client: server.Client()}
+	_, _, err := consumer.readCurrent("builder", "belluga-solutions")
+	if !errors.Is(err, errPathOnlyReader) {
+		t.Fatalf("path-only registration did not preserve its bounded TEACH classification: %v", err)
+	}
+}
+
+func TestPathOnlyRegistryCannotServePinnedArtifact(t *testing.T) {
+	root := t.TempDir()
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files:        map[string][]byte{"design/landing/index.html": []byte("legacy content")},
+		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html"}}},
+		Observations: map[string]json.RawMessage{},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	fingerprint := hex.EncodeToString(sum[:])
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), data, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	registry := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
+		Projects: map[string]persistedProject{"trial-project": {
+			registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", SnapshotFingerprint: fingerprint},
+			Binding:           &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"},
+		}},
+		Preferences: map[string]persistedPreference{},
+	}
+	registryData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	(&registeredPreview{root: root}).artifactHandler(response, httptest.NewRequest(http.MethodGet, "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "legacy content") {
+		t.Fatalf("path-only registration served a retained snapshot: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func testReaderConsumer(t *testing.T, root string) *registeredPreview {
+	t.Helper()
+	base := &registeredPreview{root: root}
+	catalog, err := base.catalog()
+	if err != nil || len(catalog.Projects) == 0 {
+		t.Fatalf("test catalog unavailable: %v", err)
+	}
+	project := catalog.Projects[0]
+	registryData, err := os.ReadFile(filepath.Join(root, "registry.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registry persistedRegistration
+	if err := json.Unmarshal(registryData, &registry); err != nil {
+		t.Fatal(err)
+	}
+	stored := registry.Projects[project.ID]
+	_, fingerprint, err := base.snapshot(project.ID, project.CompanyID, stored.SnapshotFingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := base.snapshot(project.ID, project.CompanyID, fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/internal/v1/projects/"+project.ID {
+			http.Error(w, "wrong private reader route", http.StatusNotFound)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+strings.Repeat("t", 32) {
+			http.Error(w, "unauthorized", 401)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(privateReaderResponse{ProjectID: project.ID, ProjectName: project.Name, CompanyID: project.CompanyID, ProjectSHA: strings.Repeat("a", 40), ObservedAt: snapshot.ObservedAt, Fingerprint: fingerprint, Artifacts: snapshot.Artifacts, Files: snapshot.Files, Assets: snapshot.Assets, Observations: snapshot.Observations, ExternalSourceID: "design-system", ExternalSourceRevision: "r-123"})
+	}))
+	t.Cleanup(server.Close)
+	return &registeredPreview{root: root, readerURL: server.URL, readerToken: strings.Repeat("t", 32), client: server.Client()}
+}
 
 func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.T) {
 	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning"},{"id":"active","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
@@ -149,7 +248,7 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}}, Preferences: map[string]persistedPreference{}}
+	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}}, Preferences: map[string]persistedPreference{}}
 	registryBytes, err := json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -158,7 +257,7 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	if err := os.WriteFile(registryPath, registryBytes, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	consumer := &registeredPreview{root: root}
+	consumer := testReaderConsumer(t, root)
 	api := httptest.NewRecorder()
 	consumer.apiHandler(api, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 	if api.Code != 200 || !strings.Contains(api.Body.String(), fingerprint) || strings.Contains(api.Body.String(), root) {
@@ -170,6 +269,20 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	}
 	if string(before) != string(registryBytes) {
 		t.Fatal("read-only API changed registry")
+	}
+	var currentDetail map[string]any
+	if json.Unmarshal(api.Body.Bytes(), &currentDetail) != nil || currentDetail["project_sha"] != strings.Repeat("a", 40) || currentDetail["external_source_id"] != "design-system" || currentDetail["external_source_revision"] != "r-123" {
+		t.Fatalf("live revision metadata missing from detail: %s", api.Body.String())
+	}
+	failedReader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"state":"unavailable"}`, http.StatusServiceUnavailable)
+	}))
+	defer failedReader.Close()
+	unavailable := &registeredPreview{root: root, readerURL: failedReader.URL, readerToken: strings.Repeat("t", 32), client: failedReader.Client()}
+	failedDetail := httptest.NewRecorder()
+	unavailable.apiHandler(failedDetail, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
+	if failedDetail.Code != http.StatusServiceUnavailable || !strings.Contains(failedDetail.Body.String(), `"consumer_readiness":"unavailable"`) || strings.Contains(failedDetail.Body.String(), fingerprint) {
+		t.Fatalf("reader failure exposed cached data as current: %d %s", failedDetail.Code, failedDetail.Body.String())
 	}
 	badRegistry := registry
 	badRegistry.Projects = map[string]persistedProject{"wrong-key": registry.Projects["trial-project"]}
@@ -250,9 +363,10 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	}
 	for _, state := range []struct {
 		name, readiness, fingerprint string
+		wantStatus                   int
 	}{
-		{"superseded fingerprint", "ready", strings.Repeat("b", 64)},
-		{"failed refresh with retained fingerprint", "not_ready", fingerprint},
+		{"superseded fingerprint", "ready", strings.Repeat("b", 64), http.StatusNotFound},
+		{"retained immutable pointer remains addressable", "not_ready", fingerprint, http.StatusOK},
 	} {
 		t.Run(state.name, func(t *testing.T) {
 			changed := registry
@@ -270,8 +384,8 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 			}
 			response := httptest.NewRecorder()
 			consumer.artifactHandler(response, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
-			if response.Code != 404 {
-				t.Fatalf("stale snapshot served: %d %s", response.Code, response.Body.String())
+			if response.Code != state.wantStatus {
+				t.Fatalf("snapshot pointer response=%d body=%s want=%d", response.Code, response.Body.String(), state.wantStatus)
 			}
 		})
 	}
@@ -292,6 +406,51 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	}
 	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
+	}
+	// A live detail may advance before the atomic cache pointer; assets remain denied until that pointer advances.
+	snapshot.Files["design/landing/index.html"] = []byte("<main>published B</main>")
+	bSnapshot, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bDigest := sha256.Sum256(bSnapshot)
+	bFingerprint := hex.EncodeToString(bDigest[:])
+	if err := os.WriteFile(filepath.Join(root, "snapshots", bFingerprint+".json"), bSnapshot, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	readerCalls := 0
+	liveReader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		readerCalls++
+		if r.URL.Path != "/internal/v1/projects/trial-project" {
+			http.Error(w, "wrong route", 404)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(privateReaderResponse{ProjectID: "trial-project", ProjectName: "Trial Project", CompanyID: "trial-company", ProjectSHA: strings.Repeat("b", 40), ObservedAt: snapshot.ObservedAt, Fingerprint: bFingerprint, Artifacts: snapshot.Artifacts, Files: snapshot.Files, Assets: snapshot.Assets, Observations: snapshot.Observations})
+	}))
+	defer liveReader.Close()
+	current := &registeredPreview{root: root, readerURL: liveReader.URL, readerToken: strings.Repeat("t", 32), client: liveReader.Client()}
+	liveDetail := httptest.NewRecorder()
+	current.apiHandler(liveDetail, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
+	if liveDetail.Code != 200 || !strings.Contains(liveDetail.Body.String(), bFingerprint) || !strings.Contains(liveDetail.Body.String(), strings.Repeat("b", 40)) {
+		t.Fatalf("reader's current B detail was not returned: %d %s", liveDetail.Code, liveDetail.Body.String())
+	}
+	deniedB := httptest.NewRecorder()
+	current.artifactHandler(deniedB, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+bFingerprint+"/design/landing/index.html", nil))
+	if deniedB.Code != 404 {
+		t.Fatalf("asset B served before registry pointer publication: %d", deniedB.Code)
+	}
+	registry.Projects["trial-project"] = persistedProject{registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: bFingerprint}, Binding: registry.Projects["trial-project"].Binding}
+	registryBytes, err = json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registryPath, registryBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	servedB := httptest.NewRecorder()
+	current.artifactHandler(servedB, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+bFingerprint+"/design/landing/index.html", nil))
+	if servedB.Code != 200 || servedB.Body.String() != "<main>published B</main>" || readerCalls != 1 {
+		t.Fatalf("published B asset mismatch or reader was queried per asset: code=%d body=%s reader_calls=%d", servedB.Code, servedB.Body.String(), readerCalls)
 	}
 	if err := os.Rename(filepath.Join(root, "snapshots"), filepath.Join(root, "snapshots-real")); err != nil {
 		t.Fatal(err)
@@ -422,7 +581,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}}, Preferences: map[string]persistedPreference{}}
+	registry := persistedRegistration{SchemaVersion: "builder-project-registry-v1", Companies: map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}}, Projects: map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}}, Preferences: map[string]persistedPreference{}}
 	registryBytes, err := json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +591,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	}
 
 	response := httptest.NewRecorder()
-	(&registeredPreview{root: root}).apiHandler(response, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
+	testReaderConsumer(t, root).apiHandler(response, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 	var body struct {
 		ConsumerReadiness   string               `json:"consumer_readiness"`
 		SnapshotFingerprint string               `json:"snapshot_fingerprint"`
@@ -451,12 +610,12 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 		t.Fatalf("legacy Prototype did not receive migration TEACH: %#v", prototype)
 	}
 	raw := httptest.NewRecorder()
-	(&registeredPreview{root: root}).artifactHandler(raw, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/prototypes/demo/index.html", nil))
+	testReaderConsumer(t, root).artifactHandler(raw, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/prototypes/demo/index.html", nil))
 	if raw.Code != 404 {
 		t.Fatalf("unsupported Prototype HTML remained available: status=%d body=%s", raw.Code, raw.Body.String())
 	}
 	landing := httptest.NewRecorder()
-	(&registeredPreview{root: root}).artifactHandler(landing, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
+	testReaderConsumer(t, root).artifactHandler(landing, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/design/landing/index.html", nil))
 	if landing.Code != 200 {
 		t.Fatalf("unrelated Landing was blocked: status=%d body=%s", landing.Code, landing.Body.String())
 	}
@@ -472,7 +631,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	if err := os.WriteFile(filepath.Join(root, "snapshots", noPrototypeFingerprint+".json"), snapshotBytes, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	registry.Projects["trial-project"] = persistedProject{registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: noPrototypeFingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}
+	registry.Projects["trial-project"] = persistedProject{registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: noPrototypeFingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}
 	registryBytes, err = json.Marshal(registry)
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +640,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 		t.Fatal(err)
 	}
 	withoutPrototype := httptest.NewRecorder()
-	(&registeredPreview{root: root}).apiHandler(withoutPrototype, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
+	testReaderConsumer(t, root).apiHandler(withoutPrototype, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 	if withoutPrototype.Code != 200 || !strings.Contains(withoutPrototype.Body.String(), `"consumer_readiness":"ready"`) || strings.Contains(withoutPrototype.Body.String(), `"kind":"prototype"`) {
 		t.Fatalf("v2 observation without an available Prototype blocked unrelated views or exposed Prototype: status=%d body=%s", withoutPrototype.Code, withoutPrototype.Body.String())
 	}
@@ -560,7 +719,7 @@ func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalf
 		registry := persistedRegistration{
 			SchemaVersion: "builder-project-registry-v1",
 			Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
-			Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}},
+			Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}},
 			Preferences:   map[string]persistedPreference{},
 		}
 		registryBytes, err := json.Marshal(registry)
@@ -570,7 +729,7 @@ func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalf
 		if err := os.WriteFile(filepath.Join(root, "registry.json"), registryBytes, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		consumer := &registeredPreview{root: root}
+		consumer := testReaderConsumer(t, root)
 		api := httptest.NewRecorder()
 		consumer.apiHandler(api, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 		raw := httptest.NewRecorder()
@@ -642,7 +801,7 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	registry := persistedRegistration{
 		SchemaVersion: "builder-project-registry-v1",
 		Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
-		Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation"}}},
+		Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}},
 		Preferences:   map[string]persistedPreference{},
 	}
 	registryData, err := json.Marshal(registry)
@@ -652,7 +811,7 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	consumer := &registeredPreview{root: root}
+	consumer := testReaderConsumer(t, root)
 	if _, _, err := consumer.snapshot("trial-project", "trial-company", fingerprint); err != nil {
 		t.Fatalf("manifest read eagerly required the blob: %v", err)
 	}

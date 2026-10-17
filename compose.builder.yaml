@@ -10,6 +10,8 @@ services:
       LISTEN_ADDR: 0.0.0.0:8080
       ALLOW_CONTAINER_BIND: "true"
       DELPHI_BUILDER_STATE_ROOT: /state
+      DELPHI_PROJECT_READER_URL: http://project-reader:8099
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       PUBLIC_PREVIEW_HOST: builder.belluga.online
       WEB_ROOT: /web
     volumes:
@@ -23,12 +25,37 @@ services:
       builder-preview-ingress:
         aliases:
           - builder-preview
+      project-reader-private: {}
     read_only: true
     tmpfs:
       - /tmp:size=16m,noexec,nosuid
+    restart: unless-stopped
+
+  project-reader:
+    image: belluga-delphi-project-reader:local
+    build:
+      context: ./delphi-ai/local-api
+      dockerfile: Dockerfile
+    user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
+    environment:
+      DELPHI_PROJECT_READER_LISTEN: :8099
+      DELPHI_PROJECT_READER_STATE_ROOT: /state
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
+      DELPHI_GITHUB_READ_TOKEN: ${DELPHI_GITHUB_READ_TOKEN:-}
+    volumes:
+      - type: bind
+        source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
+        target: /state
+    networks:
+      - project-reader-private
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
     restart: unless-stopped
 
 networks:
   builder-preview-ingress:
     name: builder-preview-ingress
     external: true
+  project-reader-private:
+    driver: bridge
