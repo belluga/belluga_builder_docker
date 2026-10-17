@@ -15,7 +15,17 @@ state_real=$(CDPATH= cd -P "$DELPHI_BUILDER_STATE_ROOT" && pwd)
 [ "$state_real" = "$DELPHI_BUILDER_STATE_ROOT" ] || { printf '%s\n' 'state root must not contain symlinks' >&2; exit 64; }
 export BUILDER_UID=${BUILDER_UID:-$(id -u)}
 export BUILDER_GID=${BUILDER_GID:-$(id -g)}
-docker compose -p builder-local-artifacts -f compose.builder.artifacts.yaml up --build --force-recreate -d artifact-preview
+if [ -z "${DELPHI_PROJECT_READER_TOKEN:-}" ]; then
+	command -v openssl >/dev/null 2>&1 || { printf '%s\n' 'preview requires openssl for its internal service token' >&2; exit 70; }
+	DELPHI_PROJECT_READER_TOKEN=$(openssl rand -hex 32)
+	export DELPHI_PROJECT_READER_TOKEN
+fi
+if [ -z "${DELPHI_GITHUB_READ_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
+	DELPHI_GITHUB_READ_TOKEN=$(gh auth token 2>/dev/null) || DELPHI_GITHUB_READ_TOKEN=
+	export DELPHI_GITHUB_READ_TOKEN
+fi
+[ -n "${DELPHI_GITHUB_READ_TOKEN:-}" ] || { printf '%s\n' 'preview requires the host GitHub login for the private Foundation reader' >&2; exit 2; }
+docker compose -p builder-local-artifacts -f compose.builder.artifacts.yaml up --build --force-recreate -d project-reader artifact-preview
 served=''
 attempt=0
 while [ "$attempt" -lt 30 ]; do
