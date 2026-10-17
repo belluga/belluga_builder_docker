@@ -240,11 +240,33 @@
 }
 .projects-project,
 .project-theme {
+  --project-canvas: #0b1b2b;
+  --project-surface: #142b3e;
+  --project-text: #eef6fa;
+  --project-muted: #a8c1cf;
+  --project-accent: #32bbdd;
+  --project-onAccent: #091824;
+  --project-border: #34546a;
+  --project-focus: #f2c96b;
+  --project-font: Arial;
+  --project-bodySize: 16px;
+  --project-displaySize: 40px;
+  --project-lineHeight: 1.5;
+  --project-cardRadius: 12px;
+  --project-controlRadius: 6px;
   background: var(--project-canvas);
   color: var(--project-text);
   font-family: var(--project-font), Arial, sans-serif;
   font-size: var(--project-bodySize);
   line-height: var(--project-lineHeight);
+}
+.project-theme-warning {
+  margin: 12px 20px;
+  padding: 12px 16px;
+  border: 1px solid var(--project-focus);
+  border-radius: var(--project-controlRadius);
+  color: var(--project-text);
+  background: var(--project-surface);
 }
 .projects-project {
   padding: 0;

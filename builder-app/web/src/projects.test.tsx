@@ -242,6 +242,20 @@ describe("single root Project experience", () => {
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#32bbdd");
     expect(screen.getByText("Overview for builder")).toBeInTheDocument();
   });
+  it("keeps Roadmap and Documents navigable when the Design System is invalid", async () => {
+    const saved = detail("belluga", "builder", [{ path: "project_mandate.md", url: `/snapshot/belluga/builder/${fingerprint}/project_mandate.md` }]);
+    saved.artifacts[0] = { ...saved.artifacts[0], state: "invalid" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Design System");
+    fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
+    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+  });
   it("keeps the approved Overview narrative primary and links the Landing separately", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
