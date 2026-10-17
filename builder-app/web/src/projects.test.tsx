@@ -74,7 +74,7 @@ describe("single root Project experience", () => {
     render(<Projects />);
     await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("status")).toHaveTextContent("Extraindo dados dos seus TODOs");
-    fireEvent(document, new Event("visibilitychange"));
+    for (let index = 0; index < 10; index++) fireEvent(document, new Event("visibilitychange"));
     expect(detailCalls).toHaveBeenCalledTimes(1);
     resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
     expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
