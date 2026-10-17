@@ -49,9 +49,9 @@ function detail(companyID: string, projectID: string, documents: { path: string;
     knowledge_status: { landing: { status: "current", reason_code: "match" }, roadmap: { status: "current", reason_code: "match" } },
     visual_origin: { state: "matching", knowledge_source_state: "matching", roadmap_source_state: "matching", design_system_state: "matching" },
   } }; }
-function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
-  if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, text: async (): Promise<string> => documentResponse?.body || "" };
+  if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": documentResponse?.fingerprint || fingerprint }), text: async (): Promise<string> => documentResponse?.body || "" };
   if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async (): Promise<string> => todoResponse };
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
@@ -499,7 +499,7 @@ describe("single root Project experience", () => {
     const nextDocument = new Promise<unknown>((resolve) => { resolveNextDocument = resolve; });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
-      if (String(input) === firstURL) return { ok: true, text: async () => "# Old Foundation content" };
+      if (String(input) === firstURL) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async () => "# Old Foundation content" };
       if (String(input) === nextURL) return nextDocument as Promise<never>;
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": detailReads > 1 ? nextFingerprint : fingerprint }), json: async () => theme };
       if (url.searchParams.has("project_id")) {
@@ -518,7 +518,7 @@ describe("single root Project experience", () => {
     await waitFor(() => expect(detailReads).toBe(2));
     expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent("Loading document");
-    await act(async () => resolveNextDocument({ ok: true, text: async () => "# New Foundation content" }));
+    await act(async () => resolveNextDocument({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": nextFingerprint }), text: async () => "# New Foundation content" }));
     expect(await screen.findByRole("heading", { name: "New Foundation content" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
   });
@@ -530,6 +530,26 @@ describe("single root Project experience", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(await screen.findByRole("alert")).toHaveTextContent("could not be loaded");
     expect(screen.queryByText("Current direction.")).not.toBeInTheDocument();
+  });
+  it("rejects document bytes tagged with a different snapshot fingerprint", async () => {
+    const documentURL = "/snapshot/example/modules/mismatched.md";
+    mockFetch([{ path: "modules/mismatched.md", url: documentURL }], { ok: true, body: "# Wrong revision", fingerprint: "b".repeat(64) });
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
+    render(<Projects />);
+    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be loaded");
+    expect(screen.queryByRole("heading", { name: "Wrong revision" })).not.toBeInTheDocument();
+  });
+  it("teaches fresh registration when the private reader rejects an old path-only binding", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ company_id: "belluga", project_id: "builder", diagnostic: "TEACH: This Project has an invalid path-only registration." }) };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("registre o Project novamente");
+    expect(screen.getByRole("alert")).toHaveTextContent("Não há migração");
   });
   it("ignores a late Project detail after switching to another Project", async () => {
     let releaseBuilder!: (value: unknown) => void;

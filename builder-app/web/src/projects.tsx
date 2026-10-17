@@ -421,6 +421,7 @@ export function Projects() {
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<ProjectView | null>(null);
   const [viewState, setViewState] = useState<"loading" | "ready" | "error">("loading");
+  const [viewError, setViewError] = useState<"unavailable" | "registration">("unavailable");
   const [pendingCompanyID, setPendingCompanyID] = useState("");
   const [selectedDoc, setSelectedDoc] = useState("");
   const [markdown, setMarkdown] = useState("");
@@ -445,7 +446,7 @@ export function Projects() {
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
   const viewKey = project ? `${project.company_id}/${project.id}` : "";
   useEffect(() => {
-    setView(null); setViewState("loading"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
+    setView(null); setViewState("loading"); setViewError("unavailable"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
     if (!project) return;
     const controller = new AbortController();
     let inFlight = false;
@@ -454,7 +455,13 @@ export function Projects() {
       inFlight = true;
       try {
         const response = await fetch(`/api/local-preview?company_id=${encodeURIComponent(project!.company_id)}&project_id=${encodeURIComponent(project!.id)}`, { signal: controller.signal });
-        if (!response.ok) throw new Error("Snapshot unavailable");
+        if (!response.ok) {
+          if (response.status === 503) {
+            const failure = await response.json().catch(() => null) as { company_id?: string; project_id?: string; diagnostic?: string } | null;
+            if (failure?.company_id === project!.company_id && failure.project_id === project!.id && failure.diagnostic?.includes("invalid path-only registration")) throw new Error("registration");
+          }
+          throw new Error("Snapshot unavailable");
+        }
         const detail = await response.json() as Detail;
         if (detail.company_id !== project!.company_id || detail.project_id !== project!.id || detail.consumer_readiness !== "ready" || !detail.snapshot_fingerprint) throw new Error("Published Project is unavailable");
         let theme: ProjectTheme | undefined;
@@ -470,8 +477,8 @@ export function Projects() {
           }
         }
         if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
-      } catch {
-        if (!controller.signal.aborted) setViewState("error");
+      } catch (error) {
+        if (!controller.signal.aborted) { setViewError(error instanceof Error && error.message === "registration" ? "registration" : "unavailable"); setViewState("error"); }
       } finally {
         inFlight = false;
       }
@@ -487,6 +494,7 @@ export function Projects() {
   const detail = activeView?.detail || null;
   const documents = detail?.documents || [];
   const selectedDocument = documents.find((item) => item.path === selectedDoc);
+  const documentFingerprint = detail?.snapshot_fingerprint || "";
   const documentRevision = selectedDocument && detail ? `${detail.snapshot_fingerprint}/${selectedDocument.url}` : "";
   useEffect(() => {
     if (!selectedDocument || !documentRevision) return;
@@ -495,12 +503,12 @@ export function Projects() {
     setLoadedDocRevision("");
     setDocState("loading");
     fetch(selectedDocument.url, { signal: controller.signal }).then((response) => {
-      if (!response.ok) throw new Error("Document unavailable");
+      if (!response.ok || response.headers.get("X-Builder-Snapshot-Fingerprint") !== documentFingerprint) throw new Error("Document unavailable");
       return response.text();
     }).then((value) => { if (!controller.signal.aborted) { setMarkdown(value); setLoadedDocRevision(documentRevision); setDocState("ready"); } })
       .catch(() => { if (!controller.signal.aborted) { setLoadedDocRevision(documentRevision); setDocState("error"); } });
     return () => controller.abort();
-  }, [documentRevision]);
+  }, [documentRevision, documentFingerprint]);
   const headings = [...markdown.matchAll(/^#{1,3}\s+(.+)$/gm)].map((match) => match[1]);
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
@@ -518,7 +526,7 @@ export function Projects() {
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
 
   if (!activeView && viewState !== "error") return <main className="projects-page"><p role="status">Extraindo dados dos seus TODOs…</p></main>;
-  if (viewState === "error" || !detail) return <main className="projects-page"><p role="alert">TEACH: Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.</p><a href="/">Back to Companies</a></main>;
+  if (viewState === "error" || !detail) return <main className="projects-page"><p role="alert">{viewError === "registration" ? "TEACH: Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "TEACH: Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual."}</p><a href="/">Back to Companies</a></main>;
   if (!activeView?.theme) return <main className="projects-page"><p role="alert">{activeView?.themeDiagnostic || "The Project Design System cannot be applied."}</p><p>Project: {project?.name} · current revision {detail.snapshot_fingerprint?.slice(0, 12)}</p><a href="/">Back to Companies</a></main>;
 
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };

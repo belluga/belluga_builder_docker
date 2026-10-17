@@ -1,6 +1,6 @@
 # Builder Project Knowledge preview
 
-The MVP serves the registered Company/Project catalog anonymously and read-only. It provides no IAM, MCP, editing, or remote freshness attestation. Only admitted, fingerprint-verified snapshot bytes are served; explicit registration refreshes Project content.
+The MVP serves the registered Company/Project catalog anonymously and read-only. It provides no IAM, MCP or editing. Only admitted, fingerprint-verified snapshot bytes are served. Loading a Project asks the private Delphi reader for the current published Foundation revision; registration binds identity and source, but does not publish content. Old path-only bindings are invalid and must be registered again.
 
 From the Builder Docker root:
 
