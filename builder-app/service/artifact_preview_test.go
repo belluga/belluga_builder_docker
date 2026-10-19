@@ -239,6 +239,22 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.
 	}
 }
 
+func TestRegisteredProjectDetailPreservesPendingOverviewAlongsideLanding(t *testing.T) {
+	snapshot := registeredSnapshot{
+		ProjectID: "project-a", CompanyID: "company-a",
+		Artifacts: []registeredArtifact{
+			{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html"},
+			{ID: "overview", Kind: "overview", Name: "Project Overview", State: "pending", Diagnostic: "TEACH: request targeted Overview status."},
+		},
+		Files: map[string][]byte{"design/landing/index.html": []byte("<main>landing</main>")},
+	}
+	detail := registeredProjectDetail(snapshot, strings.Repeat("a", 64))
+	artifacts, ok := detail["artifacts"].([]registeredArtifact)
+	if !ok || len(artifacts) != 2 || artifacts[0].Kind != "landing" || artifacts[0].State != "available" || artifacts[1].Kind != "overview" || artifacts[1].State != "pending" || !strings.Contains(artifacts[1].Diagnostic, "TEACH") {
+		t.Fatalf("Project detail did not preserve independent Landing and pending Overview: %#v", detail["artifacts"])
+	}
+}
+
 func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjection(t *testing.T) {
 	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
 	valid := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})

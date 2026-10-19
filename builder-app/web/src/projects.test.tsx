@@ -317,12 +317,16 @@ describe("single root Project experience", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
-      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, overview: undefined }) }; }
+      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, artifacts: [...result.artifacts, { id: "overview", kind: "overview", name: "Project Overview", state: "pending", diagnostic: "Project Overview is not available in the published Foundation snapshot. TEACH: request targeted Overview status." }], overview: undefined }) }; }
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Project Overview not available yet" })).toBeInTheDocument();
     expect(screen.queryByText("Summary for builder")).not.toBeInTheDocument();
+    expect(screen.getByText(/TEACH: request targeted Overview status/)).toBeInTheDocument();
+    const landingLink = screen.getByRole("link", { name: /Ver landing independente/ });
+    expect(landingLink).toHaveAttribute("href", `/snapshot/belluga/builder/${fingerprint}/design/landing/index.html`);
+    expect(landingLink).toHaveAttribute("target", "_blank");
   });
   it("labels missing hero media against the loaded Overview, not a continuously current source", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");

@@ -220,14 +220,17 @@ function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { deta
 
 function OverviewEditorial({ detail, projectName }: { detail: Detail; projectName: string }) {
   const overview = detail.overview;
+  const landing = detail.artifacts.find((item) => item.kind === "landing" && item.state === "available");
+  const landingHref = landing ? artifactURL(detail, landing) : "";
+  const landingLink = landingHref ? <a className="overview-landing-link" href={landingHref} target="_blank" rel="noreferrer">Ver landing independente <span aria-hidden="true">→</span></a> : null;
   if (!overview || overview.schema_version !== "1") return <section className="project-notice" role="status">
-    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>
+    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>{landingLink}
   </section>;
   const sections = ["problem", "proposal", "impact", "audience"] as const;
   const labels = { problem: "Problema", proposal: "Proposta", impact: "Impacto", audience: "Para quem" };
   return <>
     <section className="project-hero overview-hero" aria-label="Project introduction">
-      <div className="project-hero-copy"><span className="overview-eyebrow">VISÃO DO PROJETO</span><h1>{projectName}</h1><h2 className="overview-hero-tagline">{overview.tagline}</h2><p className="overview-hero-summary">{overview.summary}</p>{(() => { const landing = detail.artifacts.find((item) => item.kind === "landing" && item.state === "available"); const href = landing ? artifactURL(detail, landing) : ""; return href ? <a className="overview-landing-link" href={href} target="_blank" rel="noreferrer">Ver landing independente <span aria-hidden="true">→</span></a> : null; })()}</div>
+      <div className="project-hero-copy"><span className="overview-eyebrow">VISÃO DO PROJETO</span><h1>{projectName}</h1><h2 className="overview-hero-tagline">{overview.tagline}</h2><p className="overview-hero-summary">{overview.summary}</p>{landingLink}</div>
       {(overview.media?.desktop && overview.media?.mobile) ? <div className="overview-device-pair" aria-label="Project preview images">
         <span className="overview-visual-note">CONCEITO · DADOS ILUSTRATIVOS</span>
         {overview.media.desktop && <img className="overview-desktop" src={overview.media.desktop} alt={overview.desktop_alt || ""} />}
