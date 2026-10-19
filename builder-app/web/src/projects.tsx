@@ -161,7 +161,7 @@ function SnapshotStatus({ detail }: { detail: Detail }) {
   const needsAttention = landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
   const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
   return <section className="overview-status" aria-labelledby="snapshot-status-title">
-    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · current read</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
+    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · loaded revision</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
     <dl className="overview-status-grid">
       <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
       <div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div>
@@ -232,7 +232,7 @@ function OverviewEditorial({ detail, projectName }: { detail: Detail; projectNam
         <span className="overview-visual-note">CONCEITO · DADOS ILUSTRATIVOS</span>
         {overview.media.desktop && <img className="overview-desktop" src={overview.media.desktop} alt={overview.desktop_alt || ""} />}
         {overview.media.mobile && <img className="overview-mobile" src={overview.media.mobile} alt={overview.mobile_alt || ""} />}
-      </div> : <p className="project-notice" role="alert">Hero images are missing from the current published Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
+      </div> : <p className="project-notice" role="alert">Hero images are missing from the loaded Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
     </section>
     <div className="overview-editorial" aria-label="Project at a glance">{sections.map((key) => {
       const section = overview.sections[key];
@@ -449,10 +449,7 @@ export function Projects() {
     setView(null); setViewState("loading"); setViewError("unavailable"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
     if (!project) return;
     const controller = new AbortController();
-    let inFlight = false;
     async function load() {
-      if (inFlight) return;
-      inFlight = true;
       try {
         const response = await fetch(`/api/local-preview?company_id=${encodeURIComponent(project!.company_id)}&project_id=${encodeURIComponent(project!.id)}`, { signal: controller.signal });
         if (!response.ok) {
@@ -468,7 +465,7 @@ export function Projects() {
         let themeDiagnostic: string | undefined;
         if (detail.consumer_readiness === "ready") {
           const design = detail.artifacts.find((item) => item.kind === "design_system" && item.state === "available" && item.files?.includes("design/system/design-system.json"));
-          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The current published Design System definition is unavailable.";
+          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The loaded Design System definition is unavailable.";
           else {
             try {
               const definition = await fetch(snapshotFileURL(detail, "design/system/design-system.json"), { signal: controller.signal });
@@ -476,23 +473,17 @@ export function Projects() {
               const resolved = resolveProjectTheme(await definition.json());
               theme = resolved.style; themeDiagnostic = resolved.diagnostic;
             } catch {
-              themeDiagnostic = "The current published Design System definition could not be read.";
+              themeDiagnostic = "The loaded Design System definition could not be read.";
             }
           }
         }
         if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
       } catch (error) {
         if (!controller.signal.aborted) { setViewError(error instanceof Error && error.message === "registration" ? "registration" : "unavailable"); setViewState("error"); }
-      } finally {
-        inFlight = false;
       }
     }
     void load();
-    let timer: number | undefined;
-    const refresh = () => { if (document.visibilityState === "visible" && !inFlight) { setView(null); setViewState("loading"); void load(); } };
-    timer = window.setInterval(refresh, 30_000);
-    document.addEventListener("visibilitychange", refresh);
-    return () => { controller.abort(); if (timer !== undefined) window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
+    return () => controller.abort();
   }, [viewKey]);
   const activeView = view?.key === viewKey ? view : null;
   const detail = activeView?.detail || null;
@@ -522,8 +513,8 @@ export function Projects() {
   if (catalogState === "error") return <main className="projects-page"><p role="alert">The local Project catalog is unavailable.</p></main>;
   if (selection.projectID && (!company || !project)) return <main className="projects-page"><p role="alert">This Company and Project selection is unavailable.</p><a href="/">Back to Companies</a></main>;
   if (selection.companyID && !company) return <main className="projects-page"><p role="alert">This Company is unavailable.</p><a href="/">Back to Companies</a></main>;
-  if (selection.projectID && !page) return <main className="projects-page"><p role="alert">This Project page is unavailable.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}`}>Back to Overview</a></main>;
-  if (selection.projectID && selection.prototype.artifact && !selection.pageExplicit && !selection.prototype.mode) return <main className="projects-page"><p role="alert">This artifact-only link is incomplete. Open the Prototype page.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=prototypes`}>Open Prototype</a></main>;
+  if (selection.projectID && !page) return <main className="projects-page"><p role="alert">This Project page is unavailable.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}>Back to Overview</a></main>;
+  if (selection.projectID && selection.prototype.artifact && !selection.pageExplicit && !selection.prototype.mode) return <main className="projects-page"><p role="alert">This artifact-only link is incomplete. Open the Prototype page.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=prototypes`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "prototypes" }); } }}>Open Prototype</a></main>;
   if (selection.prototype.mode && (selection.prototype.mode !== "presentation" || page !== "prototypes" || !selection.projectID)) return <main className="projects-page"><p role="alert">This presentation link is invalid.</p><a href="/">Back to Companies</a></main>;
 
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
@@ -540,17 +531,17 @@ export function Projects() {
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
     </div>
-    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
+    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || ((page === "release" || page === "todo") && item.id === "roadmap") ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
       <section className="project-content">{activeView.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "release" && page !== "todo" && <header className="project-page-heading"><span className="project-page-tag">{page === "documents" ? "FOUNDATION DOCUMENTATION · SAVED SNAPSHOT" : page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{page === "documents" ? "Documents & decisions" : pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
           <SnapshotStatus detail={detail} />
           <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
-        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's current published Foundation revision.</p>
+        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's loaded Foundation revision.</p>
           {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.path} onClick={() => setSelectedDoc(item.path)}>{selectedDoc === item.path ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
           {selectedDocument && <article className="project-markdown document-reader">{(docState === "loading" || loadedDocRevision !== documentRevision) && <p role="status">Loading document…</p>}{docState === "error" && loadedDocRevision === documentRevision && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && loadedDocRevision === documentRevision && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
-          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the currently published Foundation revision. Availability does not indicate human approval.</p></section>
+          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the loaded Foundation revision. Availability does not indicate human approval.</p></section>
         </div>}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}

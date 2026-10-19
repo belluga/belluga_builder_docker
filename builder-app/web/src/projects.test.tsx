@@ -60,7 +60,8 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
-  it("keeps one live detail request during visible-tab refresh", async () => {
+  it("does not start another detail request on tab return or elapsed time", async () => {
+    const interval = vi.spyOn(window, "setInterval");
     let resolveDetail!: (value: unknown) => void;
     const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
     const detailCalls = vi.fn();
@@ -78,12 +79,37 @@ describe("single root Project experience", () => {
     expect(detailCalls).toHaveBeenCalledTimes(1);
     resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
     expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    fireEvent(document, new Event("visibilitychange"));
+    expect(detailCalls).toHaveBeenCalledTimes(1);
+    expect(interval.mock.calls.some(([, delay]) => delay === 30_000)).toBe(false);
+    interval.mockRestore();
+  });
+  it("keeps the loaded Project detail through page, brand and invalid-link recovery navigation", async () => {
+    const fetcher = vi.mocked(fetch);
+    const detailCalls = () => fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/local-preview?company_id=")).length;
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
+    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
+    expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&page=missing"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    fireEvent.click(screen.getByRole("link", { name: "Back to Overview" }));
+    expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype%3Ademo"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    fireEvent.click(screen.getByRole("link", { name: "Open Prototype" }));
+    expect(await screen.findByRole("heading", { name: "Prototypes" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
   });
   it("shows normal saved review and visual-origin observations with their snapshot time", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     const status = await screen.findByRole("region", { name: "Snapshot status" });
-    expect(status).toHaveTextContent("Published source · current read");
+    expect(status).toHaveTextContent("Published source · loaded revision");
     expect(status).toHaveTextContent("Foundation cccccccccccc");
     expect(status).toHaveTextContent("Observations saved 2026-10-15T12:00:00Z");
     expect(status).toHaveTextContent("Landing reviewCurrent against reviewed source (match)");
@@ -298,6 +324,17 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Project Overview not available yet" })).toBeInTheDocument();
     expect(screen.queryByText("Summary for builder")).not.toBeInTheDocument();
   });
+  it("labels missing hero media against the loaded Overview, not a continuously current source", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, overview: { ...result.overview, media: {} } }) }; }
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    render(<Projects />);
+    expect(await screen.findByRole("alert", { name: "" })).toHaveTextContent("loaded Overview");
+  });
   it("shows one status column and derives Release status without counting ledgers", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
@@ -386,7 +423,7 @@ describe("single root Project experience", () => {
     expect(release).not.toHaveTextContent("Entregue");
     expect(screen.queryByRole("columnheader", { name: "ENTREGA" })).not.toBeInTheDocument();
   });
-  it("updates the derived Release status when a visible Project reads a newer TODO stage", async () => {
+  it("updates the derived Release status only after a manual page reload", async () => {
     let detailReads = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
@@ -401,9 +438,13 @@ describe("single root Project experience", () => {
       return { ok: true, json: async () => saved };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
-    render(<Projects />);
+    const mounted = render(<Projects />);
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveTextContent("Planejada");
     fireEvent(document, new Event("visibilitychange"));
+    expect(detailReads).toBe(1);
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Planejada");
+    mounted.unmount();
+    render(<Projects />);
     await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Em andamento"));
     expect(detailReads).toBe(2);
   });
@@ -524,7 +565,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Document headings" })).toHaveTextContent("Decisions");
   });
-  it("replaces an open document only after the refreshed Foundation revision is loaded", async () => {
+  it("replaces an open document only after a manual page reload reads the new Foundation revision", async () => {
     const nextFingerprint = "b".repeat(64);
     const path = "modules/project_knowledge_viewer_module.md";
     const firstURL = `/snapshot/belluga/builder/${fingerprint}/${path}`;
@@ -546,12 +587,17 @@ describe("single root Project experience", () => {
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
+    const mounted = render(<Projects />);
     fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(await screen.findByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
     fireEvent(document, new Event("visibilitychange"));
+    expect(detailReads).toBe(1);
+    expect(screen.getByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
+    mounted.unmount();
+    render(<Projects />);
     await waitFor(() => expect(detailReads).toBe(2));
     expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(screen.getByRole("status")).toHaveTextContent("Loading document");
     await act(async () => resolveNextDocument({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": nextFingerprint }), text: async () => "# New Foundation content" }));
     expect(await screen.findByRole("heading", { name: "New Foundation content" })).toBeInTheDocument();

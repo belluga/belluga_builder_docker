@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import "./prototype-viewer.css";
 
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; diagnostic?: string };
@@ -87,9 +88,14 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
   const factor = selection.scale === "fit" ? Math.max(.1, Math.min(1, size.width / dimensions.width, size.height / dimensions.height)) : 1;
   const inspector = new URLSearchParams({ company_id: companyID, project_id: projectID, page: "prototypes", artifact: selection.artifact, screen_id: selection.screenID, state_id: selection.stateID });
   const choose = (changes: Record<string, string | null>) => onNavigate(changes, true);
+  const exitPresentation = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    onNavigate({ page: "prototypes", mode: null, prototype_id: null, scenario_id: null, scenario_step: null, fingerprint: null, device: null, scale: null });
+  };
   return <main className="prototype-presentation">
     <header className="prototype-presentation-bar">
-      <a className="prototype-presentation-exit" href={`/?${inspector}`}>← Sair</a>
+      <a className="prototype-presentation-exit" href={`/?${inspector}`} onClick={exitPresentation}>← Sair</a>
       <span className="prototype-presentation-context">{props.companyName} / {props.projectName}</span>
       <label>Protótipo<select aria-label="Protótipo" value={prototype?.id || ""} onChange={(event) => {
         const next = prototypes.find((item) => item.id === event.target.value);
@@ -115,7 +121,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
     </header>
     <section ref={canvasRef} className="prototype-presentation-canvas" aria-label={`${props.companyName} / ${props.projectName} · apresentação`}>
       {!detail ? <p role="status">Carregando snapshot…</p>
-        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`}>inspetor</a>.</p>
+        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
             : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando entrada do snapshot…</p>
               : check.state === "error" ? <p role="alert">{check.message}</p>

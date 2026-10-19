@@ -26,10 +26,19 @@ describe("controlled Prototype inspector", () => {
   });
   it("rejects a stale presentation fingerprint before loading HTML", () => {
     const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-    render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint: "b".repeat(64), device: "mobile", scale: "fit" }} />);
+    const onNavigate = vi.fn();
+    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint: "b".repeat(64), device: "mobile", scale: "fit" }} />);
     expect(screen.getByRole("alert")).toHaveTextContent(/Snapshot alterado/);
     expect(fetcher).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("link", { name: "inspetor" }));
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ page: "prototypes", mode: null, fingerprint: null }));
     vi.unstubAllGlobals();
+  });
+  it("exits presentation through Project navigation without reloading the document", () => {
+    const onNavigate = vi.fn();
+    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint: "b".repeat(64), device: "mobile", scale: "fit" }} />);
+    fireEvent.click(screen.getByRole("link", { name: /Sair/ }));
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ page: "prototypes", mode: null, fingerprint: null }));
   });
   it("verifies selected HTML before the presentation iframe appears", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }) })));
