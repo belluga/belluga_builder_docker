@@ -43,3 +43,11 @@
 @media (max-width: 1000px) { .release-work-row { grid-template-columns: 25px minmax(0, 1fr); gap: 8px 10px; padding: 15px 0; } .release-work-icon { grid-column: 1; grid-row: 1 / span 3; font-size: 20px; } .release-work-row h3 { grid-column: 2; grid-row: 1; } .release-work-id { grid-column: 2; grid-row: 3; } .release-work-status { grid-column: 2; grid-row: 2; justify-self: start; padding: 6px 8px; } }
 @media (max-width: 800px) { .release-page { padding: 25px 22px 45px; } .release-hero { align-items: start; flex-direction: column; } }
 @media (max-width: 600px) { .release-page { padding: 21px 17px 38px; } .release-breadcrumb { margin: 22px 0 20px; gap: 8px; } .release-hero h1 { font-size: 35px; } .release-work { padding-top: 32px; } .release-work-row h3 { font-size: 14px; } .release-work-id { font-size: 11px; } .release-work-status { font-size: 10px; } }
+.release-page { position: relative; }
+.release-todo-overlay { position: fixed; z-index: 40; top: 122px; right: 22px; bottom: 22px; width: min(385px,calc(100vw - 44px)); overflow: auto; padding: 22px; border: 1px solid color-mix(in srgb,var(--project-accent) 65%,var(--project-border)); border-radius: 12px; background: linear-gradient(160deg,var(--project-surface),var(--project-canvas)); box-shadow: -20px 18px 55px #0009; }
+.release-todo-overlay .todo-preview { padding: 0; border: 0; background: transparent; box-shadow: none; }
+.release-todo-overlay .todo-preview h2 { margin-bottom: 14px; font-size: 25px; }
+.release-todo-overlay .todo-preview-body section + section { margin-top: 23px; }
+.release-todo-overlay .todo-preview-body h3 { margin: 0 0 7px; }
+.release-todo-overlay .todo-preview-body p { font-size: 14px; }
+@media (max-width: 600px) { .release-todo-overlay { inset: auto 0 0; width: 100%; max-height: 83vh; border-radius: 12px 12px 0 0; } }

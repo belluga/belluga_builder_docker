@@ -209,12 +209,12 @@ func testReaderConsumer(t *testing.T, root string) *registeredPreview {
 }
 
 func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning"},{"id":"active","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "done", Stage: "unknown"}, roadmapLocalStage{ID: "active", Stage: "Local-Implemented", WorkState: "blocked"})
+	projectionBytes := []byte(`{"schema_version":"builder-roadmap-projection-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning"},{"id":"active","path":"todos/active/work.md","kind":"executable"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	status := roadmapStatusForTest(projectionBytes, roadmapLocalStage{ID: "done", Stage: "unknown"}, roadmapLocalStage{ID: "active", Stage: "Local-Implemented", WorkState: "blocked"})
 	snapshot := registeredSnapshot{
 		SchemaVersion: "builder-project-snapshot-v1", ProjectID: "project-a", CompanyID: "company-a",
-		Files:     map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/completed/done.md": []byte("# Planning record\n"), "todos/active/work.md": []byte("# Work item\n")},
-		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/completed/done.md", "todos/active/work.md"}}},
+		Files:     map[string][]byte{"roadmap/projection.json": projectionBytes, "roadmap/todo-status.json": status, "todos/completed/done.md": []byte("# Planning record\n"), "todos/active/work.md": []byte("# Work item\n")},
+		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/projection.json", "roadmap/todo-status.json", "todos/completed/done.md", "todos/active/work.md"}}},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
 	projection, ok := detail["roadmap"].(roadmapProjection)
@@ -256,32 +256,47 @@ func TestRegisteredProjectDetailPreservesPendingOverviewAlongsideLanding(t *test
 }
 
 func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjection(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	valid := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	valid := roadmapStatusForTest(projection, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
 	invalid := [][]byte{
 		nil,
 		[]byte(`not-json`),
-		[]byte(`{"schema_version":"builder-roadmap-status-v1","catalog_sha256":"wrong","todos":[{"id":"todo-a","local_stage":"Pending"}]}`),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "different-id", Stage: "Pending"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "delivered"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending", WorkState: "delivered"}),
+		[]byte(`{"schema_version":"builder-roadmap-status-v1","projection_sha256":"wrong","todos":[{"id":"todo-a","local_stage":"Pending"}]}`),
+		roadmapStatusForTest(projection, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}),
+		roadmapStatusForTest(projection, roadmapLocalStage{ID: "different-id", Stage: "Pending"}),
+		roadmapStatusForTest(projection, roadmapLocalStage{ID: "todo-a", Stage: "delivered"}),
+		roadmapStatusForTest(projection, roadmapLocalStage{ID: "todo-a", Stage: "Pending", WorkState: "delivered"}),
 	}
 	for index, status := range invalid {
-		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Work item\n")}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/active/work.md"}}}}
+		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Work item\n")}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json", "roadmap/todo-status.json", "todos/active/work.md"}}}}
 		if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
 			t.Errorf("contradictory stage projection %d was exposed", index)
 		}
 	}
-	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": valid}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json"}}}}
+	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-status.json": valid}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json"}}}}
 	if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
 		t.Fatal("projection was exposed when derived file was not admitted by the artifact")
 	}
 }
 
+func TestRegisteredProjectDetailKeepsStaleExecutableBlockingAndPlanningDiagnosticOnly(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Epic description","releases":[{"id":"r-01","name":"Release","description":"Release description","todos":[{"id":"stale-executable","path":"todos/active/moved.md","kind":"executable","missing":true},{"id":"stale-planning","path":"todos/active/ledger.md","kind":"planning","missing":true}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[{"code":"stale_assignment","path":"todos/active/moved.md","message":"Missing source"}]}`)
+	status := roadmapStatusForTest(projection, roadmapLocalStage{ID: "stale-executable", Stage: "unknown", WorkState: "unknown"}, roadmapLocalStage{ID: "stale-planning", Stage: "unknown", WorkState: "unknown"})
+	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-status.json": status}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json", "roadmap/todo-status.json"}}}}
+	detail := registeredProjectDetail(snapshot, "fp")
+	read, ok := detail["roadmap"].(roadmapProjection)
+	if !ok {
+		t.Fatal("stale references must remain visible in an otherwise valid Roadmap")
+	}
+	todos := read.Epics[0].Releases[0].TODOs
+	if len(todos) != 2 || !todos[0].Missing || todos[0].Kind != "executable" || todos[0].LocalStage != "unknown" || !todos[1].Missing || todos[1].Kind != "planning" || todos[1].LocalStage != "unknown" {
+		t.Fatalf("stale assignment status or source visibility is incorrect: %+v", todos)
+	}
+}
+
 func roadmapStatusForTest(catalog []byte, todos ...roadmapLocalStage) []byte {
 	digest := sha256.Sum256(catalog)
-	status, _ := json.Marshal(roadmapStatusProjection{SchemaVersion: "builder-roadmap-status-v1", CatalogSHA256: hex.EncodeToString(digest[:]), TODOs: todos})
+	status, _ := json.Marshal(roadmapStatusProjection{SchemaVersion: "builder-roadmap-status-v1", ProjectionSHA256: hex.EncodeToString(digest[:]), TODOs: todos})
 	return status
 }
 
@@ -303,29 +318,29 @@ func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
 	}
 }
 
-func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedCatalog(t *testing.T) {
+func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedProject(t *testing.T) {
 	for _, value := range []string{
-		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
-		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+		`{"schema_version":"builder-roadmap-projection-v1","schema_version":"builder-roadmap-projection-v1","project_id":"project-a","focus_release_id":"r-01","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`,
+		`{"schema_version":"builder-roadmap-projection-v1","project_id":"project-b","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`,
 	} {
-		catalog := []byte(value)
-		if _, ok := admittedRoadmapProjection("project-a", catalog, roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}), map[string][]byte{"todos/active/work.md": []byte("# Work item\n")}, []string{"todos/active/work.md"}); ok {
+		projection := []byte(value)
+		if _, ok := admittedRoadmapProjection("project-a", projection, roadmapStatusForTest(projection), map[string][]byte{}, []string{"roadmap/projection.json", "roadmap/todo-status.json"}); ok {
 			t.Fatalf("invalid or foreign catalog admitted: %s", value)
 		}
 	}
 }
 
 func TestAdmittedRoadmapProjectionRequiresAdmittedTODOBody(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
-	files := map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Authored title\n")}
-	admitted := []string{"roadmap/catalog.json", "roadmap/todo-status.json"}
-	if _, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted); ok {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	status := roadmapStatusForTest(projection, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Authored title\n")}
+	admitted := []string{"roadmap/projection.json", "roadmap/todo-status.json"}
+	if _, ok := admittedRoadmapProjection("project-a", projection, status, files, admitted); ok {
 		t.Fatal("unlisted TODO body was exposed")
 	}
 	admitted = append(admitted, "todos/active/work.md")
-	projection, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted)
-	if !ok || projection.Epics[0].Releases[0].TODOs[0].Title != "Authored title" {
+	result, ok := admittedRoadmapProjection("project-a", projection, status, files, admitted)
+	if !ok || result.Epics[0].Releases[0].TODOs[0].Title != "Authored title" {
 		t.Fatal("admitted source H1 was not used")
 	}
 }

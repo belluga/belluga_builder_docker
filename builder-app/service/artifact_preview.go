@@ -132,10 +132,37 @@ type roadmapCatalogTODO struct {
 }
 
 type roadmapProjection struct {
-	SchemaVersion string        `json:"schema_version"`
-	ProjectID     string        `json:"project_id"`
-	FocusRelease  string        `json:"focus_release_id"`
-	Epics         []roadmapEpic `json:"epics"`
+	SchemaVersion string                 `json:"schema_version"`
+	ProjectID     string                 `json:"project_id"`
+	FocusRelease  string                 `json:"focus_release_id"`
+	Epics         []roadmapEpic          `json:"epics"`
+	Backlog       roadmapBacklog         `json:"backlog"`
+	Unclassified  []roadmapUnclassified  `json:"unclassified"`
+	Diagnostics   []roadmapDiagnostic    `json:"diagnostics"`
+}
+
+type roadmapBacklog struct {
+	TODOs   []roadmapTODO       `json:"todos"`
+	Folders []roadmapBacklogFolder `json:"folders"`
+}
+
+type roadmapBacklogFolder struct {
+	Name        string                 `json:"name"`
+	Path        string                 `json:"path"`
+	Description string                 `json:"description,omitempty"`
+	Folders     []roadmapBacklogFolder `json:"folders"`
+	TODOs       []roadmapTODO          `json:"todos"`
+}
+
+type roadmapUnclassified struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+type roadmapDiagnostic struct {
+	Code    string `json:"code"`
+	Path    string `json:"path,omitempty"`
+	Message string `json:"message"`
 }
 
 type roadmapEpic struct {
@@ -157,6 +184,7 @@ type roadmapTODO struct {
 	Title       string `json:"title"`
 	Path        string `json:"path"`
 	Kind        string `json:"kind"`
+	Missing     bool   `json:"missing,omitempty"`
 	RecordState string `json:"record_state"`
 	LocalStage  string `json:"local_stage"`
 	WorkState   string `json:"work_state"`
@@ -164,7 +192,7 @@ type roadmapTODO struct {
 
 type roadmapStatusProjection struct {
 	SchemaVersion string              `json:"schema_version"`
-	CatalogSHA256 string              `json:"catalog_sha256"`
+	ProjectionSHA256 string            `json:"projection_sha256"`
 	TODOs         []roadmapLocalStage `json:"todos"`
 }
 
@@ -530,7 +558,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		}
 		if artifact.Kind == "roadmap" && artifact.State == "available" {
 			for _, name := range artifact.Files {
-				if name == "roadmap/catalog.json" {
+				if name == "roadmap/projection.json" {
 					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"], snapshot.Files, artifact.Files); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
 						result["roadmap"] = projection
 					}
@@ -562,66 +590,152 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 }
 
 func admittedRoadmapProjection(projectID string, data, statusData []byte, files map[string][]byte, admitted []string) (roadmapProjection, bool) {
-	var catalog roadmapCatalog
+	admittedFiles := make(map[string]struct{}, len(admitted))
+	for _, name := range admitted {
+		admittedFiles[name] = struct{}{}
+	}
+	isAdmitted := func(target string) bool {
+		_, ok := admittedFiles[target]
+		return ok
+	}
+
+	var projection roadmapProjection
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
-	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&catalog) != nil || decoder.Decode(new(any)) != io.EOF || catalog.SchemaVersion != "builder-roadmap-v1" || catalog.ProjectID != projectID || len(catalog.Epics) == 0 {
+	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&projection) != nil || decoder.Decode(new(any)) != io.EOF ||
+		projection.SchemaVersion != "builder-roadmap-projection-v1" || projection.ProjectID != projectID || projection.Epics == nil ||
+		projection.Backlog.TODOs == nil || projection.Backlog.Folders == nil || projection.Unclassified == nil ||
+		projection.Diagnostics == nil || len(projection.Diagnostics) > 64 || len(projection.Unclassified) > 4096 || len(projection.Epics) > 32 {
 		return roadmapProjection{}, false
 	}
 	var status roadmapStatusProjection
 	statusDecoder := json.NewDecoder(strings.NewReader(string(statusData)))
 	statusDecoder.DisallowUnknownFields()
 	digest := sha256.Sum256(data)
-	if len(statusData) == 0 || rejectDuplicateJSONKeys(statusData) != nil || statusDecoder.Decode(&status) != nil || statusDecoder.Decode(new(any)) != io.EOF || status.SchemaVersion != "builder-roadmap-status-v1" || status.CatalogSHA256 != hex.EncodeToString(digest[:]) {
+	if len(statusData) == 0 || rejectDuplicateJSONKeys(statusData) != nil || statusDecoder.Decode(&status) != nil || statusDecoder.Decode(new(any)) != io.EOF || status.SchemaVersion != "builder-roadmap-status-v1" || status.ProjectionSHA256 != hex.EncodeToString(digest[:]) || status.TODOs == nil {
 		return roadmapProjection{}, false
 	}
 	stages := make(map[string]roadmapLocalStage, len(status.TODOs))
 	for _, row := range status.TODOs {
-		if row.ID == "" || stages[row.ID].ID != "" || !validRoadmapLocalStage(row.Stage) || (row.WorkState != "" && row.WorkState != "unknown" && row.WorkState != "blocked") {
+		if row.ID == "" || len(row.ID) > 1200 || stages[row.ID].ID != "" || !validRoadmapLocalStage(row.Stage) ||
+			(row.WorkState != "" && row.WorkState != "unknown" && row.WorkState != "blocked") {
 			return roadmapProjection{}, false
 		}
 		stages[row.ID] = row
 	}
-	epics := make([]roadmapEpic, 0, len(catalog.Epics))
 	seenTODOIDs := make(map[string]bool)
-	for _, sourceEpic := range catalog.Epics {
-		epic := roadmapEpic{ID: sourceEpic.ID, Name: sourceEpic.Name, Description: sourceEpic.Description, Releases: []roadmapRelease{}}
-		for _, sourceRelease := range sourceEpic.Releases {
-			release := roadmapRelease{ID: sourceRelease.ID, Name: sourceRelease.Name, Description: sourceRelease.Description, TODOs: []roadmapTODO{}}
-			for _, sourceTODO := range sourceRelease.TODOs {
-				if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] || !strings.HasPrefix(sourceTODO.Path, "todos/") || !safeSnapshotPath(sourceTODO.Path) || !containsRoadmapFile(admitted, sourceTODO.Path) {
-					return roadmapProjection{}, false
-				}
-				body, admittedBody := files[sourceTODO.Path]
-				title := roadmapTODOHeading(body)
-				if !admittedBody || title == "" {
-					return roadmapProjection{}, false
-				}
-				stage, exists := stages[sourceTODO.ID]
-				if !exists {
-					return roadmapProjection{}, false
-				}
-				seenTODOIDs[sourceTODO.ID] = true
-				recordState := "other"
-				if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
-					recordState = "completed"
-				} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
-					recordState = "active"
-				}
-				workState := stage.WorkState
-				if workState == "" {
-					workState = "unknown"
-				}
-				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState, LocalStage: stage.Stage, WorkState: workState})
-			}
-			epic.Releases = append(epic.Releases, release)
+	validateTODO := func(sourceTODO *roadmapTODO, allowMissing bool) bool {
+		if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] || sourceTODO.Path == "" || len(sourceTODO.Path) > 1024 ||
+			!strings.HasPrefix(sourceTODO.Path, "todos/") || !safeSnapshotPath(sourceTODO.Path) ||
+			(sourceTODO.Kind != "executable" && sourceTODO.Kind != "planning") {
+			return false
 		}
-		epics = append(epics, epic)
+		if sourceTODO.Missing {
+			if !allowMissing || isAdmitted(sourceTODO.Path) || files[sourceTODO.Path] != nil {
+				return false
+			}
+			sourceTODO.Title = sourceTODO.ID
+			sourceTODO.RecordState = "missing"
+		} else {
+			if !isAdmitted(sourceTODO.Path) {
+				return false
+			}
+			body, admittedBody := files[sourceTODO.Path]
+			if !admittedBody || len(body) == 0 || !utf8.Valid(body) {
+				return false
+			}
+			sourceTODO.Title = roadmapTODOHeading(body)
+			if sourceTODO.Title == "" {
+				return false
+			}
+			sourceTODO.RecordState = "other"
+			if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
+				sourceTODO.RecordState = "completed"
+			} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
+				sourceTODO.RecordState = "active"
+			} else if strings.HasPrefix(sourceTODO.Path, "todos/promotion/") || strings.HasPrefix(sourceTODO.Path, "todos/promotion_lane/") {
+				sourceTODO.RecordState = "promotion_lane"
+			}
+		}
+		stage, exists := stages[sourceTODO.ID]
+		if !exists {
+			return false
+		}
+		if sourceTODO.Missing && (stage.Stage != "unknown" || stage.WorkState != "unknown") {
+			return false
+		}
+		sourceTODO.LocalStage, sourceTODO.WorkState = stage.Stage, stage.WorkState
+		if sourceTODO.WorkState == "" { sourceTODO.WorkState = "unknown" }
+		seenTODOIDs[sourceTODO.ID] = true
+		return true
+	}
+	for e := range projection.Epics {
+		if projection.Epics[e].ID == "" || projection.Epics[e].Releases == nil || len(projection.Epics[e].Releases) > 64 {
+			return roadmapProjection{}, false
+		}
+		for r := range projection.Epics[e].Releases {
+			if projection.Epics[e].Releases[r].ID == "" || projection.Epics[e].Releases[r].TODOs == nil {
+				return roadmapProjection{}, false
+			}
+			for t := range projection.Epics[e].Releases[r].TODOs {
+				if !validateTODO(&projection.Epics[e].Releases[r].TODOs[t], true) {
+					return roadmapProjection{}, false
+				}
+			}
+		}
+	}
+	var validateFolder func(*roadmapBacklogFolder, string) bool
+	validateFolder = func(folder *roadmapBacklogFolder, parent string) bool {
+		if folder.Name == "" || folder.Path != parent+"/"+folder.Name || !safeSnapshotPath(folder.Path) ||
+			folder.Folders == nil || folder.TODOs == nil {
+			return false
+		}
+		for i := range folder.TODOs {
+			if folder.TODOs[i].Kind != "executable" || folder.TODOs[i].ID != "backlog:"+folder.TODOs[i].Path ||
+				!strings.HasPrefix(folder.TODOs[i].Path, folder.Path+"/") || !validateTODO(&folder.TODOs[i], false) {
+				return false
+			}
+		}
+		for i := range folder.Folders {
+			if !validateFolder(&folder.Folders[i], folder.Path) {
+				return false
+			}
+		}
+		return true
+	}
+	for i := range projection.Backlog.TODOs {
+		todo := &projection.Backlog.TODOs[i]
+		if todo.Kind != "executable" || todo.ID != "backlog:"+todo.Path || !strings.HasPrefix(todo.Path, "todos/active/") ||
+			strings.Contains(strings.TrimPrefix(todo.Path, "todos/active/"), "/") || !validateTODO(todo, false) {
+			return roadmapProjection{}, false
+		}
+	}
+	for i := range projection.Backlog.Folders {
+		if !validateFolder(&projection.Backlog.Folders[i], "todos/active") {
+			return roadmapProjection{}, false
+		}
+	}
+	seenUnclassified := make(map[string]bool, len(projection.Unclassified))
+	for _, item := range projection.Unclassified {
+		body, admittedBody := files[item.Path]
+		if item.Path == "" || len(item.Path) > 1024 || item.Reason == "" || len(item.Reason) > 512 ||
+			!isAdmitted(item.Path) || !strings.HasPrefix(item.Path, "todos/") ||
+			!safeSnapshotPath(item.Path) || seenUnclassified[item.Path] || !admittedBody || len(body) == 0 ||
+			!utf8.Valid(body) || roadmapTODOHeading(body) == "" {
+			return roadmapProjection{}, false
+		}
+		seenUnclassified[item.Path] = true
+	}
+	for _, diagnostic := range projection.Diagnostics {
+		if diagnostic.Code == "" || len(diagnostic.Code) > 64 || diagnostic.Message == "" || len(diagnostic.Message) > 512 ||
+			(diagnostic.Path != "" && (len(diagnostic.Path) > 1024 || !safeSnapshotPath(diagnostic.Path))) {
+			return roadmapProjection{}, false
+		}
 	}
 	if len(seenTODOIDs) != len(stages) {
 		return roadmapProjection{}, false
 	}
-	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, Epics: epics}, true
+	return projection, true
 }
 
 func roadmapTODOHeading(content []byte) string {
