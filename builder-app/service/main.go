@@ -67,6 +67,7 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	consumer := &registeredPreview{root: stateRoot}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
+	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
 	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))

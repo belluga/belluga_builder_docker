@@ -20,6 +20,30 @@ describe("controlled Prototype inspector", () => {
     expect(screen.getByRole("link", { name: /Abrir apresentação/ })).toHaveAttribute("href", expect.stringContaining("/?"));
     expect(screen.queryByText("Project directory")).not.toBeInTheDocument();
   });
+  it("opens TODO approval evidence by admitted ID and keeps non-TODO evidence on its snapshot file", () => {
+    const onNavigate = vi.fn();
+    const approvalPrototype = { ...prototype, screens: prototype.screens.map((item) => ({ ...item, states: item.states.map((state) => ({ ...state, approved_references: [
+      { id: "todo-proof", image: "proof.png", approval_evidence: "todos/active/evidence.md" },
+      { id: "doc-proof", image: "doc.png", approval_evidence: "docs/decision.md" },
+    ] })) })) };
+    const approvalDetail = { ...detail, prototype_todo_sources: [{ prototype_id: "demo", todo_id: "related-todo:abc123", label: "evidence.md", path: "todos/active/evidence.md" }], snapshot_observations: { prototype_status: { outcome: "go", items: [approvalPrototype] } } };
+    render(<LocalArtifactPreview {...base} detail={approvalDetail} onNavigate={onNavigate} />);
+    const todoLink = screen.getByRole("link", { name: /Abrir evidência TODO: evidence.md/ });
+    expect(todoLink).toHaveAttribute("href", expect.stringContaining("todo_id=related-todo%3Aabc123"));
+    expect(todoLink.getAttribute("href")).not.toContain("todos/active/evidence.md");
+    expect(screen.queryByRole("link", { name: /Abrir TODO relacionado: evidence.md/ })).not.toBeInTheDocument();
+    fireEvent.click(todoLink);
+    expect(onNavigate).toHaveBeenCalledWith({ page: "todo", todo_id: "related-todo:abc123" });
+    expect(screen.getByRole("link", { name: "Abrir evidência ↗" })).toHaveAttribute("href", expect.stringContaining("/snapshot/company/project/"));
+  });
+  it("fails closed when TODO approval evidence has no admitted source ID", () => {
+    const approvalPrototype = { ...prototype, screens: prototype.screens.map((item) => ({ ...item, states: item.states.map((state) => ({ ...state, approved_references: [{ id: "todo-proof", image: "proof.png", approval_evidence: "todos/active/evidence.md" }] })) })) };
+    const approvalDetail = { ...detail, snapshot_observations: { prototype_status: { outcome: "go", items: [approvalPrototype] } } };
+    render(<LocalArtifactPreview {...base} detail={approvalDetail} />);
+    expect(screen.getByText("Evidência TODO indisponível")).toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByRole("link", { name: /evidência/i })).not.toBeInTheDocument();
+    expect(document.querySelector("a[href*='todos/active/evidence.md']")).toBeNull();
+  });
   it("does not expose a Prototype without an admitted available artifact", () => {
     render(<LocalArtifactPreview {...base} detail={{ ...detail, artifacts: [] }} />);
     expect(screen.getByText(/No admitted Prototype/)).toBeInTheDocument();
