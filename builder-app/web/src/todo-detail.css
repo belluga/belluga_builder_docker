@@ -10,8 +10,10 @@
 .todo-hero-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 24px; color: var(--project-muted); font-size: 13px; }
 .todo-stage { display: inline-flex; align-items: center; gap: 9px; padding: 6px 14px; border: 1px solid var(--project-accent); border-radius: 99px; background: color-mix(in srgb, var(--project-accent) 15%, var(--project-surface)); color: var(--project-text); }
 .todo-stage i { width: 11px; height: 11px; border-radius: 50%; background: currentColor; }
+.todo-stage.approval, .todo-stage.ready, .todo-stage.active, .todo-stage.implemented { border-color: var(--project-accent); color: var(--project-accent); }
 .todo-stage.blocked { border-color: #c77664; color: #edaa91; }
-.todo-stage.delivered { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
+.todo-stage.done { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
+.todo-stage.validation, .todo-stage.unknown { border-color: #b9933e; color: #e8c879; }
 .todo-source-label { padding-left: 22px; border-left: 1px solid var(--project-border); }
 .todo-objective, .todo-facts, .todo-panel, .todo-source { border: 1px solid var(--project-border); border-radius: 5px; background: color-mix(in srgb, var(--project-surface) 87%, var(--project-accent)); }
 .todo-icon { flex: none; width: 34px; color: var(--project-accent); font-size: 27px; line-height: 1; }

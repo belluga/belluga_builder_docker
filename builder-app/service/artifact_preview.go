@@ -97,6 +97,8 @@ type registeredSnapshot struct {
 	Assets                 map[string]registeredAssetReference `json:"assets,omitempty"`
 	Artifacts              []registeredArtifact                `json:"artifacts"`
 	Observations           map[string]json.RawMessage          `json:"observations"`
+	todoSources            todoSourceMap
+	todoSourcesParsed      bool
 }
 
 type registeredAssetReference struct {
@@ -132,17 +134,17 @@ type roadmapCatalogTODO struct {
 }
 
 type roadmapProjection struct {
-	SchemaVersion string                 `json:"schema_version"`
-	ProjectID     string                 `json:"project_id"`
-	FocusRelease  string                 `json:"focus_release_id"`
-	Epics         []roadmapEpic          `json:"epics"`
-	Backlog       roadmapBacklog         `json:"backlog"`
-	Unclassified  []roadmapUnclassified  `json:"unclassified"`
-	Diagnostics   []roadmapDiagnostic    `json:"diagnostics"`
+	SchemaVersion string                `json:"schema_version"`
+	ProjectID     string                `json:"project_id"`
+	FocusRelease  string                `json:"focus_release_id"`
+	Epics         []roadmapEpic         `json:"epics"`
+	Backlog       roadmapBacklog        `json:"backlog"`
+	Unclassified  []roadmapUnclassified `json:"unclassified"`
+	Diagnostics   []roadmapDiagnostic   `json:"diagnostics"`
 }
 
 type roadmapBacklog struct {
-	TODOs   []roadmapTODO       `json:"todos"`
+	TODOs   []roadmapTODO          `json:"todos"`
 	Folders []roadmapBacklogFolder `json:"folders"`
 }
 
@@ -180,26 +182,36 @@ type roadmapRelease struct {
 }
 
 type roadmapTODO struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Path        string `json:"path"`
-	Kind        string `json:"kind"`
-	Missing     bool   `json:"missing,omitempty"`
-	RecordState string `json:"record_state"`
-	LocalStage  string `json:"local_stage"`
-	WorkState   string `json:"work_state"`
+	ID                    string `json:"id"`
+	Title                 string `json:"title"`
+	Path                  string `json:"path"`
+	Kind                  string `json:"kind"`
+	Missing               bool   `json:"missing,omitempty"`
+	Objective             string `json:"objective,omitempty"`
+	ObjectiveState        string `json:"objective_state"`
+	NextStep              string `json:"next_step,omitempty"`
+	NextStepState         string `json:"next_step_state"`
+	RecordState           string `json:"record_state"`
+	DeliveryStage         string `json:"delivery_stage,omitempty"`
+	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
+	DeliveryStageState    string `json:"delivery_stage_state"`
+	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
+	Blocked               bool   `json:"blocked"`
+	QualifierState        string `json:"qualifier_state"`
+	QualifierTeach        string `json:"qualifier_teach,omitempty"`
+	WorkState             string `json:"work_state"`
+	ExplicitNoCode        bool   `json:"explicit_no_code,omitempty"`
+	Executable            bool   `json:"executable,omitempty"`
 }
 
-type roadmapStatusProjection struct {
-	SchemaVersion string              `json:"schema_version"`
-	ProjectionSHA256 string            `json:"projection_sha256"`
-	TODOs         []roadmapLocalStage `json:"todos"`
+type todoSourceMap struct {
+	SchemaVersion string                `json:"schema_version"`
+	Sources       map[string]todoSource `json:"sources"`
+	byPath        map[string]string
 }
-
-type roadmapLocalStage struct {
-	ID        string `json:"id"`
-	Stage     string `json:"local_stage"`
-	WorkState string `json:"work_state"`
+type todoSource struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type portfolioSummary struct {
@@ -405,6 +417,10 @@ func readRegisteredFile(name string, limit int64) ([]byte, error) {
 }
 
 func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/local-todo-source" {
+		p.todoSourceHandler(w, r)
+		return
+	}
 	if r.Method != http.MethodGet || r.URL.Path != "/api/local-preview" {
 		writeError(w, 404, "not_found")
 		return
@@ -440,6 +456,96 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeError(w, 404, "project_not_found")
+}
+
+func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	companyID, companyOK := oneQueryValue(q, "company_id")
+	projectID, projectOK := oneQueryValue(q, "project_id")
+	todoID, todoOK := oneQueryValue(q, "todo_id")
+	fingerprintArg, fingerprintOK := oneQueryValue(q, "fingerprint")
+	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 8192 || len(q) != 4 || !companyOK || !projectOK || !todoOK || !fingerprintOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || todoID == "" || len(todoID) > 1200 || !utf8.ValidString(todoID) || !validSHA256(fingerprintArg) {
+		writeError(w, http.StatusBadRequest, "todo_source_request_invalid")
+		return
+	}
+	base, token := strings.TrimRight(strings.TrimSpace(p.readerURL), "/"), p.readerToken
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), "/")
+	}
+	if token == "" {
+		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
+	}
+	query := url.Values{"company_id": {companyID}, "fingerprint": {fingerprintArg}, "todo_id": {todoID}}
+	endpoint, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
+	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" || len(token) < 32 {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	endpoint.RawQuery = query.Encode()
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 100 * time.Second}
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		writeError(w, http.StatusNotFound, "todo_source_not_found")
+		return
+	}
+	if response.StatusCode == http.StatusConflict {
+		writeError(w, http.StatusConflict, "todo_source_stale_reload_project")
+		return
+	}
+	if response.StatusCode != http.StatusOK {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, (512<<10)+2048))
+	var result struct {
+		TODOID      string `json:"todo_id"`
+		Fingerprint string `json:"fingerprint"`
+		Markdown    string `json:"markdown"`
+	}
+	if err != nil || len(body) > (512<<10)+2048 || rejectDuplicateJSONKeys(body) != nil || json.Unmarshal(body, &result) != nil || result.TODOID != todoID || result.Fingerprint != fingerprintArg || len([]byte(result.Markdown)) > 512<<10 || !utf8.ValidString(result.Markdown) {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func oneQueryValue(q url.Values, key string) (string, bool) {
+	values, ok := q[key]
+	if !ok || len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func validTodoSourceEntry(id string, item todoSource) bool {
+	ext := strings.ToLower(filepath.Ext(item.Path))
+	if id == "" || len(id) > 1200 || !utf8.ValidString(id) || len(item.Path) > 1024 || !strings.HasPrefix(item.Path, "todos/") || !safeSnapshotPath(item.Path) || (ext != ".md" && ext != ".markdown") || len(item.SHA256) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(item.SHA256)
+	return err == nil && hex.EncodeToString(decoded) == item.SHA256
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
 }
 
 type privateReaderResponse struct {
@@ -510,7 +616,10 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	if _, err := hex.DecodeString(source.Fingerprint); err != nil || strings.ToLower(source.Fingerprint) != source.Fingerprint {
 		return registeredSnapshot{}, "", errors.New("private Project fingerprint is invalid")
 	}
-	return registeredSnapshot{SchemaVersion: "builder-project-snapshot-v2", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Observations: source.Observations}, source.Fingerprint, nil
+	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Observations: source.Observations}
+	snapshot.todoSources = parseTodoSourceMap(snapshot)
+	snapshot.todoSourcesParsed = true
+	return snapshot, source.Fingerprint, nil
 }
 
 func validProjectSHA(value string) bool {
@@ -528,6 +637,41 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
 		"project_sha": snapshot.ProjectSHA,
 	}
+	todoSources := snapshot.todoSources
+	if !snapshot.todoSourcesParsed {
+		todoSources = parseTodoSourceMap(snapshot)
+		snapshot.todoSourcesParsed = true
+	}
+	snapshot.todoSources = todoSources
+	prototypeTODOs := []map[string]string{}
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind != "prototype" || artifact.State != "available" {
+			continue
+		}
+		parts := strings.Split(artifact.Entry, "/")
+		if len(parts) < 3 {
+			continue
+		}
+		manifest := snapshot.Files[path.Join("prototypes", parts[1], "prototype.json")]
+		var evidence struct {
+			Related []struct {
+				Kind string `json:"kind"`
+				Path string `json:"path"`
+			} `json:"related"`
+		}
+		if json.Unmarshal(manifest, &evidence) != nil {
+			continue
+		}
+		for _, related := range evidence.Related {
+			if !strings.HasPrefix(related.Path, "todos/") {
+				continue
+			}
+			if id := todoSources.byPath[related.Path]; id != "" {
+				prototypeTODOs = append(prototypeTODOs, map[string]string{"prototype_id": artifact.ID, "todo_id": id, "label": path.Base(related.Path), "path": related.Path})
+			}
+		}
+	}
+	result["prototype_todo_sources"] = prototypeTODOs
 	if snapshot.ExternalSourceID != "" {
 		result["external_source_id"] = snapshot.ExternalSourceID
 	}
@@ -559,7 +703,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		if artifact.Kind == "roadmap" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "roadmap/projection.json" {
-					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"], snapshot.Files, artifact.Files); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files, artifact.Files, snapshot.todoSources); ok {
 						result["roadmap"] = projection
 					}
 				}
@@ -589,7 +733,7 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 	return result
 }
 
-func admittedRoadmapProjection(projectID string, data, statusData []byte, files map[string][]byte, admitted []string) (roadmapProjection, bool) {
+func admittedRoadmapProjection(projectID string, data []byte, files map[string][]byte, admitted []string, sources todoSourceMap) (roadmapProjection, bool) {
 	admittedFiles := make(map[string]struct{}, len(admitted))
 	for _, name := range admitted {
 		admittedFiles[name] = struct{}{}
@@ -603,25 +747,13 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte, files 
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
 	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&projection) != nil || decoder.Decode(new(any)) != io.EOF ||
-		projection.SchemaVersion != "builder-roadmap-projection-v1" || projection.ProjectID != projectID || projection.Epics == nil ||
+		projection.SchemaVersion != "builder-roadmap-projection-v3" || projection.ProjectID != projectID || projection.Epics == nil ||
 		projection.Backlog.TODOs == nil || projection.Backlog.Folders == nil || projection.Unclassified == nil ||
 		projection.Diagnostics == nil || len(projection.Diagnostics) > 64 || len(projection.Unclassified) > 4096 || len(projection.Epics) > 32 {
 		return roadmapProjection{}, false
 	}
-	var status roadmapStatusProjection
-	statusDecoder := json.NewDecoder(strings.NewReader(string(statusData)))
-	statusDecoder.DisallowUnknownFields()
-	digest := sha256.Sum256(data)
-	if len(statusData) == 0 || rejectDuplicateJSONKeys(statusData) != nil || statusDecoder.Decode(&status) != nil || statusDecoder.Decode(new(any)) != io.EOF || status.SchemaVersion != "builder-roadmap-status-v1" || status.ProjectionSHA256 != hex.EncodeToString(digest[:]) || status.TODOs == nil {
+	if sources.SchemaVersion != "builder-todo-sources-v2" || sources.Sources == nil || len(sources.byPath) != len(sources.Sources) {
 		return roadmapProjection{}, false
-	}
-	stages := make(map[string]roadmapLocalStage, len(status.TODOs))
-	for _, row := range status.TODOs {
-		if row.ID == "" || len(row.ID) > 1200 || stages[row.ID].ID != "" || !validRoadmapLocalStage(row.Stage) ||
-			(row.WorkState != "" && row.WorkState != "unknown" && row.WorkState != "blocked") {
-			return roadmapProjection{}, false
-		}
-		stages[row.ID] = row
 	}
 	seenTODOIDs := make(map[string]bool)
 	validateTODO := func(sourceTODO *roadmapTODO, allowMissing bool) bool {
@@ -637,35 +769,17 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte, files 
 			sourceTODO.Title = sourceTODO.ID
 			sourceTODO.RecordState = "missing"
 		} else {
-			if !isAdmitted(sourceTODO.Path) {
+			mapped, ok := sources.Sources[sourceTODO.ID]
+			if !ok || mapped.Path != sourceTODO.Path {
 				return false
 			}
-			body, admittedBody := files[sourceTODO.Path]
-			if !admittedBody || len(body) == 0 || !utf8.Valid(body) {
+			if sourceTODO.Title == "" || utf8.RuneCountInString(sourceTODO.Title) > 160 || !validRoadmapField(sourceTODO.Objective, sourceTODO.ObjectiveState, 1024) || !validRoadmapField(sourceTODO.NextStep, sourceTODO.NextStepState, 512) || !validRoadmapRecordState(sourceTODO.RecordState) || !validRoadmapLifecycleTODO(*sourceTODO) {
 				return false
-			}
-			sourceTODO.Title = roadmapTODOHeading(body)
-			if sourceTODO.Title == "" {
-				return false
-			}
-			sourceTODO.RecordState = "other"
-			if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
-				sourceTODO.RecordState = "completed"
-			} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
-				sourceTODO.RecordState = "active"
-			} else if strings.HasPrefix(sourceTODO.Path, "todos/promotion/") || strings.HasPrefix(sourceTODO.Path, "todos/promotion_lane/") {
-				sourceTODO.RecordState = "promotion_lane"
 			}
 		}
-		stage, exists := stages[sourceTODO.ID]
-		if !exists {
+		if sourceTODO.Missing && (!validRoadmapLifecycleTODO(*sourceTODO) || sourceTODO.WorkState != "unknown") {
 			return false
 		}
-		if sourceTODO.Missing && (stage.Stage != "unknown" || stage.WorkState != "unknown") {
-			return false
-		}
-		sourceTODO.LocalStage, sourceTODO.WorkState = stage.Stage, stage.WorkState
-		if sourceTODO.WorkState == "" { sourceTODO.WorkState = "unknown" }
 		seenTODOIDs[sourceTODO.ID] = true
 		return true
 	}
@@ -717,11 +831,8 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte, files 
 	}
 	seenUnclassified := make(map[string]bool, len(projection.Unclassified))
 	for _, item := range projection.Unclassified {
-		body, admittedBody := files[item.Path]
 		if item.Path == "" || len(item.Path) > 1024 || item.Reason == "" || len(item.Reason) > 512 ||
-			!isAdmitted(item.Path) || !strings.HasPrefix(item.Path, "todos/") ||
-			!safeSnapshotPath(item.Path) || seenUnclassified[item.Path] || !admittedBody || len(body) == 0 ||
-			!utf8.Valid(body) || roadmapTODOHeading(body) == "" {
+			!strings.HasPrefix(item.Path, "todos/") || !safeSnapshotPath(item.Path) || seenUnclassified[item.Path] {
 			return roadmapProjection{}, false
 		}
 		seenUnclassified[item.Path] = true
@@ -732,10 +843,21 @@ func admittedRoadmapProjection(projectID string, data, statusData []byte, files 
 			return roadmapProjection{}, false
 		}
 	}
-	if len(seenTODOIDs) != len(stages) {
-		return roadmapProjection{}, false
-	}
 	return projection, true
+}
+
+func validRoadmapField(value, state string, max int) bool {
+	switch state {
+	case "absent", "too_long":
+		return value == ""
+	case "complete":
+		return value != "" && utf8.ValidString(value) && len([]byte(value)) <= max
+	default:
+		return false
+	}
+}
+func validRoadmapRecordState(value string) bool {
+	return value == "active" || value == "completed" || value == "promotion_lane" || value == "other"
 }
 
 func roadmapTODOHeading(content []byte) string {
@@ -747,13 +869,44 @@ func roadmapTODOHeading(content []byte) string {
 	return ""
 }
 
-func validRoadmapLocalStage(value string) bool {
+func validRoadmapDeliveryStage(value string) bool {
 	switch value {
-	case "Pending", "Local-Implemented", "Lane-Promoted", "Production-Ready", "unknown":
+	case "Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed":
 		return true
 	default:
 		return false
 	}
+}
+
+func validRoadmapLifecycleTODO(todo roadmapTODO) bool {
+	if len(todo.AuthoredDeliveryStage) > 256 || !utf8.ValidString(todo.AuthoredDeliveryStage) || (todo.WorkState != "unknown" && todo.WorkState != "blocked") {
+		return false
+	}
+	switch todo.DeliveryStageState {
+	case "verified":
+		if !validRoadmapDeliveryStage(todo.DeliveryStage) || todo.DeliveryStageTeach != "" {
+			return false
+		}
+	case "unverified":
+		if todo.DeliveryStage != "" || !strings.HasPrefix(todo.DeliveryStageTeach, "TEACH:") || len(todo.DeliveryStageTeach) > 1024 {
+			return false
+		}
+	default:
+		return false
+	}
+	switch todo.QualifierState {
+	case "verified":
+		if todo.QualifierTeach != "" {
+			return false
+		}
+	case "unverified":
+		if todo.Blocked || !strings.HasPrefix(todo.QualifierTeach, "TEACH:") || len(todo.QualifierTeach) > 1024 {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func containsRoadmapFile(files []string, target string) bool {
@@ -794,26 +947,27 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		return registeredSnapshot{}, "", errors.New("snapshot fingerprint mismatch")
 	}
 	var snapshot registeredSnapshot
-	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || (snapshot.SchemaVersion != "builder-project-snapshot-v1" && snapshot.SchemaVersion != "builder-project-snapshot-v2") || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
+	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || snapshot.SchemaVersion != "builder-project-snapshot-v3" || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
 		return registeredSnapshot{}, "", errors.New("snapshot identity invalid")
 	}
-	v2 := snapshot.SchemaVersion == "builder-project-snapshot-v2"
-	if (!v2 && len(data) > 64<<20) || (v2 && len(data) > 4<<20) || (!v2 && len(snapshot.Assets) != 0) {
+	if len(data) > 4<<20 {
 		return registeredSnapshot{}, "", errors.New("snapshot storage bound or version invalid")
 	}
+	snapshot.todoSources = parseTodoSourceMap(snapshot)
+	snapshot.todoSourcesParsed = true
 	var total int64
 	for name, content := range snapshot.Files {
 		if !safeSnapshotPath(name) || len(content) > 2<<20 {
 			return registeredSnapshot{}, "", errors.New("snapshot file is unsafe or too large")
 		}
 		total += int64(len(content))
-		if total > 48<<20 || (v2 && strings.EqualFold(filepath.Ext(name), ".png")) {
+		if total > 48<<20 || strings.EqualFold(filepath.Ext(name), ".png") {
 			return registeredSnapshot{}, "", errors.New("snapshot decoded content limit exceeded")
 		}
 	}
 	var assetTotal int64
 	for name, ref := range snapshot.Assets {
-		if !v2 || !safeSnapshotPath(name) || !strings.EqualFold(filepath.Ext(name), ".png") || len(ref.SHA256) != 64 || strings.ToLower(ref.SHA256) != ref.SHA256 || ref.Size <= 0 || ref.Size > 2<<20 {
+		if !safeSnapshotPath(name) || !strings.EqualFold(filepath.Ext(name), ".png") || len(ref.SHA256) != 64 || strings.ToLower(ref.SHA256) != ref.SHA256 || ref.Size <= 0 || ref.Size > 2<<20 {
 			return registeredSnapshot{}, "", errors.New("snapshot asset reference invalid")
 		}
 		if _, err := hex.DecodeString(ref.SHA256); err != nil {
@@ -848,7 +1002,7 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		if artifact.State == "available" && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact) {
+		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
 			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
 		}
 	}
@@ -1040,7 +1194,7 @@ func snapshotHasFile(snapshot registeredSnapshot, name string) bool {
 	return ok
 }
 
-func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact) bool {
+func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact, todoSources todoSourceMap) bool {
 	files := snapshot.Files
 	entryParts := strings.Split(artifact.Entry, "/")
 	if len(entryParts) < 3 || entryParts[0] != "prototypes" {
@@ -1067,10 +1221,14 @@ func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registered
 	}
 	relatedPaths := make(map[string]bool, len(manifest.Related))
 	for _, related := range manifest.Related {
-		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] || !listed[related.Path] {
+		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] {
 			return false
 		}
-		if !snapshotHasFile(snapshot, related.Path) {
+		if strings.HasPrefix(related.Path, "todos/") {
+			if _, ok := todoSources.byPath[related.Path]; !ok {
+				return false
+			}
+		} else if !listed[related.Path] || !snapshotHasFile(snapshot, related.Path) {
 			return false
 		}
 		relatedPaths[related.Path] = true
@@ -1081,6 +1239,27 @@ func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registered
 		}
 	}
 	return true
+}
+
+func parseTodoSourceMap(snapshot registeredSnapshot) todoSourceMap {
+	data := snapshot.Files["roadmap/todo-sources.json"]
+	var mapping todoSourceMap
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if len(data) == 0 || len(data) > 2<<20 || rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&mapping) != nil || decoder.Decode(new(any)) != io.EOF || mapping.SchemaVersion != "builder-todo-sources-v2" || mapping.Sources == nil {
+		return todoSourceMap{}
+	}
+	mapping.byPath = make(map[string]string, len(mapping.Sources))
+	for id, item := range mapping.Sources {
+		if !validTodoSourceEntry(id, item) {
+			return todoSourceMap{}
+		}
+		if _, exists := mapping.byPath[item.Path]; exists {
+			return todoSourceMap{}
+		}
+		mapping.byPath[item.Path] = id
+	}
+	return mapping
 }
 
 func approvedPrototypeRelatedPath(kind, value string) bool {

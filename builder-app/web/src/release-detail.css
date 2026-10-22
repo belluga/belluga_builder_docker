@@ -31,16 +31,18 @@
 .release-work-icon { color: var(--project-text); font-size: 25px; }
 .release-work-row h3 { min-width: 0; margin: 0; font-size: 16px; font-weight: 700; overflow-wrap: anywhere; }
 .release-work-id { color: var(--project-muted); font-size: 12px; overflow-wrap: anywhere; }
-.release-work-status { display: inline-flex; justify-self: end; align-items: center; gap: 9px; padding: 8px 12px; border: 1px solid var(--project-border); border-radius: 99px; background: var(--project-surface); color: var(--project-muted); font-size: 12px; white-space: nowrap; }
+.release-work-status-wrap { display: flex; flex-direction: column; align-items: end; gap: 4px; }
+.release-work-status { display: inline-flex; align-items: center; gap: 9px; padding: 8px 12px; border: 1px solid var(--project-border); border-radius: 99px; background: var(--project-surface); color: var(--project-muted); font-size: 12px; white-space: nowrap; }
 .release-work-status i { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
-.release-work-status.active { border-color: var(--project-accent); color: var(--project-accent); }
-.release-work-status.delivered { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
-.release-work-status.review, .release-work-status.unknown { border-color: #b9933e; color: #e8c879; }
+.release-work-status.approval, .release-work-status.ready, .release-work-status.active, .release-work-status.implemented { border-color: var(--project-accent); color: var(--project-accent); }
+.release-work-status.planned { color: var(--project-muted); }
+.release-work-status.validation, .release-work-status.unknown { border-color: #b9933e; color: #e8c879; }
+.release-work-status.done { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
 .release-work-status.blocked { border-color: #c77664; color: #edaa91; }
 .release-work-footnote { margin: 15px 0 0; color: var(--project-muted); font-size: 11px; }
 .roadmap-release-open { position: absolute; top: 11px; right: 11px; display: grid; place-items: center; width: 42px; height: 50px; padding: 0; border: 0; border-radius: var(--project-controlRadius); background: transparent; color: var(--project-accent); cursor: pointer; font-size: 30px !important; line-height: 1; }
 .roadmap-release-open:hover { background: color-mix(in srgb, var(--project-accent) 15%, transparent); }
-@media (max-width: 1000px) { .release-work-row { grid-template-columns: 25px minmax(0, 1fr); gap: 8px 10px; padding: 15px 0; } .release-work-icon { grid-column: 1; grid-row: 1 / span 3; font-size: 20px; } .release-work-row h3 { grid-column: 2; grid-row: 1; } .release-work-id { grid-column: 2; grid-row: 3; } .release-work-status { grid-column: 2; grid-row: 2; justify-self: start; padding: 6px 8px; } }
+@media (max-width: 1000px) { .release-work-row { grid-template-columns: 25px minmax(0, 1fr); gap: 8px 10px; padding: 15px 0; } .release-work-icon { grid-column: 1; grid-row: 1 / span 3; font-size: 20px; } .release-work-row h3 { grid-column: 2; grid-row: 1; } .release-work-id { grid-column: 2; grid-row: 3; } .release-work-status-wrap { grid-column: 2; grid-row: 2; align-items: start; } .release-work-status { padding: 6px 8px; } }
 @media (max-width: 800px) { .release-page { padding: 25px 22px 45px; } .release-hero { align-items: start; flex-direction: column; } }
 @media (max-width: 600px) { .release-page { padding: 21px 17px 38px; } .release-breadcrumb { margin: 22px 0 20px; gap: 8px; } .release-hero h1 { font-size: 35px; } .release-work { padding-top: 32px; } .release-work-row h3 { font-size: 14px; } .release-work-id { font-size: 11px; } .release-work-status { font-size: 10px; } }
 .release-page { position: relative; }
