@@ -15,7 +15,7 @@ const theme = { tokens: [
   ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["font-family-sans", "string", "Arial"],
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
-const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`\n";
+const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
 function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
   return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
 }
@@ -265,6 +265,9 @@ describe("single root Project experience", () => {
     expect(await screen.findByText("Exact authored step.")).toBeInTheDocument();
     expect(document.querySelector(".todo-work")).toHaveTextContent("Exact acceptance criterion.");
     expect(screen.getByText("Review the source.")).toBeInTheDocument();
+    const primaryModuleHeading = screen.getByRole("heading", { name: "Primary module" });
+    expect(primaryModuleHeading.nextElementSibling?.querySelector("code")?.textContent).toBe("modules/roadmap.md");
+    expect(primaryModuleHeading.nextElementSibling).toHaveTextContent("modules/roadmap.md.");
     expect(screen.queryByText("Nenhum bloqueio declarado no arquivo.")).not.toBeInTheDocument();
     fireEvent.click(screen.getByText(/Contrato completo/));
     expect(document.querySelector(".todo-source pre")?.textContent).toBe(todoMarkdown);
@@ -284,6 +287,14 @@ describe("single root Project experience", () => {
     expect(screen.queryByRole("heading", { name: "Scope" })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Definition of Done" })).not.toBeInTheDocument();
     expect(document.querySelector(".todo-source pre")?.textContent).toBe("# Project Roadmap connection\n\n## Objective\nOnly authored objective.\n");
+  });
+  it("shows the Primary module without an empty work panel when Scope and Definition of Done are absent", async () => {
+    mockFetch([], undefined, "# Project Roadmap connection\n\n## Delivery Status Canon\n- **Primary module:** `modules/roadmap.md`.\n");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=roadmap-runtime");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Primary module" })).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Contrato de trabalho" })).not.toBeInTheDocument();
+    expect(document.querySelector(".todo-work")).not.toBeInTheDocument();
   });
   it("ignores an admitted TODO response that resolves after switching Projects", async () => {
     let resolveTODO!: (response: unknown) => void;
