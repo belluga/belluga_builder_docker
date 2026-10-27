@@ -196,10 +196,15 @@ type roadmapTODO struct {
 	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
 	DeliveryStageState    string `json:"delivery_stage_state"`
 	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
+	HistoricalDisposition string `json:"historical_disposition,omitempty"`
+	DispositionReason     string `json:"disposition_reason,omitempty"`
+	SuccessorTODO         string `json:"successor_todo,omitempty"`
+	DispositionState      string `json:"disposition_state,omitempty"`
 	Blocked               bool   `json:"blocked"`
 	QualifierState        string `json:"qualifier_state"`
 	QualifierTeach        string `json:"qualifier_teach,omitempty"`
 	WorkState             string `json:"work_state"`
+	InvalidQualifiers     bool   `json:"invalid_qualifiers,omitempty"`
 	ExplicitNoCode        bool   `json:"explicit_no_code,omitempty"`
 	Executable            bool   `json:"executable,omitempty"`
 }
@@ -880,6 +885,23 @@ func validRoadmapDeliveryStage(value string) bool {
 
 func validRoadmapLifecycleTODO(todo roadmapTODO) bool {
 	if len(todo.AuthoredDeliveryStage) > 256 || !utf8.ValidString(todo.AuthoredDeliveryStage) || (todo.WorkState != "unknown" && todo.WorkState != "blocked") {
+		return false
+	}
+	if len(todo.DispositionReason) > 512 || len(todo.SuccessorTODO) > 1200 || !utf8.ValidString(todo.DispositionReason) || !utf8.ValidString(todo.SuccessorTODO) {
+		return false
+	}
+	switch todo.DispositionState {
+	case "":
+		if todo.HistoricalDisposition != "" || todo.DispositionReason != "" || todo.SuccessorTODO != "" {
+			return false
+		}
+	case "valid":
+		if (todo.HistoricalDisposition != "Superseded" && todo.HistoricalDisposition != "Discarded") || todo.DispositionReason == "" {
+			return false
+		}
+	case "invalid":
+		// Keep one invalid TODO visible with its TEACH instead of dropping the Roadmap.
+	default:
 		return false
 	}
 	switch todo.DeliveryStageState {

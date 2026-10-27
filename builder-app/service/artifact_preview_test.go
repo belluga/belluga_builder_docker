@@ -495,6 +495,17 @@ func TestAdmittedRoadmapProjectionNeedsMetadataAndPrivateSourceMapButNoTODOBody(
 	}
 }
 
+func TestAdmittedRoadmapProjectionKeepsHistoricalDisposition(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Historical work","record_state":"active","authored_delivery_stage":"Planning","delivery_stage":"Planning","delivery_stage_state":"verified","historical_disposition":"Superseded","disposition_reason":"Replaced by a narrower TODO.","successor_todo":"todo-b","disposition_state":"valid","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	_, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok {
+		t.Fatal("valid historical disposition made the whole Roadmap unavailable")
+	}
+}
+
 func TestAdmittedRoadmapProjectionKeepsInvalidLifecycleStatusScopedToTODO(t *testing.T) {
 	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"Production-Ready","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: this historical value is not trusted for a new Project.","blocked":false,"qualifier_state":"unverified","qualifier_teach":"TEACH: blocked status requires review.","work_state":"blocked","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
 	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
