@@ -15,7 +15,7 @@ type Artifact = { id: string; kind: string; name: string; state: string; entry_p
 type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
-type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
+type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
 type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
@@ -42,9 +42,11 @@ const deliveryStageTone: Record<DeliveryStage, string> = {
   Completed: "done",
 };
 function deliveryStageLabel(todo: RoadmapTodo) {
+  if (todo.disposition_state === "valid") return todo.historical_disposition === "Superseded" ? "Substituído" : "Descartado";
   return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageLabels[todo.delivery_stage] : "Status indisponível";
 }
 function deliveryStageClass(todo: RoadmapTodo) {
+  if (todo.disposition_state === "valid") return "historical";
   return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageTone[todo.delivery_stage] : "unknown";
 }
 function todoStatusTeach(todo: RoadmapTodo) {
@@ -56,7 +58,7 @@ function TodoStageStatus({ todo, className = "roadmap-todo-stage" }: { todo: Roa
   return <><span className={`${className} ${deliveryStageClass(todo)}${todo.blocked ? " blocked" : ""}`}><i aria-hidden="true" />{todo.blocked ? `Bloqueado · ${label}` : label}</span>{teach && <small className="todo-stage-teach" role="note">{teach}</small>}</>;
 }
 function releaseStatus(release: RoadmapRelease): ReleaseStatus {
-  const todos = release.todos.filter((todo) => todo.kind === "executable");
+  const todos = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
   if (todos.length === 0) return "unknown";
   if (todos.some((todo) => todo.delivery_stage_state !== "verified" || !todo.delivery_stage || todo.qualifier_state !== "verified")) return "unknown";
   if (todos.some((todo) => todo.blocked)) return "blocked";
@@ -247,7 +249,8 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
     };
   }, [selectedTodo?.id]);
   if (!epic || !release) return <section className="project-notice" role="alert"><h1>Release indisponível</h1><p>Esta Release não existe no Roadmap salvo deste projeto.</p><button onClick={() => navigate({ page: "roadmap", epic_id: null, release_id: null })}>Voltar ao Roadmap</button></section>;
-  const executable = release.todos.filter((todo) => todo.kind === "executable");
+  const executable = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
+  const historical = release.todos.filter((todo) => todo.disposition_state === "valid");
   const status = releaseStatus(release);
   const back = () => navigate({ page: "roadmap", epic_id: epic.id, release_id: release.id });
   return <article className="release-page" aria-label="Detalhe da Release">
@@ -262,6 +265,7 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
         return <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={(event) => { previewOpenerRef.current = event.currentTarget; navigate({ todo_id: todo.id }); }}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.id}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>;
       })}</div> : <p className="project-notice">Nenhum TODO executável nesta Release.</p>}
     </section>
+    {historical.length > 0 && <section className="release-work" aria-label="Histórico não entregue"><div className="release-work-heading"><div><h2>Histórico não entregue</h2><p>Itens substituídos ou descartados não contam como entrega.</p></div></div><div className="release-work-list" role="list">{historical.map((todo) => <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={() => navigate({ todo_id: todo.id })}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.disposition_reason}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>)}</div></section>}
     {selectedTodo && <div ref={previewDialogRef} className="release-todo-overlay" role="dialog" aria-modal="true" aria-label="Prévia do TODO"><TodoPreview todo={selectedTodo} context={`${epic.name} / ${release.name}`} epicID={epic.id} releaseID={release.id} onClose={() => navigate({ todo_id: null })} /></div>}
   </article>;
 }

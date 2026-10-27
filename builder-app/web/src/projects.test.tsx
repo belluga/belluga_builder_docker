@@ -475,6 +475,19 @@ describe("single root Project experience", () => {
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Release indisponível");
   });
+  it("keeps superseded history visible without counting it as delivered work", async () => {
+    const saved = detail("belluga", "builder");
+    const historical = { ...saved.roadmap.epics[0].releases[0].todos[2], id: "old-plan", title: "Replaced historical plan", path: "todos/completed/old.md", ...unverifiedStage("unknown", "") };
+    Object.assign(historical, { historical_disposition: "Superseded", disposition_reason: "Replaced by a narrower task.", disposition_state: "valid" });
+    saved.roadmap.epics[0].releases[0].todos.push(historical as never);
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(screen.getByRole("region", { name: "Histórico não entregue" })).toHaveTextContent("Replaced historical plan");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Replaced historical plan");
+  });
   it("selects Company and Project before entering its dedicated page", async () => {
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Choose a company to explore its projects." })).toBeInTheDocument();
