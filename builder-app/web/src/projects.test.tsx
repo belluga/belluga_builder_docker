@@ -356,6 +356,19 @@ describe("single root Project experience", () => {
     expect(location.search).toContain("page=backlog");
     expect(screen.getByRole("region", { name: "Project Backlog" })).toBeInTheDocument();
   });
+  it("keeps a detached stable-ID TODO in Backlog navigation", async () => {
+    const saved = detail("belluga", "builder");
+    saved.roadmap.backlog.todos[0].id = "t-preserved-history";
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=t-preserved-history");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Unassigned active task" })).toBeInTheDocument();
+    const nav = screen.getByRole("navigation", { name: "Project pages" });
+    expect(within(nav).getByRole("button", { name: "Backlog" })).toHaveClass("active");
+    expect(within(nav).getByRole("button", { name: "Roadmap" })).not.toHaveClass("active");
+    await userEvent.setup().click(within(screen.getByRole("navigation", { name: "Localização" })).getByRole("button", { name: "Backlog" }));
+    expect(location.search).toContain("page=backlog");
+  });
   it("opens nested Backlog folders by keyboard and previews the authored TODO", async () => {
     vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, media: "(max-width: 1200px)", onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })));
     const saved = detail("belluga", "builder");
