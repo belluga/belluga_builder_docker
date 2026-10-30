@@ -910,7 +910,7 @@ func validRoadmapLifecycleTODO(todo roadmapTODO) bool {
 			return false
 		}
 	case "unverified":
-		if todo.DeliveryStage != "" || !strings.HasPrefix(todo.DeliveryStageTeach, "TEACH:") || len(todo.DeliveryStageTeach) > 1024 {
+		if todo.DeliveryStage != "" || !strings.HasPrefix(todo.DeliveryStageTeach, "TEACH:") || !utf8.ValidString(todo.DeliveryStageTeach) {
 			return false
 		}
 	default:

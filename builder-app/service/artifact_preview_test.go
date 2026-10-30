@@ -521,6 +521,19 @@ func TestAdmittedRoadmapProjectionKeepsInvalidLifecycleStatusScopedToTODO(t *tes
 	}
 }
 
+func TestAdmittedRoadmapProjectionKeepsLongLifecycleTeachScopedToTODO(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: placeholder","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	longTeach := "TEACH: " + strings.Repeat("historical recovery context ", 45)
+	projection = []byte(strings.Replace(string(projection), "TEACH: placeholder", longTeach, 1))
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	result, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok || result.Epics[0].Releases[0].TODOs[0].DeliveryStageTeach != longTeach {
+		t.Fatal("a long lifecycle TEACH must remain scoped to its TODO, not hide the Roadmap")
+	}
+}
+
 func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *testing.T) {
 	if _, err := (&registeredPreview{root: string(filepath.Separator)}).catalog(); err == nil {
 		t.Fatal("filesystem root was accepted as local Builder state")
