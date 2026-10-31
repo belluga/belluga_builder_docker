@@ -150,6 +150,18 @@ func (m *MongoStore) Import(ctx context.Context, input LegacyImport) (ImportRepo
 	report.NoOp = true
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
+	currentLifecycle, err := m.LifecycleControl(ctx)
+	if err != nil {
+		return ImportReport{}, err
+	}
+	if input.LifecycleMigration == nil && currentLifecycle.Revision != 0 {
+		return ImportReport{}, ErrConflict
+	}
+	if input.LifecycleMigration != nil && currentLifecycle.Revision != 0 {
+		if !sameLifecycleMigration(currentLifecycle.Value, input.LifecycleMigration) {
+			return ImportReport{}, ErrConflict
+		}
+	}
 	for _, companyID := range []string{"belluga-solutions", "unifast"} {
 		if err := m.ensureTenantIndexes(ctx, m.tenantDatabase(companyID)); err != nil {
 			return ImportReport{}, ErrUnavailable
@@ -256,21 +268,39 @@ func (m *MongoStore) Import(ctx context.Context, input LegacyImport) (ImportRepo
 			return ImportReport{}, ErrConflict
 		}
 	} else {
-		value, _ := json.Marshal(input.LifecycleMigration)
 		current, err := m.LifecycleControl(ctx)
 		if err != nil {
 			return ImportReport{}, err
 		}
 		if current.Revision == 0 {
+			value, err := json.Marshal(input.LifecycleMigration)
+			if err != nil {
+				return ImportReport{}, ErrInvalid
+			}
 			if _, err := m.UpdateLifecycleControl(ctx, 0, value); err != nil {
 				return ImportReport{}, err
 			}
 			report.NoOp = false
-		} else if string(current.Value) != string(value) {
+		} else if !sameLifecycleMigration(current.Value, input.LifecycleMigration) {
 			return ImportReport{}, ErrConflict
 		}
 	}
 	return report, nil
+}
+
+func sameLifecycleMigration(current json.RawMessage, expected *LifecycleMigration) bool {
+	if expected == nil {
+		return false
+	}
+	var actual LifecycleMigration
+	if err := json.Unmarshal(current, &actual); err != nil {
+		return false
+	}
+	return actual.State == expected.State &&
+		slices.Equal(actual.ProjectIDs, expected.ProjectIDs) &&
+		slices.Equal(actual.Excluded, expected.Excluded) &&
+		actual.StartedAt == expected.StartedAt &&
+		actual.CompletedAt == expected.CompletedAt
 }
 
 func sortedCompanyIDs(companies map[string]Company) []string {

@@ -93,7 +93,7 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	}
 	store.tenantPrefix = stamp
 	t.Cleanup(func() {
-		for _, companyID := range []string{"company-a", "company-b", "company-empty"} {
+		for _, companyID := range []string{"company-a", "company-b", "company-empty", "company-contended"} {
 			_ = store.client.Database(store.tenantDatabase(companyID)).Drop(context.Background())
 		}
 		_ = store.control.Drop(context.Background())
@@ -115,10 +115,55 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 			t.Fatalf("same-pair concurrent registration failed: %v", err)
 		}
 	}
+	startConflict := make(chan struct{})
+	type registrationResult struct {
+		companyName string
+		err         error
+	}
+	conflicts := make(chan registrationResult, 8)
+	for index := range 8 {
+		name := "Contended Company A"
+		if index%2 == 1 {
+			name = "Contended Company B"
+		}
+		go func(companyName string) {
+			<-startConflict
+			_, err := store.Register(ctx, Registration{CompanyID: "company-contended", CompanyName: companyName, ProjectID: "contended", ProjectName: "Contended", Binding: validTestBinding()})
+			conflicts <- registrationResult{companyName: companyName, err: err}
+		}(name)
+	}
+	close(startConflict)
+	winningName := ""
+	conflictCount := 0
+	for range 8 {
+		result := <-conflicts
+		if result.err == nil {
+			if winningName != "" && winningName != result.companyName {
+				t.Fatalf("conflicting Company identities both registered: %q and %q", winningName, result.companyName)
+			}
+			winningName = result.companyName
+		} else if result.err == ErrConflict {
+			conflictCount++
+		} else {
+			t.Fatalf("concurrent conflicting registration returned unexpected error: %v", result.err)
+		}
+	}
+	company, err := store.company(ctx, "company-contended")
+	if err != nil || winningName == "" || conflictCount == 0 || company.Name != winningName {
+		t.Fatalf("conflicting registration did not converge on one Company identity: company=%+v winner=%q conflicts=%d err=%v", company, winningName, conflictCount, err)
+	}
+	contendedProject, err := store.Project(ctx, "company-contended", "contended")
+	if err != nil || contendedProject.CompanyID != "company-contended" {
+		t.Fatalf("winning registration did not produce exactly its scoped Project: project=%+v err=%v", contendedProject, err)
+	}
+	projectCount, err := store.client.Database(store.tenantDatabase("company-contended")).Collection(projectsCollection).CountDocuments(ctx, bson.D{})
+	if err != nil || projectCount != 1 {
+		t.Fatalf("contended registration wrote multiple Projects: count=%d err=%v", projectCount, err)
+	}
 	if _, err := register("company-b"); err != nil {
 		t.Fatal(err)
 	}
-	company, err := normalizeCompany(Company{ID: "company-a", Name: "company-a", Domains: []string{"example.test"}, AppIDs: []AppIdentifier{{Platform: "app_android", Value: "com.example.app"}, {Platform: "app_ios", Value: "com.example.ios"}}})
+	company, err = normalizeCompany(Company{ID: "company-a", Name: "company-a", Domains: []string{"example.test"}, AppIDs: []AppIdentifier{{Platform: "app_android", Value: "com.example.app"}, {Platform: "app_ios", Value: "com.example.ios"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +245,7 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 		t.Fatalf("mismatched snapshot Company: %v", err)
 	}
 	catalog, err := store.Catalog(ctx)
-	if err != nil || len(catalog.Projects) != 3 {
+	if err != nil || len(catalog.Projects) != 4 {
 		t.Fatalf("catalog Projects = %d, %v", len(catalog.Projects), err)
 	}
 	for _, companyID := range []string{"company-a", "company-b"} {
@@ -275,10 +320,53 @@ func TestMongoImportIsRepeatableAndRejectsChangedHierarchy(t *testing.T) {
 			{ID: "epic-plans", Name: "Planos Pagos + Gestão de Conta"},
 			{ID: "epic-monetization", Name: "Funcionalidades de Monetização"},
 		}},
+		LifecycleMigration: &LifecycleMigration{
+			State:       "complete",
+			ProjectIDs:  []string{"belluga-pay", "boora", "builder"},
+			Excluded:    []LifecycleMigrationDiagnostic{{ProjectID: "builder", TODOID: "todo-a", Path: "todos/active/todo-a.md", Message: "excluded at cutover"}},
+			StartedAt:   now,
+			CompletedAt: now,
+		},
 	}
+	guardStamp := stamp + "_guard"
+	guardStore, err := OpenMongo(ctx, uri, guardStamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	guardStore.tenantPrefix = guardStamp
+	t.Cleanup(func() {
+		for _, companyID := range []string{"belluga-solutions", "unifast"} {
+			_ = guardStore.client.Database(guardStore.tenantDatabase(companyID)).Drop(context.Background())
+		}
+		_ = guardStore.control.Drop(context.Background())
+		_ = guardStore.Close(context.Background())
+	})
+	if _, err := guardStore.UpdateLifecycleControl(ctx, 0, json.RawMessage(`{"state":"already-started"}`)); err != nil {
+		t.Fatalf("seed nonempty lifecycle control: %v", err)
+	}
+	if _, err := guardStore.Import(ctx, input); err != ErrConflict {
+		t.Fatalf("import with preexisting control state = %v, want conflict", err)
+	}
+	var companies []Company
+	companyCursor, err := guardStore.control.Collection(companiesCollection).Find(ctx, bson.D{})
+	if err != nil || companyCursor.All(ctx, &companies) != nil || len(companies) != 0 {
+		t.Fatalf("rejected import partially created Companies: count=%d err=%v", len(companies), err)
+	}
+	for _, companyID := range []string{"belluga-solutions", "unifast"} {
+		count, countErr := guardStore.client.Database(guardStore.tenantDatabase(companyID)).Collection(projectsCollection).CountDocuments(ctx, bson.D{})
+		if countErr != nil || count != 0 {
+			t.Fatalf("rejected import partially created %s Projects: count=%d err=%v", companyID, count, countErr)
+		}
+	}
+
 	first, err := store.Import(ctx, input)
 	if err != nil || first.NoOp {
 		t.Fatalf("first import = %+v, %v", first, err)
+	}
+	control, err := store.LifecycleControl(ctx)
+	expectedLifecycle, marshalErr := json.Marshal(input.LifecycleMigration)
+	if err != nil || marshalErr != nil || bytes.Equal(control.Value, expectedLifecycle) {
+		t.Fatalf("test fixture did not produce semantically equal but differently encoded lifecycle state: stored=%s expected=%s err=%v marshal_err=%v", control.Value, expectedLifecycle, err, marshalErr)
 	}
 	second, err := store.Import(ctx, input)
 	if err != nil || !second.NoOp {
