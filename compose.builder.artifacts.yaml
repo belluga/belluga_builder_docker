@@ -12,6 +12,7 @@ services:
       DELPHI_BUILDER_STATE_ROOT: /state
       DELPHI_PROJECT_READER_URL: http://project-reader:8099
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
+      DELPHI_BUILDER_REGISTRY_CUTOVER: "true"
       WEB_ROOT: /web
     volumes:
       - type: bind
@@ -38,17 +39,40 @@ services:
       DELPHI_PROJECT_READER_STATE_ROOT: /state
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       DELPHI_GITHUB_READ_TOKEN: ${DELPHI_GITHUB_READ_TOKEN:-}
+      DELPHI_BUILDER_REGISTRY_URL: ${DELPHI_BUILDER_REGISTRY_URL:-http://builder-registry:8080}
+      DELPHI_BUILDER_REGISTRY_CUTOVER: "true"
     volumes:
       - type: bind
         source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
         target: /state
     networks:
       - project-reader-private
+      - builder-registry-private
     read_only: true
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
     restart: unless-stopped
 
+  builder-registry:
+    image: belluga-builder-registry:local
+    build:
+      context: ./go-app
+      dockerfile: Dockerfile
+      target: runtime
+    env_file:
+      - path: ./go-app/.env
+        required: false
+    networks:
+      builder-registry-private:
+        aliases: [builder-registry]
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,noexec,nosuid
+    restart: unless-stopped
+
 networks:
   project-reader-private:
+    driver: bridge
+  builder-registry-private:
+    name: builder-registry-private
     driver: bridge

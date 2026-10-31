@@ -313,10 +313,12 @@ func testReaderConsumer(t *testing.T, root string) *registeredPreview {
 }
 
 func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "false")
 	projectionBytes := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning","title":"Planning record","record_state":"completed","authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: status is not applicable to this planning record.","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"},{"id":"active","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"Local-Implemented","delivery_stage":"Local-Implemented","delivery_stage_state":"verified","blocked":true,"qualifier_state":"verified","work_state":"blocked","objective":"Exact objective","objective_state":"complete","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
 	mapBytes, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"done": {Path: "todos/completed/done.md", SHA256: strings.Repeat("a", 64)}, "active": {Path: "todos/active/work.md", SHA256: strings.Repeat("b", 64)}}})
 	snapshot := registeredSnapshot{
 		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "project-a", CompanyID: "company-a",
+		Roadmap:   projectionBytes,
 		Files:     map[string][]byte{"roadmap/projection.json": projectionBytes, "roadmap/todo-sources.json": mapBytes},
 		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/projection.json"}}},
 	}
@@ -343,10 +345,104 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.
 	if strings.Contains(string(encoded), "todo-sources.json") || strings.Contains(string(encoded), "builder-todo-sources-v2") {
 		t.Fatal("private TODO source map leaked into browser detail")
 	}
+	snapshot.Roadmap = nil
+	preCutover := registeredProjectDetail(snapshot, "fingerprint-a")
+	if _, ok := preCutover["roadmap"].(roadmapProjection); !ok {
+		t.Fatal("pre-cutover detail lost its admitted Foundation Roadmap projection")
+	}
 
 	snapshot.ProjectID = "project-b"
 	if _, ok := registeredProjectDetail(snapshot, "fingerprint-b")["roadmap"]; ok {
 		t.Fatal("catalog for a different Project was exposed")
+	}
+}
+
+func TestRegisteredProjectDetailUsesMongoRoadmapAsSolePublicSource(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	legacy := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"legacy","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	authoritative := json.RawMessage(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	snapshot := registeredSnapshot{
+		ProjectID: "project-a", CompanyID: "company-a", Roadmap: authoritative,
+		Files:     map[string][]byte{"roadmap/projection.json": legacy},
+		Artifacts: []registeredArtifact{{Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json"}}},
+	}
+	detail := registeredProjectDetail(snapshot, "fingerprint")
+	projection, ok := detail["roadmap"].(roadmapProjection)
+	if !ok || projection.FocusRelease != "" {
+		t.Fatalf("public Roadmap did not come from Mongo: %#v", detail["roadmap"])
+	}
+	snapshot.Roadmap = nil
+	if _, ok := registeredProjectDetail(snapshot, "fingerprint")["roadmap"]; ok {
+		t.Fatal("missing Mongo Roadmap fell back to the private lifecycle projection")
+	}
+}
+
+func TestRegistryCutoverReadsCatalogOnlyThroughPrivateReader(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/catalog" || r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("unexpected private Reader request: %s %s", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"company-a","name":"Company A"}],"projects":[{"id":"project-a","name":"Project A","company_id":"company-a","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `"}]}`))
+	}))
+	defer server.Close()
+	preview := &registeredPreview{root: "/nonexistent/registry", readerURL: server.URL, readerToken: token}
+	catalog, err := preview.catalog()
+	if err != nil || len(catalog.Projects) != 1 || catalog.Projects[0].SnapshotFingerprint != strings.Repeat("a", 64) {
+		t.Fatalf("cutover did not resolve catalog through Reader: %+v, %v", catalog, err)
+	}
+	server.Close()
+	if _, err := preview.catalog(); err == nil {
+		t.Fatal("unavailable private Reader fell back to the retained file registry")
+	}
+}
+
+func TestRegistryCutoverAllowsSameProjectIDInDifferentCompanies(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"company-a","name":"Company A"},{"id":"company-b","name":"Company B"}],"projects":[{"id":"project-a","name":"Project A","company_id":"company-a"},{"id":"project-a","name":"Project A","company_id":"company-b"}]}`))
+	}))
+	defer server.Close()
+	preview := &registeredPreview{readerURL: server.URL, readerToken: token}
+	catalog, err := preview.catalog()
+	if err != nil || len(catalog.Projects) != 2 {
+		t.Fatalf("company-scoped Project IDs were rejected: %+v, %v", catalog, err)
+	}
+}
+
+func TestRegistryCutoverProjectDetailRejectsMalformedRoadmap(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("private Reader request missing authentication: %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/internal/v1/catalog":
+			_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"company-a","name":"Company A"}],"projects":[{"id":"project-a","name":"Project A","company_id":"company-a","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `"}]}`))
+		case "/internal/v1/projects/project-a":
+			_, _ = w.Write([]byte(`{"schema_version":"1","project_id":"project-a","project_name":"Project A","company_id":"company-a","project_sha":"` + strings.Repeat("b", 40) + `","observed_at":"2026-10-30T00:00:00Z","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `","artifacts":[],"files":{},"observations":{},"roadmap":{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","epics":{"invalid":true}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	preview := &registeredPreview{root: "/nonexistent/registry", readerURL: server.URL, readerToken: token}
+	response := httptest.NewRecorder()
+	preview.apiHandler(response, httptest.NewRequest(http.MethodGet, "/api/local-preview?company_id=company-a&project_id=project-a", nil))
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"consumer_readiness":"ready"`) {
+		t.Fatalf("malformed Mongo Roadmap was silently omitted from ready detail: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFoundationRoadmapProjectionIsNotPubliclyDownloadable(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	response := httptest.NewRecorder()
+	(&registeredPreview{}).artifactHandler(response, httptest.NewRequest(http.MethodGet, "/snapshot/company/project/"+strings.Repeat("a", 64)+"/roadmap/projection.json", nil))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "snapshot_unavailable") {
+		t.Fatalf("retained Foundation Roadmap projection was not explicitly hidden: %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -589,6 +685,11 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	consumer.apiHandler(api, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 	if api.Code != 200 || !strings.Contains(api.Body.String(), fingerprint) || strings.Contains(api.Body.String(), root) {
 		t.Fatalf("API response=%d %s", api.Code, api.Body.String())
+	}
+	mutation := httptest.NewRecorder()
+	consumer.apiHandler(mutation, httptest.NewRequest(http.MethodPost, "/api/local-preview?company_id=trial-company&project_id=trial-project", strings.NewReader(`{"company_id":"attacker"}`)))
+	if mutation.Code != http.StatusNotFound {
+		t.Fatalf("public Project API exposed a mutation route: status=%d body=%s", mutation.Code, mutation.Body.String())
 	}
 	before, err := os.ReadFile(registryPath)
 	if err != nil {

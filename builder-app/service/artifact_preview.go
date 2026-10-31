@@ -56,9 +56,10 @@ type registrationCatalog struct {
 	Projects      []catalogProject    `json:"projects"`
 }
 type catalogProject struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CompanyID string `json:"company_id"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	CompanyID           string `json:"company_id"`
+	SnapshotFingerprint string `json:"snapshot_fingerprint,omitempty"`
 }
 type persistedRegistration struct {
 	SchemaVersion string                         `json:"schema_version"`
@@ -96,6 +97,7 @@ type registeredSnapshot struct {
 	Files                  map[string][]byte                   `json:"files"`
 	Assets                 map[string]registeredAssetReference `json:"assets,omitempty"`
 	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Roadmap                json.RawMessage                     `json:"roadmap,omitempty"`
 	Observations           map[string]json.RawMessage          `json:"observations"`
 	todoSources            todoSourceMap
 	todoSourcesParsed      bool
@@ -242,6 +244,9 @@ type overviewSource struct {
 }
 
 func (p *registeredPreview) catalog() (registrationCatalog, error) {
+	if registryCutoverEnabled() {
+		return p.readerCatalog()
+	}
 	if !filepath.IsAbs(p.root) || filepath.Clean(p.root) == string(filepath.Separator) {
 		return registrationCatalog{}, errors.New("state root must be absolute")
 	}
@@ -283,6 +288,18 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 }
 
 func (p *registeredPreview) currentFingerprint(projectID, companyID string) (string, error) {
+	if registryCutoverEnabled() {
+		catalog, err := p.readerCatalog()
+		if err != nil {
+			return "", err
+		}
+		for _, project := range catalog.Projects {
+			if project.ID == projectID && project.CompanyID == companyID && validSHA256(project.SnapshotFingerprint) {
+				return project.SnapshotFingerprint, nil
+			}
+		}
+		return "", errors.New("current Project pointer unavailable")
+	}
 	if _, err := p.catalog(); err != nil {
 		return "", err
 	}
@@ -299,6 +316,66 @@ func (p *registeredPreview) currentFingerprint(projectID, companyID string) (str
 		return "", errors.New("current Project pointer unavailable")
 	}
 	return project.registeredProject.SnapshotFingerprint, nil
+}
+
+func registryCutoverEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("DELPHI_BUILDER_REGISTRY_CUTOVER")), "true")
+}
+
+func (p *registeredPreview) readerCatalog() (registrationCatalog, error) {
+	base := strings.TrimRight(strings.TrimSpace(p.readerURL), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), "/")
+	}
+	token := p.readerToken
+	if token == "" {
+		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
+	}
+	if base == "" || token == "" || len(token) < 32 {
+		return registrationCatalog{}, errors.New("private Project reader is not configured")
+	}
+	u, err := url.Parse(base + "/internal/v1/catalog")
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return registrationCatalog{}, errors.New("private Project reader endpoint is invalid")
+	}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	request, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return registrationCatalog{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return registrationCatalog{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return registrationCatalog{}, errors.New("private Project reader catalog is unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
+	var catalog registrationCatalog
+	if err != nil || len(data) > 1<<20 || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &catalog) != nil || catalog.SchemaVersion != "1" || catalog.Companies == nil || catalog.Projects == nil {
+		return registrationCatalog{}, errors.New("private Project reader catalog is invalid")
+	}
+	companies := make(map[string]bool, len(catalog.Companies))
+	for _, company := range catalog.Companies {
+		if !validRegistrationID(company.ID) || !validRegistrationName(company.Name) || companies[company.ID] {
+			return registrationCatalog{}, errors.New("private Project reader catalog Company identity is invalid")
+		}
+		companies[company.ID] = true
+	}
+	projects := make(map[string]bool, len(catalog.Projects))
+	for _, project := range catalog.Projects {
+		identity := project.CompanyID + "/" + project.ID
+		if !validRegistrationID(project.ID) || !validRegistrationName(project.Name) || !companies[project.CompanyID] || projects[identity] || (project.SnapshotFingerprint != "" && !validSHA256(project.SnapshotFingerprint)) {
+			return registrationCatalog{}, errors.New("private Project reader catalog Project identity is invalid")
+		}
+		projects[identity] = true
+	}
+	return catalog, nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -561,6 +638,7 @@ type privateReaderResponse struct {
 	ObservedAt             string                              `json:"observed_at"`
 	Fingerprint            string                              `json:"snapshot_fingerprint"`
 	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Roadmap                json.RawMessage                     `json:"roadmap,omitempty"`
 	Files                  map[string][]byte                   `json:"files"`
 	Assets                 map[string]registeredAssetReference `json:"assets"`
 	Observations           map[string]json.RawMessage          `json:"observations"`
@@ -583,6 +661,9 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	u, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return registeredSnapshot{}, "", errors.New("private Project reader endpoint is invalid")
+	}
+	if registryCutoverEnabled() {
+		u.RawQuery = url.Values{"company_id": {companyID}}.Encode()
 	}
 	client := p.client
 	if client == nil {
@@ -621,10 +702,34 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	if _, err := hex.DecodeString(source.Fingerprint); err != nil || strings.ToLower(source.Fingerprint) != source.Fingerprint {
 		return registeredSnapshot{}, "", errors.New("private Project fingerprint is invalid")
 	}
-	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Observations: source.Observations}
+	if registryCutoverEnabled() && !validMongoPublicRoadmap(source.Roadmap, projectID) {
+		return registeredSnapshot{}, "", errors.New("private Mongo Roadmap is unavailable or invalid")
+	}
+	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Roadmap: source.Roadmap, Observations: source.Observations}
 	snapshot.todoSources = parseTodoSourceMap(snapshot)
 	snapshot.todoSourcesParsed = true
 	return snapshot, source.Fingerprint, nil
+}
+
+func validMongoPublicRoadmap(data json.RawMessage, projectID string) bool {
+	var roadmap roadmapProjection
+	if len(data) == 0 || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &roadmap) != nil || roadmap.SchemaVersion != "builder-roadmap-projection-v3" || roadmap.ProjectID != projectID || roadmap.Epics == nil || roadmap.Backlog.TODOs == nil || roadmap.Backlog.Folders == nil || roadmap.Unclassified == nil || roadmap.Diagnostics == nil || roadmap.FocusRelease != "" || len(roadmap.Backlog.TODOs) != 0 || len(roadmap.Backlog.Folders) != 0 || len(roadmap.Unclassified) != 0 || len(roadmap.Diagnostics) != 0 {
+		return false
+	}
+	seen := make(map[string]bool)
+	for _, epic := range roadmap.Epics {
+		if !validRegistrationID(epic.ID) || !validRegistrationName(epic.Name) || epic.Releases == nil || seen[epic.ID] {
+			return false
+		}
+		seen[epic.ID] = true
+		for _, release := range epic.Releases {
+			if !validRegistrationID(release.ID) || !validRegistrationName(release.Name) || release.TODOs == nil || len(release.TODOs) != 0 || seen[release.ID] {
+				return false
+			}
+			seen[release.ID] = true
+		}
+	}
+	return true
 }
 
 func validProjectSHA(value string) bool {
@@ -705,15 +810,6 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 				}
 			}
 		}
-		if artifact.Kind == "roadmap" && artifact.State == "available" {
-			for _, name := range artifact.Files {
-				if name == "roadmap/projection.json" {
-					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files, artifact.Files, snapshot.todoSources); ok {
-						result["roadmap"] = projection
-					}
-				}
-			}
-		}
 		if artifact.Kind == "portfolio" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "project_portfolio.json" {
@@ -733,6 +829,26 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 				files = append(files, map[string]string{"path": name, "url": snapshotFileURL(snapshot, fingerprint, name)})
 			}
 			result["documents"] = files
+		}
+	}
+	if registryCutoverEnabled() && len(snapshot.Roadmap) > 0 && rejectDuplicateJSONKeys(snapshot.Roadmap) == nil {
+		var authoritative roadmapProjection
+		if json.Unmarshal(snapshot.Roadmap, &authoritative) == nil && authoritative.SchemaVersion == "builder-roadmap-projection-v3" && authoritative.ProjectID == snapshot.ProjectID && authoritative.Epics != nil {
+			result["roadmap"] = authoritative
+		}
+	}
+	if !registryCutoverEnabled() {
+		for _, artifact := range snapshot.Artifacts {
+			if artifact.Kind != "roadmap" || artifact.State != "available" {
+				continue
+			}
+			for _, name := range artifact.Files {
+				if name == "roadmap/projection.json" {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files, artifact.Files, snapshot.todoSources); ok {
+						result["roadmap"] = projection
+					}
+				}
+			}
 		}
 	}
 	return result
@@ -1324,6 +1440,10 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/snapshot/"), "/", 4)
 	if len(parts) != 4 || !safeSnapshotPath(parts[3]) {
 		writeError(w, 404, "not_found")
+		return
+	}
+	if registryCutoverEnabled() && parts[3] == "roadmap/projection.json" {
+		writeError(w, 404, "artifact_not_admitted")
 		return
 	}
 	currentFingerprint, err := p.currentFingerprint(parts[1], parts[0])
