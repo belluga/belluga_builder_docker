@@ -133,7 +133,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	}
 	var proof TODOProofReference
 	if record.Source.Kind == "mongo-content-revision" {
-		proof, err = m.mongoBornTransitionProof(ctx, companyID, record, request)
+		proof, err = m.mongoBornTransitionProof(ctx, companyID, project, record, request)
 		if err != nil {
 			return TODOActionResponse{}, err
 		}
@@ -217,7 +217,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	return writeVerifiedTODO(ctx, m.client.Database(company.DatabaseName), collection, companyID, record, request.RequestedStage, proof, request.OperationID, "transition", digest)
 }
 
-func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID string, record TODORecord, request TODOActionRequest) (TODOProofReference, error) {
+func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID string, project Project, record TODORecord, request TODOActionRequest) (TODOProofReference, error) {
 	if record.ReleaseID == "" || record.Position == nil {
 		return TODOProofReference{}, todoTeach("release_id/position", "attach this Backlog TODO to a same-Project Release before leaving Planning", ErrConflict)
 	}
@@ -230,6 +230,9 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		return TODOProofReference{}, err
 	}
 	if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+		if project.Binding == nil {
+			return TODOProofReference{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
+		}
 		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
 			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run, exact owner acceptance and remotely verified implementation commits", ErrConflict)
 		}
@@ -237,7 +240,7 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		if err != nil {
 			return TODOProofReference{}, err
 		}
-		return m.verifyRemoteLocalDelivery(ctx, companyID, record, contentDigest, local)
+		return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, local)
 	}
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
 }

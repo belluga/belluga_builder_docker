@@ -52,15 +52,15 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 	}}
 	local := TODOProofReference{Kind: "local-run-accepted", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
 	todo.ImplementationCommits = []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", todo, digest, local); err == nil {
+	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
 		t.Fatal("missing PACED implementation was accepted")
 	}
 	todo.ImplementationCommits = append(todo.ImplementationCommits, TODOCommitReference{Repository: "delphi-ai", Commit: sha, SourceDigest: digest, VerificationState: "unverified"})
-	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
 		t.Fatalf("complete remote proof=%+v err=%v", proof, err)
 	}
 	badPACEDPath = true
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", todo, digest, local); err == nil {
+	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
 		t.Fatal("PACED commit changing a Builder path was accepted")
 	}
 }

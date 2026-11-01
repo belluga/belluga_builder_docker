@@ -174,9 +174,13 @@ type remoteCommitResult struct {
 
 // The approved scope, not the current checkout diff, decides attribution.
 // Foundation-only Markdown is not an implementation repository.
-func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
+func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
+	}
+	parts := strings.SplitN(foundationRepositoryID, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return TODOProofReference{}, todoTeach("remote_proof", "use the registered Project Foundation repository owner", ErrConflict)
 	}
 	var verified []remoteCommitResult
 	for _, scope := range todo.DiffExpectation {
@@ -196,13 +200,7 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID st
 			if !validGitCommit(claim.Commit) || claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
 				return TODOProofReference{}, todoTeach("implementation_commits", "bind each full commit SHA to the approved current TODO content revision", ErrConflict)
 			}
-			repository := scope.Repository
-			if todo.ProjectID == "builder" {
-				repository = "belluga/" + repository
-				if scope.Repository == "belluga_builder_docker" {
-					repository = "eltonmorais/belluga_builder_docker"
-				}
-			}
+			repository := parts[0] + "/" + scope.Repository
 			result, err := m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit)
 			if err != nil {
 				return TODOProofReference{}, err
