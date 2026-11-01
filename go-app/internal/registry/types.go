@@ -55,14 +55,14 @@ type AppIdentifier struct {
 }
 
 type Project struct {
-	ID                    string     `json:"id" bson:"id"`
-	Name                  string     `json:"name" bson:"name"`
-	CompanyID             string     `json:"company_id" bson:"company_id"`
-	Binding               *Binding   `json:"binding,omitempty" bson:"binding,omitempty"`
-	RegisteredAt          string     `json:"registered_at" bson:"registered_at"`
-	PreparationState      string     `json:"preparation_state" bson:"preparation_state"`
-	PreparationDiagnostic string     `json:"preparation_diagnostic,omitempty" bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint   string     `json:"snapshot_fingerprint,omitempty" bson:"snapshot_fingerprint,omitempty"`
+	ID                    string   `json:"id" bson:"id"`
+	Name                  string   `json:"name" bson:"name"`
+	CompanyID             string   `json:"company_id" bson:"company_id"`
+	Binding               *Binding `json:"binding,omitempty" bson:"binding,omitempty"`
+	RegisteredAt          string   `json:"registered_at" bson:"registered_at"`
+	PreparationState      string   `json:"preparation_state" bson:"preparation_state"`
+	PreparationDiagnostic string   `json:"preparation_diagnostic,omitempty" bson:"preparation_diagnostic,omitempty"`
+	SnapshotFingerprint   string   `json:"snapshot_fingerprint,omitempty" bson:"snapshot_fingerprint,omitempty"`
 }
 
 type Catalog struct {

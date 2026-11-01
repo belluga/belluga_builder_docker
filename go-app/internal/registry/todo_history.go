@@ -931,7 +931,17 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		if prior.Kind != eventKind || prior.RequestDigest != digest {
 			return TODOContentEditResponse{}, todoTeach("operation_id", "not be reused with a different content payload", ErrConflict)
 		}
-		return TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: prior.Revision, NoOp: true}, nil
+		response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: prior.Revision, NoOp: true}
+		if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
+			contentRevision, contentDigest, _, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
+			if subjectErr != nil {
+				return TODOContentEditResponse{}, subjectErr
+			}
+			if hasCurrentContent && validSourceDigest(contentDigest) {
+				response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+			}
+		}
+		return response, nil
 	}
 	if !errors.Is(findErr, mongo.ErrNoDocuments) {
 		return TODOContentEditResponse{}, ErrUnavailable
@@ -948,12 +958,14 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	current := contentFromTODO(record)
 	if reflect.DeepEqual(current, withContractOwnership(request.Content)) {
 		response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: record.Revision, NoOp: true}
-		if record.Source.Kind == "mongo-content-revision" {
-			contentRevision, contentDigest, _, subjectErr := currentMongoContentSubject(ctx, database, record)
+		if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
+			contentRevision, contentDigest, _, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
 			if subjectErr != nil {
 				return TODOContentEditResponse{}, subjectErr
 			}
-			response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+			if hasCurrentContent && validSourceDigest(contentDigest) {
+				response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+			}
 		}
 		return response, nil
 	}
@@ -964,11 +976,11 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	}
 	operation := TODOOperationState{ID: request.OperationID, Kind: "content-edit", RequestDigest: digest, ResultRevision: nextRevision}
 	setFields := bson.D{{Key: "title", Value: request.Content.Title}, {Key: "objective", Value: request.Content.Objective}, {Key: "sections", Value: updatedSections}, {Key: "diff_expectation", Value: request.Content.DiffExpectation}, {Key: "affected_files", Value: request.Content.AffectedFiles}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
-	if record.Source.Kind == "mongo-content-revision" {
+	if invalidatesContentApproval(record) {
 		setFields = append(setFields, bson.E{Key: "stage_verification", Value: "unverified"})
 	}
 	update := bson.D{{Key: "$set", Value: setFields}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
-	if record.Source.Kind == "mongo-content-revision" {
+	if invalidatesContentApproval(record) {
 		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}})
 	}
 	session, err := m.client.StartSession()
@@ -995,7 +1007,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		}
 		contentRevision := nextRevision
 		changes := TODOHistoryChanges{}
-		if record.Source.Kind == "mongo-content-revision" {
+		if invalidatesContentApproval(record) {
 			unverified := "unverified"
 			changes.StageVerification = &unverified
 			changes.ClearVerifiedTransitionRef = true
@@ -1010,7 +1022,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		return TODOContentEditResponse{}, normalizeMongoError(err)
 	}
 	response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: nextRevision}
-	if record.Source.Kind == "mongo-content-revision" {
+	if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
 		storedContent := withContractOwnership(request.Content)
 		contentDigest, digestErr := todoContentRevisionDigest(record.ProjectID, record.ID, nextRevision, storedContent)
 		if digestErr != nil {

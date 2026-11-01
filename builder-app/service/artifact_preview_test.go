@@ -70,6 +70,72 @@ func TestTodoSourceHandlerRejectsDuplicateQuerySelectorsBeforeSnapshotRead(t *te
 	}
 }
 
+func TestRoadmapAPIProxyIsRegisteredReadOnlyAndAllowsPlanningTODOWithoutApproval(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "false")
+	root := t.TempDir()
+	registration := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies: map[string]registeredCompany{"third-company": {ID: "third-company", Name: "Third Company"}},
+		Projects: map[string]persistedProject{"schema": {registeredProject: registeredProject{ID: "schema", Name: "Schema", CompanyID: "third-company"}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/workspace", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "example/schema", PublicationBranch: "main"}}},
+		Preferences: map[string]persistedPreference{},
+	}
+	data, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roadmap := `{"schema_version":"builder-roadmap-projection-v3","project_id":"schema","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`
+	todo := `{"company_id":"third-company","project_id":"schema","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `","todo":{"id":"schema-study","project_id":"schema","revision":0,"title":"Schema study","objective":"Study schema","next_exact_step":"Inspect fields","stage":"Planning","sections":[{"key":"objective","title":"Objective","body_markdown":"Study"}],"proof_refs":[]},"todo_revision":0,"content_revision":3,"content_digest":"sha256:` + strings.Repeat("b", 64) + `"}`
+	var requestedRoadmap atomic.Bool
+	upstreamStatus := http.StatusOK
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"third-company"}],"projects":[{"id":"schema","company_id":"third-company"}],"preferences":[]}`))
+			return
+		}
+		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/roadmap" {
+			requestedRoadmap.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upstreamStatus)
+			_, _ = w.Write([]byte(roadmap))
+			return
+		}
+		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/todos/schema-study" && r.URL.Query().Get("todo_revision") == "0" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(todo))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+	preview := &registeredPreview{root: root, registryURL: upstream.URL, client: upstream.Client()}
+
+	roadResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(roadResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema", nil))
+	if roadResponse.Code != http.StatusOK || !requestedRoadmap.Load() || !strings.Contains(roadResponse.Body.String(), `"project_id":"schema"`) {
+		t.Fatalf("third-company Roadmap proxy status=%d body=%s", roadResponse.Code, roadResponse.Body.String())
+	}
+	planningResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(planningResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema&todo_id=schema-study&todo_revision=0", nil))
+	if planningResponse.Code != http.StatusOK || !strings.Contains(planningResponse.Body.String(), "Schema study") || !strings.Contains(planningResponse.Body.String(), `"content_digest":"sha256:`) {
+		t.Fatalf("unapproved Planning TODO must remain readable: status=%d body=%s", planningResponse.Code, planningResponse.Body.String())
+	}
+	unregisteredResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(unregisteredResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=outside&project_id=secret", nil))
+	if unregisteredResponse.Code != http.StatusNotFound {
+		t.Fatalf("unregistered Project was proxied: status=%d body=%s", unregisteredResponse.Code, unregisteredResponse.Body.String())
+	}
+	upstreamStatus = http.StatusServiceUnavailable
+	failedResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(failedResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema", nil))
+	if failedResponse.Code != http.StatusServiceUnavailable || !strings.Contains(failedResponse.Body.String(), "roadmap_api_unavailable") {
+		t.Fatalf("Registry failure did not fail closed: status=%d body=%s", failedResponse.Code, failedResponse.Body.String())
+	}
+}
+
 func TestTodoSourceHandlerKeepsStaleAndUnavailableResponsesDistinct(t *testing.T) {
 	const todoID = "related-todo:opaque"
 	privateStatus := http.StatusOK
@@ -168,46 +234,6 @@ func TestTodoSourceHandlerForwardsAndChecksMigratedRevision(t *testing.T) {
 	}
 }
 
-func TestSelectedTODOIDsRemainFoundationBackedOutsideBellugaSolutions(t *testing.T) {
-	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
-	token := strings.Repeat("t", 32)
-	fingerprint := strings.Repeat("a", 64)
-	for _, test := range []struct{ projectID, todoID string }{
-		{"boora", "t-9936500c9582e07e"},
-		{"builder", "builder-company-tenant-mongo-registry"},
-	} {
-		t.Run(test.projectID, func(t *testing.T) {
-			private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Query().Get("company_id") != "another-tenant" || r.URL.Query().Get("todo_id") != test.todoID || r.URL.Query().Has("todo_revision") {
-					t.Errorf("non-migrated tenant did not use the Foundation exact-read contract: %s", r.URL.RawQuery)
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"todo_id": test.todoID, "fingerprint": fingerprint, "markdown": "# Published Foundation TODO\n"})
-			}))
-			defer private.Close()
-			preview := &registeredPreview{readerURL: private.URL, readerToken: token, client: private.Client()}
-			path := "/api/local-todo-source?company_id=another-tenant&project_id=" + test.projectID + "&todo_id=" + test.todoID + "&fingerprint=" + fingerprint
-			response := httptest.NewRecorder()
-			preview.todoSourceHandler(response, httptest.NewRequest(http.MethodGet, path, nil))
-			var body map[string]any
-			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body["markdown"] != "# Published Foundation TODO\n" || body["todo_revision"] != nil || body["todo"] != nil {
-				t.Fatalf("selected ID leaked cutover behavior to another Company: status=%d body=%s", response.Code, response.Body.String())
-			}
-		})
-	}
-	foundationRoadmap := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"boora","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
-	mapBytes, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{}})
-	snapshot := registeredSnapshot{
-		ProjectID: "boora", CompanyID: "another-tenant",
-		Files:     map[string][]byte{"roadmap/projection.json": foundationRoadmap, "roadmap/todo-sources.json": mapBytes},
-		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/projection.json"}}},
-	}
-	snapshot.todoSources = parseTodoSourceMap(snapshot)
-	if _, ok := registeredProjectDetail(snapshot, fingerprint)["roadmap"].(roadmapProjection); !ok {
-		t.Fatal("another Company with the same Project ID did not retain its Foundation Roadmap")
-	}
-}
-
 func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
 	revision := int64(0)
 	makeTODO := func(id, kind, title string) roadmapTODO {
@@ -222,13 +248,13 @@ func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
 	if err != nil || !validMongoPublicRoadmap(data, "belluga-solutions", "boora") {
 		t.Fatalf("valid selected Bóora Roadmap summary rejected: %v %s", err, data)
 	}
-	if validMongoPublicRoadmap(data, "another-tenant", "boora") {
-		t.Fatal("selected-ID Mongo Roadmap summary must not activate for another Company")
+	if !validMongoPublicRoadmap(data, "another-tenant", "boora") {
+		t.Fatal("the Mongo Roadmap contract must be shared across registered Companies")
 	}
 	otherProject := roadmapProjection{SchemaVersion: "builder-roadmap-projection-v3", ProjectID: "other", Epics: []roadmapEpic{{ID: "e-other", Name: "Other", Releases: []roadmapRelease{{ID: "r-other", Name: "Other", TODOs: []roadmapTODO{}}}}}, Backlog: roadmapBacklog{TODOs: []roadmapTODO{}, Folders: []roadmapBacklogFolder{}}, Unclassified: []roadmapUnclassified{}, Diagnostics: []roadmapDiagnostic{}}
 	otherData, _ := json.Marshal(otherProject)
-	if validMongoPublicRoadmap(otherData, "another-tenant", "other") || mongoTODOCutoverProject("another-tenant", "boora") {
-		t.Fatal("another Company or Project must not activate the selected Mongo Roadmap contract")
+	if !validMongoPublicRoadmap(otherData, "another-tenant", "other") {
+		t.Fatal("third-company Project must satisfy the Mongo Roadmap contract")
 	}
 	roadmap.Epics[0].Releases[0].TODOs = roadmap.Epics[0].Releases[0].TODOs[:2]
 	partial, _ := json.Marshal(roadmap)
@@ -260,6 +286,35 @@ func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
 	created, _ := json.Marshal(builder)
 	if !validMongoPublicRoadmap(created, "belluga-solutions", "builder") {
 		t.Fatal("Mongo-born TODO without a Foundation path rejected the public Roadmap")
+	}
+	backlogTODO := makeTODO("builder-mongo-backlog-item", "executable", "Backlog item")
+	backlogTODO.Path = ""
+	builder.Backlog.TODOs = []roadmapTODO{backlogTODO}
+	backlogData, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(backlogData, "belluga-solutions", "builder") {
+		t.Fatal("Mongo-born Backlog TODO without a Foundation path rejected the public Roadmap")
+	}
+	invalidBacklog := builder
+	invalidBacklog.Backlog.TODOs = []roadmapTODO{backlogTODO}
+	badRevision := *backlogTODO.TODORevision
+	badRevision = -1
+	invalidBacklog.Backlog.TODOs[0].TODORevision = &badRevision
+	invalidBacklogData, _ := json.Marshal(invalidBacklog)
+	if validMongoPublicRoadmap(invalidBacklogData, "belluga-solutions", "builder") {
+		t.Fatal("Backlog TODO with a negative revision was accepted")
+	}
+	backlogTODO.Path = "todos/active/folder-work.md"
+	builder.Backlog.TODOs = []roadmapTODO{}
+	builder.Backlog.Folders = []roadmapBacklogFolder{{Name: "active", Path: "todos/active", Folders: []roadmapBacklogFolder{{Name: "nested", Path: "todos/active/nested", Folders: []roadmapBacklogFolder{}, TODOs: []roadmapTODO{backlogTODO}}}, TODOs: []roadmapTODO{}}}
+	nestedData, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(nestedData, "belluga-solutions", "builder") {
+		t.Fatal("valid nested Backlog folder with Mongo summary was rejected")
+	}
+	badFolder := builder
+	badFolder.Backlog.Folders = []roadmapBacklogFolder{{Name: "active", Path: "todos/../escape", Folders: []roadmapBacklogFolder{}, TODOs: []roadmapTODO{}}}
+	badFolderData, _ := json.Marshal(badFolder)
+	if validMongoPublicRoadmap(badFolderData, "belluga-solutions", "builder") {
+		t.Fatal("Backlog folder path traversal was accepted")
 	}
 	for _, path := range []string{"todos/../escape", "todos/.git/config", "todos/with\nnewline"} {
 		builder.Epics[0].Releases[0].TODOs[len(builder.Epics[0].Releases[0].TODOs)-1].Path = path

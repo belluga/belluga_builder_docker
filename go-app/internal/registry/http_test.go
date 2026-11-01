@@ -11,11 +11,12 @@ import (
 
 type testService struct {
 	Service
-	catalog       Catalog
-	project       Project
-	roadmap       json.RawMessage
-	registerCalls int
-	lastTenant    TenantRequest
+	catalog          Catalog
+	project          Project
+	roadmap          json.RawMessage
+	registerCalls    int
+	lastRegistration Registration
+	lastTenant       TenantRequest
 }
 
 func (s *testService) Catalog(context.Context) (Catalog, error) { return s.catalog, nil }
@@ -24,6 +25,7 @@ func (s *testService) Project(context.Context, string, string) (Project, error) 
 }
 func (s *testService) Register(_ context.Context, in Registration) (Project, error) {
 	s.registerCalls++
+	s.lastRegistration = in
 	return Project{ID: in.ProjectID, CompanyID: in.CompanyID}, nil
 }
 func (s *testService) Decline(context.Context, string, string, Binding) error { return nil }
@@ -45,14 +47,14 @@ func (s *testService) ResolveTenant(_ context.Context, input TenantRequest) (Ten
 }
 
 func TestPrivateRoutesPreserveExplicitEmptyRoadmap(t *testing.T) {
-	service := &testService{roadmap: json.RawMessage(`{"epics":[],"backlog":{"todos":[],"folders":[]}}`)}
+	service := &testService{roadmap: json.RawMessage(`{"epics":[],"backlog":{"todos":[],"folders":[]}}`), project: Project{ID: "builder", CompanyID: "company-1"}}
 	handler := NewHandler(service)
 	checks := []struct {
 		method, path, body, want string
 		status                   int
 	}{
 		{http.MethodGet, "/internal/v1/catalog", "", `"companies":null`, http.StatusOK},
-		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder", "", `"id":""`, http.StatusOK},
+		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder", "", `"id":"builder"`, http.StatusOK},
 		{http.MethodPost, "/internal/v1/companies/company-1/projects", `{"company_id":"company-1","project_id":"builder"}`, `"id":"builder"`, http.StatusOK},
 		{http.MethodPut, "/internal/v1/companies/company-1/projects/builder/snapshot-reference", `{"company_id":"company-1"}`, `"id":"builder"`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder/roadmap", "", `"epics":[]`, http.StatusOK},
@@ -151,6 +153,7 @@ type testSelectedTODOLifecycle struct {
 	readCalls       int
 	transitionCalls int
 	verifyCalls     int
+	verifyRequest   *VerifyCurrentTODOStageRequest
 	readRevision    *int64
 	readErr         error
 }
@@ -171,6 +174,7 @@ func (s *testSelectedTODOLifecycle) TransitionTODO(_ context.Context, _ string, 
 
 func (s *testSelectedTODOLifecycle) VerifyCurrentTODOStage(_ context.Context, companyID string, request VerifyCurrentTODOStageRequest) (TODOActionResponse, error) {
 	s.verifyCalls++
+	s.verifyRequest = &request
 	return TODOActionResponse{}, todoTeach("verify-current-stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
 }
 
@@ -209,5 +213,12 @@ func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01/verify-current-stage", strings.NewReader(body)))
 	if invalid.Code != http.StatusBadRequest || service.verifyCalls != 1 {
 		t.Fatalf("caller-supplied proof claim reached verifier: %d %s calls=%d", invalid.Code, invalid.Body.String(), service.verifyCalls)
+	}
+
+	reapproval := httptest.NewRecorder()
+	body = `{"project_id":"builder","todo_id":"todo-a","expected_revision":4,"operation_id":"verify-current-content","proof_refs":[{"kind":"owner-approval","source":"mongo-content-revision","ref":"builder/todo-a/content/7","source_digest":"sha256:` + strings.Repeat("a", 64) + `","verification_state":"unverified"}]}`
+	handler.ServeHTTP(reapproval, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/verify-current-stage", strings.NewReader(body)))
+	if reapproval.Code != http.StatusConflict || service.verifyCalls != 2 || service.verifyRequest == nil || len(service.verifyRequest.ProofReferences) != 1 || service.verifyRequest.ProofReferences[0].Reference != "builder/todo-a/content/7" {
+		t.Fatalf("current-content verification request was not passed through to the deterministic verifier: %d %s request=%+v calls=%d", reapproval.Code, reapproval.Body.String(), service.verifyRequest, service.verifyCalls)
 	}
 }

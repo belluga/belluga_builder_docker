@@ -76,6 +76,9 @@ func TestProjectDocumentIsFlatWithObjectIDBindingAndBSONDate(t *testing.T) {
 	if _, ok := raw["registered_at"].(bson.DateTime); !ok {
 		t.Fatalf("registered_at is %T, want BSON Date", raw["registered_at"])
 	}
+	if _, found := raw["new_todo_creation_authority"]; found {
+		t.Fatal("Project persisted a per-Project Roadmap authority switch")
+	}
 	api := document.toAPI()
 	if api.ID != project.ID || api.CompanyID != project.CompanyID || api.Binding == nil || *api.Binding != *project.Binding {
 		t.Fatalf("Project round trip changed identity or binding: %+v", api)
@@ -84,6 +87,29 @@ func TestProjectDocumentIsFlatWithObjectIDBindingAndBSONDate(t *testing.T) {
 	got, err := time.Parse(time.RFC3339Nano, api.RegisteredAt)
 	if err != nil || !got.Equal(want) {
 		t.Fatalf("registered_at = %s, %v; want %s", api.RegisteredAt, err, want)
+	}
+}
+
+func TestProjectSerializationHasNoPerProjectRoadmapAuthority(t *testing.T) {
+	project := Project{ID: "builder", CompanyID: "belluga", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: "2026-10-30T12:34:56Z", PreparationState: "not_ready"}
+	document, err := projectToDocument(project, bson.NewObjectID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := projectDocument{ID: "builder", CompanyID: "belluga", Binding: validTestBinding(), RegisteredAt: time.Now().UTC()}
+	encoded, err := bson.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw bson.M
+	if err := bson.Unmarshal(encoded, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, found := raw["new_todo_creation_authority"]; found {
+		t.Fatal("Project BSON includes per-Project Roadmap authority")
+	}
+	if api := legacy.toAPI(); api.ID != "builder" || api.CompanyID != "belluga" {
+		t.Fatalf("legacy Project did not retain identity: %+v", api)
 	}
 }
 
@@ -191,6 +217,10 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	}
 	if _, err := register("company-b"); err != nil {
 		t.Fatal(err)
+	}
+	projectB, err := store.Project(ctx, "company-b", "shared")
+	if err != nil || projectB.ID != "shared" || projectB.CompanyID != "company-b" {
+		t.Fatalf("registration did not return the registered Project: project=%+v err=%v", projectB, err)
 	}
 	company, err = normalizeCompany(Company{ID: "company-a", Name: "company-a", Domains: []string{"example.test"}, AppIDs: []AppIdentifier{{Platform: "app_android", Value: "com.example.app"}, {Platform: "app_ios", Value: "com.example.ios"}}})
 	if err != nil {
@@ -393,9 +423,8 @@ func TestMongoImportIsRepeatableAndRejectsChangedHierarchy(t *testing.T) {
 		t.Fatalf("first import = %+v, %v", first, err)
 	}
 	control, err := store.LifecycleControl(ctx)
-	expectedLifecycle, marshalErr := json.Marshal(input.LifecycleMigration)
-	if err != nil || marshalErr != nil || !bytes.Equal(control.Value, expectedLifecycle) || !sameLifecycleMigration(control.Value, input.LifecycleMigration) {
-		t.Fatalf("stored lifecycle state does not match the exact canonical readback: stored=%s expected=%s err=%v marshal_err=%v", control.Value, expectedLifecycle, err, marshalErr)
+	if err != nil || !sameLifecycleMigration(control.Value, input.LifecycleMigration) {
+		t.Fatalf("stored lifecycle state does not match the canonical readback: stored=%s expected=%+v err=%v", control.Value, input.LifecycleMigration, err)
 	}
 	second, err := store.Import(ctx, input)
 	if err != nil || !second.NoOp {

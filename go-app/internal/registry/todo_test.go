@@ -445,8 +445,8 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	}
 	zeroRevision := int64(0)
 	transition := TODOActionRequest{ProjectID: "builder", TODOID: "builder-company-tenant-mongo-registry", ExpectedRevision: &zeroRevision, OperationID: "transition-001", RequestedStage: "Local-Implemented", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}
-	if _, err := store.TransitionTODO(ctx, "belluga-solutions", transition); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "proof guard defined and approved in a later TODO") || !strings.Contains(err.Error(), "no write occurred") {
-		t.Fatalf("unguarded stage transition = %v, want actionable fail-closed TEACH", err)
+	if _, err := store.TransitionTODO(ctx, "belluga-solutions", transition); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "local_proof") {
+		t.Fatalf("unguarded stage transition = %v, want actionable local-proof TEACH", err)
 	}
 	staleTransition := transition
 	staleTransition.OperationID = "transition-stale"
@@ -460,12 +460,12 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	invalidJump := transition
 	invalidJump.OperationID = "transition-jump"
 	invalidJump.RequestedStage = "Completed"
-	if _, err := store.TransitionTODO(ctx, "belluga-solutions", invalidJump); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "proof guard defined and approved in a later TODO") || !strings.Contains(err.Error(), "no write occurred") {
-		t.Fatalf("guardless nonadjacent stage transition = %v, want fail-closed TEACH", err)
+	if _, err := store.TransitionTODO(ctx, "belluga-solutions", invalidJump); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "approved actual-start or verified-local-run transition") {
+		t.Fatalf("guardless nonadjacent stage transition = %v, want actionable stage-specific TEACH", err)
 	}
 	verify := VerifyCurrentTODOStageRequest{ProjectID: transition.ProjectID, TODOID: transition.TODOID, ExpectedRevision: &zeroRevision, OperationID: "verify-001"}
-	if _, err := store.VerifyCurrentTODOStage(ctx, "belluga-solutions", verify); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "proof guard defined and approved in a later TODO") || !strings.Contains(err.Error(), "no write occurred") {
-		t.Fatalf("untrusted direct current-stage verification = %v, want actionable fail-closed TEACH", err)
+	if _, err := store.VerifyCurrentTODOStage(ctx, "belluga-solutions", verify); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "current immutable approved content") {
+		t.Fatalf("untrusted direct current-stage verification = %v, want actionable content-proof TEACH", err)
 	}
 	read, err = store.ReadTODO(ctx, "belluga-solutions", "builder", transition.TODOID, &zeroRevision)
 	if err != nil || read.TODO.ID != transition.TODOID || read.TODO.Stage != "In-Progress" || read.TODO.StageVerification != "unverified" || read.TODORevision != 0 {

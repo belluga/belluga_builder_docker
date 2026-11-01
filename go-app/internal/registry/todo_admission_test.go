@@ -35,6 +35,8 @@ func genericTODOAdmissionFixture() TODOAdmissionRequest {
 
 func intPointer(value int) *int { return &value }
 
+func int64Pointer(value int64) *int64 { return &value }
+
 func TestValidateGenericTODOAdmission(t *testing.T) {
 	valid := genericTODOAdmissionFixture()
 	if err := validateGenericTODOAdmission(valid.TODO); err != nil {
@@ -152,6 +154,126 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	NewHandler(service).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || service.companyID != "belluga-solutions" || service.projectID != "builder" || !strings.Contains(response.Body.String(), `"schema_version":"builder-todo-creation-v1"`) {
 		t.Fatalf("Project creation template response = %d %s; company=%q project=%q", response.Code, response.Body.String(), service.companyID, service.projectID)
+	}
+}
+
+func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated replica-set MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	databaseName := store.tenantDatabase("company-a")
+	database := store.client.Database(databaseName)
+	t.Cleanup(func() {
+		if err := database.Drop(context.Background()); err != nil {
+			t.Errorf("drop isolated tenant database %q: %v", databaseName, err)
+		}
+		if err := store.control.Drop(context.Background()); err != nil {
+			t.Errorf("drop isolated control database %q: %v", stamp, err)
+		}
+		_ = store.Close(context.Background())
+	})
+	company, err := normalizeCompany(Company{ID: "company-a", Name: "Company A", DatabaseName: databaseName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.control.Collection(companiesCollection).InsertOne(ctx, company); err != nil {
+		t.Fatal(err)
+	}
+	project := Project{ID: "builder", CompanyID: "company-a", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
+	projectRecord, err := projectToDocument(project, bson.NewObjectID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(projectsCollection).InsertOne(ctx, projectRecord); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProvisionTODOCollection(ctx, "company-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, "company-a"); err != nil {
+		t.Fatal(err)
+	}
+	epic := roadmapEpic{StorageID: bson.NewObjectID(), ProjectID: "builder", ID: "e-06", Name: "Database", Position: 0}
+	release := roadmapRelease{StorageID: bson.NewObjectID(), ProjectID: "builder", ID: "r-08", EpicID: "e-06", Name: "Mongo", Position: 0}
+	if _, err := database.Collection(epicsCollection).InsertOne(ctx, epic); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(releasesCollection).InsertOne(ctx, release); err != nil {
+		t.Fatal(err)
+	}
+	admission := genericTODOAdmissionFixture()
+	admission.TODO.ID = "builder-mongo-imported-edited-stage-flow"
+	admission.TODO.Source.Path = "todos/active/TODO-" + admission.TODO.ID + ".md"
+	admission.TODO.Source.Digest = sourceHash([]byte(admission.TODO.ID))
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", admission); err != nil {
+		t.Fatalf("admit imported TODO: %v", err)
+	}
+	legacyContent := contentFromTODO(admission.TODO)
+	if _, err := database.Collection(todoContentVersionsCollection).UpdateOne(ctx,
+		bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: admission.TODO.ID}, {Key: "revision", Value: int64(0)}},
+		bson.D{{Key: "$unset", Value: bson.D{{Key: "digest", Value: ""}}}}); err != nil {
+		t.Fatalf("make revision-zero import history legacy-digestless: %v", err)
+	}
+	for revision := int64(1); revision <= 4; revision++ {
+		version := TODOContentVersion{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: admission.TODO.ID, Revision: revision, Content: legacyContent}
+		if _, err := database.Collection(todoContentVersionsCollection).InsertOne(ctx, version); err != nil {
+			t.Fatalf("insert legacy digestless content version %d: %v", revision, err)
+		}
+	}
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: admission.TODO.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "revision", Value: int64(4)}}}}); err != nil {
+		t.Fatalf("set observed imported TODO revision: %v", err)
+	}
+	read, err := store.ReadTODO(ctx, "company-a", "builder", admission.TODO.ID, nil)
+	if err != nil || read.ContentRevision != nil || read.ContentDigest != "" {
+		t.Fatalf("legacy digestless imported TODO read = %+v, %v", read, err)
+	}
+	readJSON, marshalErr := json.Marshal(read)
+	if marshalErr != nil || strings.Contains(string(readJSON), `"content_revision"`) || strings.Contains(string(readJSON), `"content_digest"`) {
+		t.Fatalf("legacy digestless TODO serialized an incomplete content identity: %s (marshal error: %v)", readJSON, marshalErr)
+	}
+	transition := func(revision int64, operation, stage string, proofs []TODOProofReference) (TODOActionResponse, error) {
+		return store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(revision), OperationID: operation, RequestedStage: stage, ProofReferences: proofs, WaiverReferences: []TODOProofReference{}})
+	}
+	oldProof := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: admission.TODO.Source.Digest, VerificationState: "unverified"}
+	if _, err := transition(4, "legacy-digestless-shortcut", "In-Progress", []TODOProofReference{oldProof}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("digestless imported TODO reused stale Foundation approval: %v", err)
+	}
+	content := contentFromTODO(read.TODO)
+	content.Title += " authored edit"
+	edit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(4), OperationID: "imported-edited-content", Content: content, Reason: "Bind stage approvals to the authored imported revision",
+	})
+	if err != nil || edit.ContentRevision == nil || *edit.ContentRevision != 5 || !validSourceDigest(edit.ContentDigest) {
+		t.Fatalf("imported authored content edit = %+v, %v", edit, err)
+	}
+	if _, err := transition(5, "stale-shortcut", "In-Progress", []TODOProofReference{oldProof}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("edited imported legacy shortcut = %v; want conflict", err)
+	}
+	currentProof := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/" + admission.TODO.ID + "/content/5", SourceDigest: admission.TODO.Source.Digest, VerificationState: "unverified"}
+	if _, err := transition(5, "stale-content-digest", "Implementation-Approval-Pending", []TODOProofReference{currentProof}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("Foundation digest on imported content approval = %v; want conflict", err)
+	}
+	currentProof.SourceDigest = edit.ContentDigest
+	if response, err := transition(5, "current-content-approval", "Implementation-Approval-Pending", []TODOProofReference{currentProof}); err != nil || response.TODORevision != 6 {
+		t.Fatalf("current-content approval = %+v, %v", response, err)
+	}
+	if response, err := transition(6, "ready", "Ready-for-Implementation", []TODOProofReference{}); err != nil || response.TODORevision != 7 {
+		t.Fatalf("Ready edge = %+v, %v", response, err)
+	}
+	if response, err := transition(7, "work-started", "In-Progress", []TODOProofReference{}); err != nil || response.TODORevision != 8 {
+		t.Fatalf("work-start edge = %+v, %v", response, err)
+	}
+	read, err = store.ReadTODO(ctx, "company-a", "builder", admission.TODO.ID, nil)
+	if err != nil || read.ContentRevision == nil || *read.ContentRevision != 5 || read.ContentDigest != edit.ContentDigest || read.TODO.Stage != "In-Progress" || read.TODO.Source.Digest != admission.TODO.Source.Digest || read.TODO.VerifiedTransitionRef == nil || read.TODO.VerifiedTransitionRef.SourceDigest != edit.ContentDigest {
+		t.Fatalf("final imported authored stage readback = %+v, %v", read, err)
 	}
 }
 
@@ -303,6 +425,122 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("generic admitted TODO missing from Roadmap: %s, %v", roadmap, err)
 	}
 
+	admitImportedTODO := func(id string, position int) TODORecord {
+		t.Helper()
+		admission := genericTODOAdmissionFixture()
+		admission.TODO.ID = id
+		admission.TODO.Position = intPointer(position)
+		admission.TODO.Source.Path = "todos/active/TODO-" + id + ".md"
+		admission.TODO.Source.Digest = sourceHash([]byte(id))
+		if _, err := store.AdmitTODO(ctx, "company-a", "builder", admission); err != nil {
+			t.Fatalf("admit imported TODO %q: %v", id, err)
+		}
+		return admission.TODO
+	}
+
+	staleApprovalTODO := admitImportedTODO("builder-mongo-imported-stale-approval", 4)
+	staleStartProof := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: staleApprovalTODO.Source.Digest, VerificationState: "unverified"}
+	staleStart, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: staleApprovalTODO.ID, ExpectedRevision: int64Pointer(0), OperationID: "imported-legacy-start", RequestedStage: "In-Progress",
+		ProofReferences: []TODOProofReference{staleStartProof}, WaiverReferences: []TODOProofReference{},
+	})
+	if err != nil || staleStart.Stage != "In-Progress" || staleStart.TODORevision != 1 {
+		t.Fatalf("unmodified imported TODO legacy start = %+v, %v", staleStart, err)
+	}
+	staleContent, err := store.ReadTODO(ctx, "company-a", "builder", staleApprovalTODO.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleContentEdit := contentFromTODO(staleContent.TODO)
+	staleContentEdit.Title += " authored edit"
+	staleEdit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: staleApprovalTODO.ID, ExpectedRevision: int64Pointer(1), OperationID: "imported-stale-content-edit",
+		Content: staleContentEdit, Reason: "Exercise imported content approval invalidation",
+	})
+	if err != nil || staleEdit.Revision != 2 || staleEdit.ContentRevision == nil || *staleEdit.ContentRevision != 2 || !validSourceDigest(staleEdit.ContentDigest) {
+		t.Fatalf("edited imported TODO content subject = %+v, %v", staleEdit, err)
+	}
+	staleContent, err = store.ReadTODO(ctx, "company-a", "builder", staleApprovalTODO.ID, nil)
+	if err != nil || staleContent.ContentRevision == nil || *staleContent.ContentRevision != 2 || staleContent.ContentDigest != staleEdit.ContentDigest || staleContent.TODO.StageVerification != "unverified" || staleContent.TODO.VerifiedTransitionRef != nil || staleContent.TODO.Source.Digest != staleApprovalTODO.Source.Digest {
+		t.Fatalf("imported edit retained stale approval or source provenance: %+v, %v", staleContent, err)
+	}
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: staleApprovalTODO.ID, ExpectedRevision: int64Pointer(2), OperationID: "imported-stale-reapproval",
+		RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{staleStartProof}, WaiverReferences: []TODOProofReference{},
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("stale Foundation-digest approval was accepted after an authored edit: %v", err)
+	}
+
+	editedFlowTODO := admitImportedTODO("builder-mongo-imported-edited-flow", 5)
+	flowRead, err := store.ReadTODO(ctx, "company-a", "builder", editedFlowTODO.ID, nil)
+	if err != nil || flowRead.ContentRevision != nil || flowRead.TODO.Source.Foundation != "builder" {
+		t.Fatalf("unmodified imported TODO read = %+v, %v", flowRead, err)
+	}
+	flowContent := contentFromTODO(flowRead.TODO)
+	flowContent.Title += " authored edit"
+	flowEdit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(0), OperationID: "imported-flow-content-edit",
+		Content: flowContent, Reason: "Use the edited imported content as the stage proof subject",
+	})
+	if err != nil || flowEdit.Revision != 1 || flowEdit.ContentRevision == nil || *flowEdit.ContentRevision != 1 || !validSourceDigest(flowEdit.ContentDigest) {
+		t.Fatalf("edited imported TODO = %+v, %v", flowEdit, err)
+	}
+	flowRead, err = store.ReadTODO(ctx, "company-a", "builder", editedFlowTODO.ID, nil)
+	if err != nil || flowRead.ContentRevision == nil || *flowRead.ContentRevision != 1 || flowRead.ContentDigest != flowEdit.ContentDigest || flowRead.TODO.Source.Foundation != "builder" || flowRead.TODO.Source.Digest != editedFlowTODO.Source.Digest {
+		t.Fatalf("edited imported readback lost current content subject or Foundation provenance: %+v, %v", flowRead, err)
+	}
+	oldSourceProof := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: editedFlowTODO.Source.Digest, VerificationState: "unverified"}
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(1), OperationID: "imported-flow-old-shortcut",
+		RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{oldSourceProof}, WaiverReferences: []TODOProofReference{},
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("edited imported TODO accepted the legacy Planning-to-In-Progress shortcut: %v", err)
+	}
+	contentRef := "builder/" + editedFlowTODO.ID + "/content/1"
+	staleContentProof := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: editedFlowTODO.Source.Digest, VerificationState: "unverified"}
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(1), OperationID: "imported-flow-stale-content-digest",
+		RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{staleContentProof}, WaiverReferences: []TODOProofReference{},
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("edited imported TODO accepted an owner approval bound to Foundation provenance: %v", err)
+	}
+	currentContentProof := staleContentProof
+	currentContentProof.SourceDigest = flowEdit.ContentDigest
+	startedForApproval, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(1), OperationID: "imported-flow-owner-approval",
+		RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{currentContentProof}, WaiverReferences: []TODOProofReference{},
+	})
+	if err != nil || startedForApproval.Stage != "Implementation-Approval-Pending" || startedForApproval.TODORevision != 2 {
+		t.Fatalf("edited imported current-content approval = %+v, %v", startedForApproval, err)
+	}
+	readyForWork, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(2), OperationID: "imported-flow-ready",
+		RequestedStage: "Ready-for-Implementation", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{},
+	})
+	if err != nil || readyForWork.Stage != "Ready-for-Implementation" || readyForWork.TODORevision != 3 {
+		t.Fatalf("edited imported Ready edge = %+v, %v", readyForWork, err)
+	}
+	workStarted, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: editedFlowTODO.ID, ExpectedRevision: int64Pointer(3), OperationID: "imported-flow-work-started",
+		RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{},
+	})
+	if err != nil || workStarted.Stage != "In-Progress" || workStarted.TODORevision != 4 {
+		t.Fatalf("edited imported work-start edge = %+v, %v", workStarted, err)
+	}
+	flowRead, err = store.ReadTODO(ctx, "company-a", "builder", editedFlowTODO.ID, nil)
+	if err != nil || flowRead.ContentRevision == nil || *flowRead.ContentRevision != 1 || flowRead.ContentDigest != flowEdit.ContentDigest || flowRead.TODO.Stage != "In-Progress" || flowRead.TODO.VerifiedTransitionRef == nil || flowRead.TODO.VerifiedTransitionRef.Kind != "work-started" || flowRead.TODO.VerifiedTransitionRef.Reference != contentRef+"/revision/4" || flowRead.TODO.VerifiedTransitionRef.SourceDigest != flowEdit.ContentDigest || flowRead.TODO.Source.Digest != editedFlowTODO.Source.Digest {
+		t.Fatalf("edited imported exact work-start readback = %+v, %v", flowRead, err)
+	}
+	flowHistory, err := store.ReadTODOHistory(ctx, "company-a", "builder", editedFlowTODO.ID, -1, 100)
+	if err != nil || len(flowHistory.Events) != 5 || flowHistory.Events[1].Kind != "content_changed" || flowHistory.Events[1].ContentRevision == nil || *flowHistory.Events[1].ContentRevision != 1 || flowHistory.Events[2].Changes.Stage == nil || *flowHistory.Events[2].Changes.Stage != "Implementation-Approval-Pending" || flowHistory.Events[3].Changes.Stage == nil || *flowHistory.Events[3].Changes.Stage != "Ready-for-Implementation" || flowHistory.Events[4].Changes.Stage == nil || *flowHistory.Events[4].Changes.Stage != "In-Progress" {
+		t.Fatalf("edited imported stage history chronology = %+v, %v", flowHistory, err)
+	}
+	for index := 1; index < len(flowHistory.Events); index++ {
+		if flowHistory.Events[index].OccurredAt.IsZero() || flowHistory.Events[index].OccurredAt.Before(flowHistory.Events[index-1].OccurredAt) {
+			t.Fatalf("history event timestamps are not chronological: %+v", flowHistory.Events)
+		}
+	}
+
 	// The Project-scoped template and POST admit a Mongo-born TODO directly to
 	// Planning Backlog, without Foundation source metadata or a placeholder Release.
 	creationTemplate, err := store.TODOCreationTemplate(ctx, "company-a", "builder")
@@ -339,8 +577,43 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		Epics []roadmapEpicView `json:"epics"`
 	}
 	backlogBytes, err := store.Roadmap(ctx, "builder", "company-a")
-	if err != nil || json.Unmarshal(backlogBytes, &backlogRoadmap) != nil || len(backlogRoadmap.Backlog.TODOs) != 1 || backlogRoadmap.Backlog.TODOs[0].ID != mongoBorn.ID || len(backlogRoadmap.Epics[0].Releases[0].TODOs) != 1 {
-		t.Fatalf("Mongo-born TODO was not projected exclusively to Backlog: %s, %v", backlogBytes, err)
+	if err == nil {
+		err = json.Unmarshal(backlogBytes, &backlogRoadmap)
+	}
+	mongoBornInRelease := false
+	if err == nil && len(backlogRoadmap.Epics) > 0 && len(backlogRoadmap.Epics[0].Releases) > 0 {
+		for _, releaseTODO := range backlogRoadmap.Epics[0].Releases[0].TODOs {
+			mongoBornInRelease = mongoBornInRelease || releaseTODO.ID == mongoBorn.ID
+		}
+	}
+	if err != nil || len(backlogRoadmap.Backlog.TODOs) != 1 || backlogRoadmap.Backlog.TODOs[0].ID != mongoBorn.ID || mongoBornInRelease {
+		t.Fatalf("Mongo-born TODO was not projected to Backlog: %s, %v", backlogBytes, err)
+	}
+	// A second registered Project, including Bóora's public Project ID, uses the
+	// same Mongo creation route without a per-Project authority switch.
+	booraProject := Project{ID: "boora", CompanyID: "company-a", Name: "Bóora", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
+	booraDocument, err := projectToDocument(booraProject, bson.NewObjectID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(projectsCollection).InsertOne(ctx, booraDocument); err != nil {
+		t.Fatalf("register Bóora fixture Project: %v", err)
+	}
+	booraTemplate, err := store.TODOCreationTemplate(ctx, "company-a", "boora")
+	booraTODO := mongoBornTODOFixture()
+	booraTODO.ID, booraTODO.ProjectID = "boora-mongo-created-backlog", "boora"
+	booraAdmission, admitErr := store.AdmitTODO(ctx, "company-a", "boora", TODOAdmissionRequest{SchemaVersion: booraTemplate.SchemaVersion, TODO: booraTODO})
+	var booraRoadmap struct {
+		Backlog struct {
+			TODOs []roadmapTODOView `json:"todos"`
+		} `json:"backlog"`
+	}
+	booraBytes, booraRoadmapErr := store.Roadmap(ctx, "boora", "company-a")
+	if booraRoadmapErr == nil {
+		booraRoadmapErr = json.Unmarshal(booraBytes, &booraRoadmap)
+	}
+	if err != nil || booraTemplate.SchemaVersion != creationTemplate.SchemaVersion || admitErr != nil || booraAdmission.TODOID != booraTODO.ID || booraAdmission.ReleaseID != "" || booraRoadmapErr != nil || len(booraRoadmap.Backlog.TODOs) != 1 || booraRoadmap.Backlog.TODOs[0].ID != booraTODO.ID {
+		t.Fatalf("Bóora did not use the common API template/create/Backlog route: template=%+v admission=%+v roadmap=%s errors=(%v,%v,%v)", booraTemplate, booraAdmission, booraBytes, err, admitErr, booraRoadmapErr)
 	}
 	zeroMongoRevision := int64(0)
 	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &zeroMongoRevision, OperationID: "backlog-transition-001", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}); !errors.Is(err, ErrConflict) {
@@ -390,7 +663,18 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("Mongo-born first edge history = %+v, %v", currentMongo, err)
 	}
 	backlogBytes, err = store.Roadmap(ctx, "builder", "company-a")
-	if err != nil || json.Unmarshal(backlogBytes, &backlogRoadmap) != nil || len(backlogRoadmap.Backlog.TODOs) != 0 || len(backlogRoadmap.Epics[0].Releases[0].TODOs) != 2 {
+	if err == nil {
+		err = json.Unmarshal(backlogBytes, &backlogRoadmap)
+	}
+	mongoBornReleaseCount := 0
+	if err == nil && len(backlogRoadmap.Epics) > 0 && len(backlogRoadmap.Epics[0].Releases) > 0 {
+		for _, releaseTODO := range backlogRoadmap.Epics[0].Releases[0].TODOs {
+			if releaseTODO.ID == mongoBorn.ID {
+				mongoBornReleaseCount++
+			}
+		}
+	}
+	if err != nil || len(backlogRoadmap.Backlog.TODOs) != 0 || mongoBornReleaseCount != 1 {
 		t.Fatalf("assigned TODO duplicated or missing in Backlog/Release projection: %s, %v", backlogBytes, err)
 	}
 	currentMongoRead, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
@@ -551,7 +835,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("content as-of revision 2 = %+v, %v", versionAtTwo, err)
 	}
 	comparison, err = store.CompareTODOHistory(ctx, "company-a", "builder", request.TODO.ID, 1, 2)
-	if err != nil || !reflect.DeepEqual(comparison.Changed, []string{"sections", "title"}) {
+	if err != nil || !reflect.DeepEqual(comparison.Changed, []string{"sections", "stage_verification", "title", "verified_transition_ref"}) {
 		t.Fatalf("content comparison = %+v, %v", comparison, err)
 	}
 	three := int64(2)
@@ -701,9 +985,13 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	proofResult.ResultDigest = sourceHash(proofBytes)
 	seven := int64(6)
-	local, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &seven, OperationID: "local-proof-001", RequestedStage: "Local-Implemented", LocalProof: proofResult})
-	if err != nil || local.TODORevision != 7 || local.Stage != "Local-Implemented" || local.StageVerification != "verified" {
-		t.Fatalf("individually admitted local transition = %+v, %v", local, err)
+	_, err = store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &seven, OperationID: "local-proof-001", RequestedStage: "Local-Implemented", LocalProof: proofResult})
+	if err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "approval/content_revision") {
+		t.Fatalf("Local-Implemented accepted content without current owner reapproval: %v", err)
+	}
+	unchangedAfterLocalAttempt, readErr := store.ReadTODO(ctx, "company-a", "builder", request.TODO.ID, &seven)
+	if readErr != nil || unchangedAfterLocalAttempt.TODO.Stage != "In-Progress" || unchangedAfterLocalAttempt.TODO.StageVerification != "unverified" || unchangedAfterLocalAttempt.TODO.VerifiedTransitionRef != nil {
+		t.Fatalf("rejected Local-Implemented attempt changed approval state: %+v, %v", unchangedAfterLocalAttempt, readErr)
 	}
 	if _, err := store.ReadTODOAsOf(ctx, "company-a", "builder", request.TODO.ID, 6); err != nil {
 		t.Fatalf("prior as-of state changed after local transition: %v", err)

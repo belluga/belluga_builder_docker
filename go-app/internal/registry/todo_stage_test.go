@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -59,6 +62,46 @@ func TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit(t *testing.T) {
 	}
 }
 
+func TestEditedImportedLocalDeliveryUsesCurrentContentDigest(t *testing.T) {
+	currentDigest := "sha256:" + strings.Repeat("c", 64)
+	foundationDigest := "sha256:" + strings.Repeat("a", 64)
+	record := TODORecord{
+		ID: "imported-todo", ProjectID: "builder", ReleaseID: "r-08", Stage: "In-Progress", StageVerification: "verified",
+		Source:                TODOSource{Foundation: "builder", Digest: foundationDigest},
+		VerifiedTransitionRef: &TODOProofReference{Kind: "work-started", SourceDigest: currentDigest, VerificationState: "verified"},
+	}
+	if digest, err := importedEditedTODOCurrentDeliveryDigest(record, currentDigest); err != nil || digest != currentDigest || digest == foundationDigest {
+		t.Fatalf("edited imported delivery digest = %q, %v; want current content digest", digest, err)
+	}
+	commitSHA := strings.Repeat("d", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: query.Get("company_id"), ProjectID: query.Get("project_id"), Repository: query.Get("repository"), Branch: query.Get("branch"), CommitSHA: query.Get("commit_sha"), RemoteHead: commitSHA, ParentSHA: strings.Repeat("e", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	record.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}
+	record.ImplementationCommits = []TODOCommitReference{{Repository: "Builder", Commit: commitSHA, SourceDigest: currentDigest, VerificationState: "unverified"}}
+	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: currentDigest, VerificationState: "verified"}
+	remote, err := store.verifyRemoteLocalDelivery(context.Background(), "company-a", "belluga/belluga_builder_foundation_documentation", record, currentDigest, local)
+	if err != nil || remote.Kind != "remote-local-delivery" {
+		t.Fatalf("remote delivery proof bound to current imported content = %+v, %v", remote, err)
+	}
+	record.ImplementationCommits[0].SourceDigest = foundationDigest
+	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "company-a", "belluga/belluga_builder_foundation_documentation", record, currentDigest, local); err == nil {
+		t.Fatal("remote delivery accepted a commit bound to stale Foundation provenance")
+	}
+	record.VerifiedTransitionRef.SourceDigest = foundationDigest
+	if _, err := importedEditedTODOCurrentDeliveryDigest(record, currentDigest); err == nil {
+		t.Fatal("edited imported TODO with stale Foundation-bound approval was accepted for Local-Implemented")
+	}
+	record.VerifiedTransitionRef.SourceDigest = currentDigest
+	record.StageVerification = "unverified"
+	if _, err := importedEditedTODOCurrentDeliveryDigest(record, currentDigest); err == nil {
+		t.Fatal("edited imported TODO without current verified stage proof was accepted for Local-Implemented")
+	}
+}
+
 func TestMongoBornInProgressContentReapproval(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	ref := "builder/todo-a/content/8"
@@ -76,6 +119,148 @@ func TestMongoBornInProgressContentReapproval(t *testing.T) {
 	request.ProofReferences[0].SourceDigest = digest
 	if _, err := mongoBornStageProof(record, request, digest, ref); err == nil {
 		t.Fatal("already verified In-Progress TODO was reapproved without a content edit")
+	}
+}
+
+func TestCurrentContentOwnerApprovalProofRequiresCanonicalApprovalAndExactRevision(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	revision := int64(4)
+	position := 1
+	approval := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/todo-a/content/7", SourceDigest: digest, VerificationState: "unverified"}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Position: &position, Stage: "In-Progress", StageVerification: "unverified", Revision: revision, ProofReferences: []TODOProofReference{approval}, Sections: []TODOSection{{Key: "approval", BodyMarkdown: "- **Approval status:** approved for Mongo content revision 7, digest " + digest + "."}}}
+	content := TODOAuthoredContent{Sections: []TODOSection{{Key: "contract", BodyMarkdown: "approved decisions are immutable content"}}}
+	request := VerifyCurrentTODOStageRequest{
+		ProjectID: "builder", TODOID: "todo-a", ExpectedRevision: &revision, OperationID: "verify-content-4",
+		ProofReferences: []TODOProofReference{{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/todo-a/content/7", SourceDigest: digest, VerificationState: "unverified"}},
+	}
+	proof, err := currentContentOwnerApprovalProof(record, request, content, 7, digest, "builder/todo-a/content/7")
+	if err != nil || proof.VerificationState != "verified" || proof.SourceDigest != digest {
+		t.Fatalf("current approved-content proof = %+v, %v", proof, err)
+	}
+
+	withoutCanonicalApproval := record
+	withoutCanonicalApproval.Sections = nil
+	if _, err := currentContentOwnerApprovalProof(withoutCanonicalApproval, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+		t.Fatal("caller-supplied owner approval passed without canonical record approval")
+	}
+	wrongRecordApproval := record
+	wrongRecordApproval.Sections = []TODOSection{{Key: "approval", BodyMarkdown: "- **Approval status:** approved for Mongo content revision 6, digest " + digest + "."}}
+	if _, err := currentContentOwnerApprovalProof(wrongRecordApproval, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+		t.Fatal("record approval for another revision passed")
+	}
+	withoutRecordEvidence := record
+	withoutRecordEvidence.ProofReferences = nil
+	if _, err := currentContentOwnerApprovalProof(withoutRecordEvidence, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+		t.Fatal("caller-supplied owner approval passed without canonical record evidence")
+	}
+
+	for name, mutate := range map[string]func(*VerifyCurrentTODOStageRequest){
+		"missing proof": func(request *VerifyCurrentTODOStageRequest) { request.ProofReferences = nil },
+		"forged digest": func(request *VerifyCurrentTODOStageRequest) {
+			request.ProofReferences[0].SourceDigest = "sha256:" + strings.Repeat("b", 64)
+		},
+		"forged reference": func(request *VerifyCurrentTODOStageRequest) {
+			request.ProofReferences[0].Reference = "builder/other-todo/content/7"
+		},
+		"wrong todo identity":      func(request *VerifyCurrentTODOStageRequest) { request.TODOID = "other-todo" },
+		"stale aggregate revision": func(request *VerifyCurrentTODOStageRequest) { stale := int64(3); request.ExpectedRevision = &stale },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := request
+			candidate.ProofReferences = append([]TODOProofReference(nil), request.ProofReferences...)
+			mutate(&candidate)
+			if _, err := currentContentOwnerApprovalProof(record, candidate, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+				t.Fatalf("invalid verification request %+v was accepted", candidate)
+			}
+		})
+	}
+}
+
+func TestEditedImportedTODORequiresCurrentContentApprovalAndAdjacentStages(t *testing.T) {
+	contentDigest := "sha256:" + strings.Repeat("c", 64)
+	foundationDigest := "sha256:" + strings.Repeat("a", 64)
+	contentRef := "builder/imported-todo/content/5"
+	position := 2
+	record := TODORecord{
+		ID: "imported-todo", ProjectID: "builder", ReleaseID: "r-08", Position: &position,
+		Stage: "Planning", StageVerification: "unverified", Revision: 5,
+		Source: TODOSource{Foundation: "builder", Revision: strings.Repeat("b", 40), Path: "todos/active/TODO-imported-todo.md", Digest: foundationDigest},
+	}
+	request := TODOActionRequest{RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{{
+		Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: foundationDigest, VerificationState: "unverified",
+	}}, WaiverReferences: []TODOProofReference{}}
+	if !importedEditedTODOContentStageEdge(record, request) {
+		t.Fatal("legacy Planning-to-In-Progress shortcut was not intercepted")
+	}
+	if _, err := importedEditedTODOStageProof(record, request, contentDigest, contentRef); err == nil {
+		t.Fatal("legacy Planning-to-In-Progress approval accepted an edited imported TODO")
+	}
+
+	request.RequestedStage = "Implementation-Approval-Pending"
+	request.ProofReferences[0] = TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: foundationDigest, VerificationState: "unverified"}
+	if _, err := importedEditedTODOStageProof(record, request, contentDigest, contentRef); err == nil {
+		t.Fatal("approval bound to the immutable Foundation provenance digest was accepted")
+	}
+	request.ProofReferences[0].SourceDigest = contentDigest
+	approval, err := importedEditedTODOStageProof(record, request, contentDigest, contentRef)
+	if err != nil || approval.VerificationState != "verified" || approval.Reference != contentRef || approval.SourceDigest != contentDigest {
+		t.Fatalf("current-content approval = %+v, %v", approval, err)
+	}
+	if record.Source.Digest != foundationDigest || record.Source.Foundation != "builder" {
+		t.Fatalf("Foundation import provenance changed during approval: %+v", record.Source)
+	}
+
+	record.Stage, record.StageVerification, record.VerifiedTransitionRef = "Implementation-Approval-Pending", "verified", &approval
+	record.Revision++
+	request.RequestedStage, request.ProofReferences = "Ready-for-Implementation", []TODOProofReference{}
+	readyProof, err := importedEditedTODOStageProof(record, request, contentDigest, contentRef)
+	if err != nil || readyProof != approval {
+		t.Fatalf("current-content Ready edge = %+v, %v", readyProof, err)
+	}
+	record.Stage, record.Revision = "Ready-for-Implementation", record.Revision+1
+	request.RequestedStage = "In-Progress"
+	startedProof, err := importedEditedTODOStageProof(record, request, contentDigest, contentRef)
+	if err != nil || startedProof.Kind != "work-started" || startedProof.SourceDigest != contentDigest || startedProof.Reference != "builder/imported-todo/content/5/revision/8" {
+		t.Fatalf("current-content work-start edge = %+v, %v", startedProof, err)
+	}
+	if record.Source.Digest != foundationDigest || record.Source.Foundation != "builder" {
+		t.Fatalf("Foundation import provenance changed across adjacent stage proof: %+v", record.Source)
+	}
+	request.RequestedStage = "Local-Implemented"
+	if importedEditedTODOContentStageEdge(record, request) {
+		t.Fatal("post-start local completion was incorrectly routed through the imported approval flow")
+	}
+}
+
+func TestDigestlessLegacyImportedContentCanBeReadButNotApproved(t *testing.T) {
+	record := TODORecord{ProjectID: "builder", ID: "imported-todo"}
+	content := TODOAuthoredContent{Title: "TODO: imported", Objective: "Legacy authored contract", Sections: []TODOSection{}, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	legacy := TODOContentVersion{ProjectID: record.ProjectID, TODOID: record.ID, Revision: 4, Content: content}
+	revision, digest, reference, available, err := importedTODOContentSubject(record, legacy)
+	if err != nil || !available || revision != 4 || digest != "" || reference != "builder/imported-todo/content/4" {
+		t.Fatalf("digestless legacy content subject = rev=%d digest=%q ref=%q available=%t err=%v", revision, digest, reference, available, err)
+	}
+	if _, err := importedEditedTODOStageProof(TODORecord{ID: record.ID, ProjectID: record.ProjectID, Source: TODOSource{Foundation: "builder"}}, TODOActionRequest{}, digest, reference); err == nil {
+		t.Fatal("digestless legacy content was accepted as a stage approval subject")
+	}
+	legacy.Digest = "sha256:" + strings.Repeat("a", 64)
+	if _, _, _, _, err := importedTODOContentSubject(record, legacy); err == nil {
+		t.Fatal("nonempty invalid legacy digest was accepted")
+	}
+	legacy.Revision = 0
+	legacy.Digest = ""
+	if _, _, _, available, err := importedTODOContentSubject(record, legacy); err != nil || available {
+		t.Fatalf("digestless revision-zero baseline availability=%t err=%v; want original unedited behavior", available, err)
+	}
+}
+
+func TestSelectedImportedTODOKeepsSelectedProofContract(t *testing.T) {
+	record := TODORecord{
+		ID:     "builder-mongo-selected-todo-stage-verification",
+		Source: TODOSource{Foundation: "builder", Revision: strings.Repeat("b", 40), Path: "todos/active/TODO-builder-mongo-selected-todo-stage-verification.md", Digest: "sha256:" + strings.Repeat("a", 64)},
+	}
+	if usesImportedTODOContentStageProof(record) || invalidatesContentApproval(record) {
+		t.Fatal("selected import was routed through generic content-bound stage proof")
 	}
 }
 

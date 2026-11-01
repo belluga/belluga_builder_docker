@@ -45,10 +45,11 @@ type TODOActionRequest struct {
 }
 
 type VerifyCurrentTODOStageRequest struct {
-	ProjectID        string `json:"project_id"`
-	TODOID           string `json:"todo_id"`
-	ExpectedRevision *int64 `json:"expected_revision"`
-	OperationID      string `json:"operation_id"`
+	ProjectID        string               `json:"project_id"`
+	TODOID           string               `json:"todo_id"`
+	ExpectedRevision *int64               `json:"expected_revision"`
+	OperationID      string               `json:"operation_id"`
+	ProofReferences  []TODOProofReference `json:"proof_refs"`
 }
 
 type TODOActionResponse struct {
@@ -86,16 +87,21 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		return TODOReadResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
 	response := TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: project.SnapshotFingerprint, TODO: record, TODORevision: record.Revision}
-	if record.Source.Kind == "mongo-content-revision" {
+	if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
 		company, err := m.company(ctx, companyID)
 		if err != nil {
 			return TODOReadResponse{}, err
 		}
-		contentRevision, contentDigest, _, err := currentMongoContentSubject(ctx, m.client.Database(company.DatabaseName), record)
+		contentRevision, contentDigest, _, hasCurrentContent, err := currentTODOContentSubject(ctx, m.client.Database(company.DatabaseName), record)
 		if err != nil {
 			return TODOReadResponse{}, err
 		}
-		response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+		// Historical Foundation imports can have a revision without a stored
+		// digest. Keep them readable, but never expose an incomplete content
+		// identity that consumers could mistake for current proof.
+		if hasCurrentContent && validSourceDigest(contentDigest) {
+			response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+		}
 	}
 	return response, nil
 }
@@ -136,48 +142,43 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 		if err != nil {
 			return TODOActionResponse{}, err
 		}
-	} else if _, selected := selectedTODOContract(record.ID); !selected {
-		switch {
-		case record.Stage == "Planning" && request.RequestedStage == "In-Progress":
-			if request.LocalProof != nil || len(request.WaiverReferences) != 0 ||
-				len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
-				return TODOActionResponse{}, todoTeach("requested_stage/proof_refs", "start an individually admitted TODO from Planning to In-Progress with one owner-approval reference bound to its immutable source digest", ErrConflict)
-			}
-			proof = request.ProofReferences[0]
-			proof.VerificationState = "verified"
-		case request.ProjectID == "builder" && record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented":
-			if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
-				return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and remotely verified commits", ErrConflict)
-			}
-			proof, err = m.validateLocalProof(record.ID, request.LocalProof)
-			if err != nil {
-				return TODOActionResponse{}, err
-			}
-			if project.Binding == nil {
-				return TODOActionResponse{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
-			}
-			proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, record.Source.Digest, proof)
-			if err != nil {
-				return TODOActionResponse{}, err
-			}
-		default:
-			return TODOActionResponse{}, todoTeach("requested_stage", "use a governed transition supported by the individually admitted TODO proof contract", ErrConflict)
-		}
 	} else {
-		switch request.ProjectID {
-		case "builder":
-			if request.TODOID == "builder-mongo-selected-todo-stage-verification" && record.Stage == "Planning" && request.RequestedStage == "In-Progress" {
-				if request.LocalProof != nil || len(request.WaiverReferences) != 0 {
-					return TODOActionResponse{}, todoTeach("local_proof/waiver_refs", "do not attach local-completion or waiver evidence to the actual-start operation", ErrConflict)
-				}
-				if len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
-					return TODOActionResponse{}, todoTeach("proof_refs", "provide this TODO's exact owner approval bound to its source digest before starting", ErrConflict)
+		hasEditedImportedContent := false
+		var contentDigest, contentRef string
+		if usesImportedTODOContentStageProof(record) {
+			company, companyErr := m.company(ctx, companyID)
+			if companyErr != nil {
+				return TODOActionResponse{}, companyErr
+			}
+			_, contentDigest, contentRef, hasEditedImportedContent, err = currentTODOContentSubject(ctx, m.client.Database(company.DatabaseName), record)
+			if err != nil {
+				return TODOActionResponse{}, err
+			}
+		}
+		if hasEditedImportedContent && importedEditedTODOContentStageEdge(record, request) {
+			proof, err = importedEditedTODOStageProof(record, request, contentDigest, contentRef)
+			if err != nil {
+				return TODOActionResponse{}, err
+			}
+		} else if _, selected := selectedTODOContract(record.ID); !selected {
+			switch {
+			case record.Stage == "Planning" && request.RequestedStage == "In-Progress":
+				if request.LocalProof != nil || len(request.WaiverReferences) != 0 ||
+					len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
+					return TODOActionResponse{}, todoTeach("requested_stage/proof_refs", "start an individually admitted TODO from Planning to In-Progress with one owner-approval reference bound to its immutable source digest", ErrConflict)
 				}
 				proof = request.ProofReferences[0]
 				proof.VerificationState = "verified"
-			} else if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+			case request.ProjectID == "builder" && record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented":
 				if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
 					return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and remotely verified commits", ErrConflict)
+				}
+				deliveryDigest := record.Source.Digest
+				if hasEditedImportedContent {
+					deliveryDigest, err = importedEditedTODOCurrentDeliveryDigest(record, contentDigest)
+					if err != nil {
+						return TODOActionResponse{}, err
+					}
 				}
 				proof, err = m.validateLocalProof(record.ID, request.LocalProof)
 				if err != nil {
@@ -186,41 +187,72 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 				if project.Binding == nil {
 					return TODOActionResponse{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
 				}
-				proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, record.Source.Digest, proof)
+				proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, deliveryDigest, proof)
 				if err != nil {
 					return TODOActionResponse{}, err
 				}
-			} else {
-				return TODOActionResponse{}, todoTeach("requested_stage", "use the approved actual-start or verified-local-run transition for this selected Builder TODO", ErrConflict)
+			default:
+				return TODOActionResponse{}, todoTeach("requested_stage", "use a governed transition supported by the individually admitted TODO proof contract", ErrConflict)
 			}
-		case "boora":
-			if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 || request.LocalProof != nil {
-				return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs/local_proof", "the Reader, not caller-authored evidence, verifies this production transition", ErrConflict)
-			}
-			if request.RequestedStage != "Completed" {
-				return TODOActionResponse{}, todoTeach("requested_stage", "this cut verifies only the selected v0.7.1 production completion", ErrConflict)
-			}
-			if record.ID == "t-b9e3ea9e3a616b01" {
-				return TODOActionResponse{}, todoTeach("requested_stage", "use verify-current-stage for this already-authored Completed TODO", ErrConflict)
-			}
-			source, _ := selectedTODOContract(record.ID)
-			if record.Stage != source.Stage {
-				return TODOActionResponse{}, todoTeach("stage", "reconcile this selected TODO's exact authored predecessor before a late Completed write", ErrConflict)
-			}
-			if record.ID == "t-9936500c9582e07e" {
-				proof, err = m.verifyCoordinatorProduction(ctx, companyID, collection, record)
-			} else {
-				modulePath, claim, claimErr := productionModulePath(record)
-				if claimErr != nil {
-					return TODOActionResponse{}, claimErr
+		} else {
+			switch request.ProjectID {
+			case "builder":
+				if request.TODOID == "builder-mongo-selected-todo-stage-verification" && record.Stage == "Planning" && request.RequestedStage == "In-Progress" {
+					if request.LocalProof != nil || len(request.WaiverReferences) != 0 {
+						return TODOActionResponse{}, todoTeach("local_proof/waiver_refs", "do not attach local-completion or waiver evidence to the actual-start operation", ErrConflict)
+					}
+					if len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
+						return TODOActionResponse{}, todoTeach("proof_refs", "provide this TODO's exact owner approval bound to its source digest before starting", ErrConflict)
+					}
+					proof = request.ProofReferences[0]
+					proof.VerificationState = "verified"
+				} else if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+					if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
+						return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and remotely verified commits", ErrConflict)
+					}
+					proof, err = m.validateLocalProof(record.ID, request.LocalProof)
+					if err != nil {
+						return TODOActionResponse{}, err
+					}
+					if project.Binding == nil {
+						return TODOActionResponse{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
+					}
+					proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, record.Source.Digest, proof)
+					if err != nil {
+						return TODOActionResponse{}, err
+					}
+				} else {
+					return TODOActionResponse{}, todoTeach("requested_stage", "use the approved actual-start or verified-local-run transition for this selected Builder TODO", ErrConflict)
 				}
-				proof, err = m.verifyProductionCommit(ctx, companyID, record, modulePath, claim)
+			case "boora":
+				if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 || request.LocalProof != nil {
+					return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs/local_proof", "the Reader, not caller-authored evidence, verifies this production transition", ErrConflict)
+				}
+				if request.RequestedStage != "Completed" {
+					return TODOActionResponse{}, todoTeach("requested_stage", "this cut verifies only the selected v0.7.1 production completion", ErrConflict)
+				}
+				if record.ID == "t-b9e3ea9e3a616b01" {
+					return TODOActionResponse{}, todoTeach("requested_stage", "use verify-current-stage for this already-authored Completed TODO", ErrConflict)
+				}
+				source, _ := selectedTODOContract(record.ID)
+				if record.Stage != source.Stage {
+					return TODOActionResponse{}, todoTeach("stage", "reconcile this selected TODO's exact authored predecessor before a late Completed write", ErrConflict)
+				}
+				if record.ID == "t-9936500c9582e07e" {
+					proof, err = m.verifyCoordinatorProduction(ctx, companyID, collection, record)
+				} else {
+					modulePath, claim, claimErr := productionModulePath(record)
+					if claimErr != nil {
+						return TODOActionResponse{}, claimErr
+					}
+					proof, err = m.verifyProductionCommit(ctx, companyID, record, modulePath, claim)
+				}
+				if err != nil {
+					return TODOActionResponse{}, err
+				}
+			default:
+				return TODOActionResponse{}, ErrNotFound
 			}
-			if err != nil {
-				return TODOActionResponse{}, err
-			}
-		default:
-			return TODOActionResponse{}, ErrNotFound
 		}
 	}
 	company, err := m.company(ctx, companyID)
@@ -281,6 +313,16 @@ func requireApprovedCurrentContent(record TODORecord, contentDigest string) erro
 	return nil
 }
 
+func importedEditedTODOCurrentDeliveryDigest(record TODORecord, contentDigest string) (string, error) {
+	if !usesImportedTODOContentStageProof(record) {
+		return "", todoTeach("source/content_revision", "use the current content digest only for a generic edited Foundation import", ErrConflict)
+	}
+	if err := requireApprovedCurrentContent(record, contentDigest); err != nil {
+		return "", err
+	}
+	return contentDigest, nil
+}
+
 func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDigest, contentRef string) (TODOProofReference, error) {
 	if request.LocalProof != nil || len(request.WaiverReferences) != 0 {
 		return TODOProofReference{}, todoTeach("local_proof/waiver_refs", "provide these only for the Local-Implemented edge", ErrConflict)
@@ -315,6 +357,61 @@ func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDi
 	}
 }
 
+func currentContentOwnerApprovalProof(record TODORecord, request VerifyCurrentTODOStageRequest, content TODOAuthoredContent, revision int64, digest, reference string) (TODOProofReference, error) {
+	if request.ProjectID != record.ProjectID || request.TODOID != record.ID || request.ExpectedRevision == nil || *request.ExpectedRevision != record.Revision {
+		return TODOProofReference{}, todoTeach("project_id/todo_id/expected_revision", "match the exact current TODO identity and Mongo revision", ErrConflict)
+	}
+	if record.Stage != "In-Progress" || record.StageVerification != "unverified" || record.VerifiedTransitionRef != nil {
+		return TODOProofReference{}, todoTeach("stage_verification", "revalidate only an unverified In-Progress stage after a content edit", ErrConflict)
+	}
+	if revision < 1 || !validSourceDigest(digest) || reference != fmt.Sprintf("%s/%s/content/%d", record.ProjectID, record.ID, revision) {
+		return TODOProofReference{}, todoTeach("content_revision/digest", "use the canonical current TODO content revision and digest", ErrConflict)
+	}
+	if len(content.Sections) == 0 || !recordHasCurrentOwnerApproval(record.Sections, revision, digest) {
+		return TODOProofReference{}, todoTeach("approval/content_revision", "the canonical record must approve this current immutable content revision and digest", ErrConflict)
+	}
+	if !hasCurrentOwnerApproval(record.ProofReferences, reference, digest) {
+		return TODOProofReference{}, todoTeach("proof_refs", "the canonical TODO record must already contain the owner approval bound to this content revision and digest", ErrConflict)
+	}
+	if len(request.ProofReferences) != 1 {
+		return TODOProofReference{}, todoTeach("proof_refs", "provide exactly one owner-approval reference bound to the current content revision and digest", ErrConflict)
+	}
+	proof := request.ProofReferences[0]
+	if proof.Kind != "owner-approval" || proof.Source != "mongo-content-revision" || proof.Reference != reference || proof.SourceDigest != digest || proof.VerificationState != "unverified" || !validProofReference(proof) {
+		return TODOProofReference{}, todoTeach("proof_refs", "match the canonical owner approval, current content reference, and current content digest", ErrConflict)
+	}
+	proof.VerificationState = "verified"
+	return proof, nil
+}
+
+func hasCurrentOwnerApproval(proofs []TODOProofReference, reference, digest string) bool {
+	for _, proof := range proofs {
+		if proof.Kind == "owner-approval" && proof.Source == "mongo-content-revision" && proof.Reference == reference && proof.SourceDigest == digest && proof.VerificationState == "unverified" {
+			return true
+		}
+	}
+	return false
+}
+
+func recordHasCurrentOwnerApproval(sections []TODOSection, revision int64, digest string) bool {
+	for _, section := range sections {
+		if section.Key != "approval" {
+			continue
+		}
+		body := strings.ToLower(section.BodyMarkdown)
+		marker := "approval status:"
+		index := strings.Index(body, marker)
+		if index < 0 {
+			continue
+		}
+		status := strings.TrimLeft(strings.TrimSpace(body[index+len(marker):]), "*` \t\r\n")
+		if strings.HasPrefix(status, "approved") && strings.Contains(body, fmt.Sprintf("content revision %d", revision)) && strings.Contains(body, strings.ToLower(digest)) {
+			return true
+		}
+	}
+	return false
+}
+
 func currentMongoContentSubject(ctx context.Context, database *mongo.Database, record TODORecord) (int64, string, string, error) {
 	var version TODOContentVersion
 	err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&version)
@@ -329,6 +426,90 @@ func currentMongoContentSubject(ctx context.Context, database *mongo.Database, r
 		return 0, "", "", todoTeach("content_digest", "match the canonical immutable Project/TODO/content-revision hash", ErrConflict)
 	}
 	return version.Revision, version.Digest, fmt.Sprintf("%s/%s/content/%d", record.ProjectID, record.ID, version.Revision), nil
+}
+
+func currentTODOContentSubject(ctx context.Context, database *mongo.Database, record TODORecord) (int64, string, string, bool, error) {
+	if record.Source.Kind == "mongo-content-revision" {
+		revision, digest, reference, err := currentMongoContentSubject(ctx, database, record)
+		return revision, digest, reference, true, err
+	}
+	if !usesImportedTODOContentStageProof(record) {
+		return 0, "", "", false, nil
+	}
+	var version TODOContentVersion
+	err := database.Collection(todoContentVersionsCollection).FindOne(ctx,
+		bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}},
+		options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&version)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return 0, "", "", false, nil
+		}
+		return 0, "", "", false, ErrUnavailable
+	}
+	return importedTODOContentSubject(record, version)
+}
+
+func importedTODOContentSubject(record TODORecord, version TODOContentVersion) (int64, string, string, bool, error) {
+	if version.Revision < 0 {
+		return 0, "", "", false, todoTeach("content_revision", "be nonnegative for imported TODO content history", ErrConflict)
+	}
+	reference := fmt.Sprintf("%s/%s/content/%d", record.ProjectID, record.ID, version.Revision)
+	if version.Digest == "" {
+		if version.Revision == 0 {
+			return 0, "", "", false, nil
+		}
+		// Historical imported versions may predate content digests. Expose their
+		// observed revision for read/repair, but never treat them as approval subjects.
+		return version.Revision, "", reference, true, nil
+	}
+	expected, digestErr := todoContentRevisionDigest(record.ProjectID, record.ID, version.Revision, version.Content)
+	if digestErr != nil || expected != version.Digest {
+		return 0, "", "", false, todoTeach("content_digest", "match the canonical immutable Project/TODO/content-revision hash", ErrConflict)
+	}
+	if version.Revision == 0 {
+		return 0, "", "", false, nil
+	}
+	return version.Revision, version.Digest, reference, true, nil
+}
+
+func importedEditedTODOStageProof(record TODORecord, request TODOActionRequest, contentDigest, contentRef string) (TODOProofReference, error) {
+	if !usesImportedTODOContentStageProof(record) {
+		return TODOProofReference{}, todoTeach("source/content_revision", "use this proof flow only for an edited Foundation-imported TODO with immutable Mongo content history", ErrConflict)
+	}
+	if !validSourceDigest(contentDigest) {
+		return TODOProofReference{}, todoTeach("content_digest", "author a new content revision with its canonical digest before stage approval", ErrConflict)
+	}
+	if record.ReleaseID == "" || record.Position == nil {
+		return TODOProofReference{}, todoTeach("release_id/position", "attach this imported TODO to its same-Project Release before leaving Planning", ErrConflict)
+	}
+	return mongoBornStageProof(record, request, contentDigest, contentRef)
+}
+
+func importedEditedTODOContentStageEdge(record TODORecord, request TODOActionRequest) bool {
+	switch {
+	case record.Stage == "Planning" && request.RequestedStage == "In-Progress":
+		return true // explicitly reject the legacy non-adjacent shortcut
+	case record.Stage == "Planning" && request.RequestedStage == "Implementation-Approval-Pending":
+		return true
+	case record.Stage == "Implementation-Approval-Pending" && request.RequestedStage == "Ready-for-Implementation":
+		return true
+	case record.Stage == "Ready-for-Implementation" && request.RequestedStage == "In-Progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func usesImportedTODOContentStageProof(record TODORecord) bool {
+	if record.Source.Kind != "" || record.Source.Foundation == "" {
+		return false
+	}
+	_, selected := selectedTODOContract(record.ID)
+	return !selected
+}
+
+func invalidatesContentApproval(record TODORecord) bool {
+	return record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record)
 }
 
 func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID string, request VerifyCurrentTODOStageRequest) (TODOActionResponse, error) {
@@ -361,16 +542,46 @@ func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID strin
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOActionResponse{}, err
 	}
-	if request.ProjectID != "boora" || record.ID != "t-b9e3ea9e3a616b01" || record.Stage != "Completed" {
-		return TODOActionResponse{}, todoTeach("verify-current-stage", "only the already-authored v0.7.1 Flutter Completed stage is eligible for current-stage verification", ErrConflict)
-	}
-	modulePath, claim, err := productionModulePath(record)
-	if err != nil {
-		return TODOActionResponse{}, err
-	}
-	proof, err := m.verifyProductionCommit(ctx, companyID, record, modulePath, claim)
-	if err != nil {
-		return TODOActionResponse{}, err
+	var proof TODOProofReference
+	if request.ProjectID == "boora" && record.ID == "t-b9e3ea9e3a616b01" && record.Stage == "Completed" {
+		if len(request.ProofReferences) != 0 {
+			return TODOActionResponse{}, todoTeach("proof_refs", "the production reader supplies this existing Completed proof; caller-authored references are not accepted", ErrConflict)
+		}
+		modulePath, claim, claimErr := productionModulePath(record)
+		if claimErr != nil {
+			return TODOActionResponse{}, claimErr
+		}
+		proof, err = m.verifyProductionCommit(ctx, companyID, record, modulePath, claim)
+		if err != nil {
+			return TODOActionResponse{}, err
+		}
+	} else if record.Stage == "In-Progress" && record.StageVerification == "unverified" &&
+		(record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record)) {
+		if record.ReleaseID == "" || record.Position == nil {
+			return TODOActionResponse{}, todoTeach("release_id/position", "attach this In-Progress TODO to its same-Project Release before verifying its current stage", ErrConflict)
+		}
+		company, companyErr := m.company(ctx, companyID)
+		if companyErr != nil {
+			return TODOActionResponse{}, companyErr
+		}
+		database := m.client.Database(company.DatabaseName)
+		contentRevision, contentDigest, contentRef, hasCurrentContent, contentErr := currentTODOContentSubject(ctx, database, record)
+		if contentErr != nil {
+			return TODOActionResponse{}, contentErr
+		}
+		if !hasCurrentContent {
+			return TODOActionResponse{}, todoTeach("content_revision", "revalidate only against the current immutable TODO content revision", ErrConflict)
+		}
+		content, contentErr := m.contentAtRevision(ctx, database, request.ProjectID, request.TODOID, contentRevision)
+		if contentErr != nil {
+			return TODOActionResponse{}, contentErr
+		}
+		proof, err = currentContentOwnerApprovalProof(record, request, content, contentRevision, contentDigest, contentRef)
+		if err != nil {
+			return TODOActionResponse{}, err
+		}
+	} else {
+		return TODOActionResponse{}, todoTeach("verify-current-stage", "verify only the existing governed production Completed proof or an unverified In-Progress TODO with current immutable approved content", ErrConflict)
 	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
