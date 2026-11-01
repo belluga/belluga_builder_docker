@@ -15,7 +15,7 @@ type Artifact = { id: string; kind: string; name: string; state: string; entry_p
 type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
-type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
+type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
 type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
@@ -51,6 +51,9 @@ function deliveryStageClass(todo: RoadmapTodo) {
 }
 function todoStatusTeach(todo: RoadmapTodo) {
   return [todo.delivery_stage_state === "unverified" ? todo.delivery_stage_teach : "", todo.qualifier_state === "unverified" ? todo.qualifier_teach : ""].filter(Boolean).join(" ");
+}
+function isTODOReadable(todo: RoadmapTodo) {
+  return todo.kind === "executable" || todo.todo_revision !== undefined;
 }
 function TodoStageStatus({ todo, className = "roadmap-todo-stage" }: { todo: RoadmapTodo; className?: string }) {
   const label = deliveryStageLabel(todo);
@@ -139,8 +142,8 @@ function todoStatusText(todo: RoadmapTodo) {
 }
 
 function useAdmittedTODO(detail: Detail, projectID: string, todo?: RoadmapTodo, requestedID = todo?.id || "") {
-  const key = requestedID ? `${detail.snapshot_fingerprint || ""}/${detail.company_id || ""}/${projectID}/${requestedID}` : "";
-  const [loaded, setLoaded] = useState<{ key: string; state: "loading" | "ready" | "error"; source: string }>({ key: "", state: "loading", source: "" });
+	const key = requestedID ? `${detail.snapshot_fingerprint || ""}/${detail.company_id || ""}/${projectID}/${requestedID}/${todo?.todo_revision ?? "foundation"}` : "";
+	const [loaded, setLoaded] = useState<{ key: string; state: "loading" | "ready" | "error"; source: string; message?: string }>({ key: "", state: "loading", source: "" });
   useEffect(() => {
     const controller = new AbortController();
     setLoaded({ key, state: "loading", source: "" });
@@ -148,14 +151,16 @@ function useAdmittedTODO(detail: Detail, projectID: string, todo?: RoadmapTodo, 
       setLoaded({ key, state: "error", source: "" });
       return () => controller.abort();
     }
-    const query = new URLSearchParams({ company_id: detail.company_id, project_id: projectID, todo_id: requestedID, fingerprint: detail.snapshot_fingerprint });
-    fetch(`/api/local-todo-source?${query}`, { signal: controller.signal }).then(async (response) => {
-      if (!response.ok) throw new Error("TODO snapshot mismatch");
-      return response.json() as Promise<{ todo_id: string; fingerprint: string; markdown: string }>;
-    }).then((result) => {
-      if (result.todo_id !== requestedID || result.fingerprint !== detail.snapshot_fingerprint || (todo && result.markdown.match(/^# (.+)$/m)?.[1]?.trim() !== todo.title)) throw new Error("TODO source mismatch");
-      if (!controller.signal.aborted) setLoaded({ key, state: "ready", source: result.markdown });
-    }).catch(() => { if (!controller.signal.aborted) setLoaded({ key, state: "error", source: "" }); });
+		const query = new URLSearchParams({ company_id: detail.company_id, project_id: projectID, todo_id: requestedID, fingerprint: detail.snapshot_fingerprint });
+		if (todo?.todo_revision !== undefined) query.set("todo_revision", String(todo.todo_revision));
+		fetch(`/api/local-todo-source?${query}`, { signal: controller.signal }).then(async (response) => {
+			const body = await response.json() as { todo_id?: string; fingerprint?: string; markdown?: string; todo_revision?: number; teach?: string };
+			if (!response.ok) throw new Error(body.teach || "TODO snapshot mismatch");
+			return body as { todo_id: string; fingerprint: string; markdown: string; todo_revision?: number };
+		}).then((result) => {
+			if (result.todo_id !== requestedID || result.fingerprint !== detail.snapshot_fingerprint || (todo && result.markdown.match(/^# (.+)$/m)?.[1]?.trim() !== todo.title) || (todo?.todo_revision !== undefined && result.todo_revision !== todo.todo_revision)) throw new Error("TEACH: The TODO revision changed. Reload the Project Roadmap before reopening it.");
+			if (!controller.signal.aborted) setLoaded({ key, state: "ready", source: result.markdown });
+		}).catch((error: unknown) => { if (!controller.signal.aborted) setLoaded({ key, state: "error", source: "", message: error instanceof Error ? error.message : "TODO source unavailable" }); });
     return () => controller.abort();
   }, [key, detail, todo, requestedID]);
   return loaded.key === key ? loaded : { key, state: "loading" as const, source: "" };
@@ -175,7 +180,7 @@ function TodoPreview({ todo, context, epicID = "", releaseID = "", onClose, focu
     preview.focus();
   }, [focusOnMobile, todo.id]);
   return <aside ref={previewRef} tabIndex={-1} className="todo-preview roadmap-todo-preview" aria-label="Prévia do TODO">
-    <div className="todo-preview-top"><span>TODO · LEITURA DA FOUNDATION</span><button type="button" aria-label="Fechar prévia" onClick={onClose}>×</button></div>
+    <div className="todo-preview-top"><span>{todo.todo_revision === undefined ? "TODO · LEITURA DA FOUNDATION" : `TODO · REGISTRO MONGO · revisão ${todo.todo_revision}`}</span><button type="button" aria-label="Fechar prévia" onClick={onClose}>×</button></div>
     <p className="todo-preview-context">{context}</p><h2>{todo.title}</h2><p className={`todo-preview-status ${todo.blocked ? "blocked" : deliveryStageClass(todo)}`}>{todoStatusText(todo)}</p>{todoStatusTeach(todo) && <small className="todo-stage-teach" role="note">{todoStatusTeach(todo)}</small>}
     {error && <p className="project-notice" role="alert">Este TODO não está disponível na revisão publicada do projeto.</p>}
     <div className="todo-preview-body">{objective && <section><h3>Objetivo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{objective}</ReactMarkdown></div></section>}{todo.objective_state === "too_long" && <p>O objetivo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}{nextStep && <section><h3>Próximo passo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{nextStep}</ReactMarkdown></div></section>}{todo.next_step_state === "too_long" && <p>O próximo passo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}</div>
@@ -212,7 +217,7 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
   const epic = roadmap?.project_id === projectID && roadmap.schema_version === "builder-roadmap-projection-v3"
     ? roadmap.epics.find((item) => item.id === epicID && item.releases.some((release) => release.id === releaseID)) : undefined;
   const release = epic?.releases.find((item) => item.id === releaseID);
-  const selectedTodo = release?.todos.find((todo) => todo.id === todoID && todo.kind === "executable");
+  const selectedTodo = release?.todos.find((todo) => todo.id === todoID && isTODOReadable(todo));
   useLayoutEffect(() => {
     if (!selectedTodo) return;
     const dialog = previewDialogRef.current;
@@ -325,7 +330,7 @@ function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { deta
   const matches: { epic?: RoadmapEpic; release?: RoadmapRelease; todo: RoadmapTodo }[] = [];
   if (detail.roadmap?.project_id === projectID && detail.roadmap.schema_version === "builder-roadmap-projection-v3") {
     for (const epic of detail.roadmap.epics) for (const release of epic.releases) for (const todo of release.todos) {
-      if (todo.id === todoID && todo.kind === "executable" && !todo.missing) matches.push({ epic, release, todo });
+      if (todo.id === todoID && isTODOReadable(todo) && !todo.missing) matches.push({ epic, release, todo });
     }
     const backlog = detail.roadmap.backlog.todos.concat(detail.roadmap.backlog.folders.flatMap(flattenBacklogTodos)).filter((todo) => todo.id === todoID && todo.kind === "executable");
     matches.push(...backlog.map((todo) => ({ todo })));
@@ -335,7 +340,7 @@ function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { deta
   const source = loaded.source;
   const state = loaded.state;
   if (!selected && !todoID.startsWith("related-todo:")) return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>Este TODO não está disponível neste projeto.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
-  if (!selected) return <article className="todo-page" aria-label="Evidência TODO"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: "prototypes" })}>Prototype</button><span aria-hidden="true">›</span><span aria-current="page">TODO source</span></nav><header className="todo-hero"><h1>TODO source</h1><span className="todo-source-label">Foundation · revision-bound evidence</span></header>{state === "loading" && <p className="project-notice" role="status">Loading the published TODO source…</p>}{state === "error" && <p className="project-notice" role="alert">The TODO source is unavailable or the loaded Project revision changed. Reload the Project.</p>}{state === "ready" && <details className="todo-source" open><summary>Original Markdown</summary><pre>{source}</pre></details>}</article>;
+  if (!selected) return <article className="todo-page" aria-label="Evidência TODO"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: "prototypes" })}>Prototype</button><span aria-hidden="true">›</span><span aria-current="page">TODO source</span></nav><header className="todo-hero"><h1>TODO source</h1><span className="todo-source-label">Foundation · revision-bound evidence</span></header>{state === "loading" && <p className="project-notice" role="status">Loading the published TODO source…</p>}{state === "error" && <p className="project-notice" role="alert">{loaded.message || "The TODO source is unavailable or the loaded Project revision changed. Reload the Project."}</p>}{state === "ready" && <details className="todo-source" open><summary>Original Markdown</summary><pre>{source}</pre></details>}</article>;
   const back = () => selected.epic && selected.release ? navigate({ page: "release", epic_id: selected.epic.id, release_id: selected.release.id }) : navigate({ page: "backlog", todo_id: selected.todo.id });
   const objective = authoredSection(source, "Objective");
   const scope = authoredSection(source, "Scope");
@@ -344,9 +349,9 @@ function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { deta
   const primaryModule = authoredField(source, "Primary module");
   return <article className="todo-page" aria-label="Detalhe do TODO">
     <nav className="todo-breadcrumb" aria-label="Localização"><button onClick={() => navigate({ page: selected.epic ? "roadmap" : "backlog", epic_id: selected.epic?.id || null, release_id: selected.release?.id || null })}>{selected.epic ? "Roadmap" : "Backlog"}</button><span aria-hidden="true">›</span>{selected.epic && selected.release ? <><span>{selected.epic.name}</span><span aria-hidden="true">›</span><button onClick={back}>{selected.release.name}</button></> : <span>{selected.todo.path.replace("todos/active/", "").split("/").slice(0, -1).join(" / ") || "Raiz"}</span>}<span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav>
-    <header className="todo-hero"><h1>{selected.todo.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={selected.todo} className="todo-stage" /><span className="todo-source-label">Fonte: TODO Markdown</span></div></header>
-    {state === "loading" && <p className="project-notice" role="status">Carregando TODO da Foundation…</p>}
-    {state === "error" && <p className="project-notice" role="alert">O Markdown admitido deste TODO não está disponível ou não corresponde ao snapshot do projeto.</p>}
+    <header className="todo-hero"><h1>{selected.todo.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={selected.todo} className="todo-stage" /><span className="todo-source-label">{selected.todo.todo_revision === undefined ? "Fonte: TODO Markdown" : `Fonte: Mongo · revisão ${selected.todo.todo_revision}`}</span></div></header>
+    {state === "loading" && <p className="project-notice" role="status">Carregando TODO…</p>}
+    {state === "error" && <p className="project-notice" role="alert">{loaded.message || "O Markdown admitido deste TODO não está disponível ou não corresponde ao snapshot do projeto."}</p>}
     {state === "ready" && <>
       {objective && <section className="todo-objective" aria-labelledby="todo-objective-title"><span className="todo-icon" aria-hidden="true">◎</span><div><h2 id="todo-objective-title">Objective</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{objective}</ReactMarkdown></div></div></section>}
       <section className="todo-facts" aria-label="Contexto do TODO"><div><span className="todo-icon" aria-hidden="true">⌁</span><span><small>Current delivery stage</small><strong>{deliveryStageLabel(selected.todo)}</strong>{todoStatusTeach(selected.todo) && <small className="todo-stage-teach" role="note">{todoStatusTeach(selected.todo)}</small>}</span></div>{nextStep && <div><span className="todo-icon" aria-hidden="true">➜</span><span><small>Next exact step</small><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{nextStep}</ReactMarkdown></div></span></div>}<div><span className="todo-icon" aria-hidden="true">◇</span><span><small>{selected.release ? "Release" : "Organization"}</small><strong>{selected.release?.name || "Backlog"}</strong></span></div></section>
@@ -503,7 +508,7 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
         </button>
         <button className="roadmap-release-open" type="button" aria-label="Abrir Release" title={`Abrir ${release.name}`} onClick={() => navigate({ page: "release", epic_id: selectedEpicID, release_id: release.id })}><span aria-hidden="true">›</span></button>
         {expandedReleaseIDs.includes(release.id) && <div className="roadmap-release-details release-details"><div className="roadmap-table-scroll"><table className="roadmap-todo-table todo-table"><thead><tr><th>#</th><th>TODO</th><th>TIPO · REGISTRO</th><th>STATUS</th></tr></thead><tbody>{release.todos.map((todo, index) => <tr key={todo.id}>
-          <td>{String(index + 1).padStart(2, "0")}</td><td className="todo-name" title={todo.path}>{todo.kind === "executable" ? <button className="roadmap-todo-link" onClick={() => navigate({ todo_id: todo.id })}>▤ &nbsp;{todo.title}</button> : <>▤ &nbsp;{todo.title}</>}</td><td><span className="roadmap-todo-meta">{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}<small>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</small></span></td><td>{todo.kind === "planning" ? <span className="roadmap-todo-stage">—</span> : <TodoStageStatus todo={todo} className="roadmap-todo-stage todo-status" />}</td>
+          <td>{String(index + 1).padStart(2, "0")}</td><td className="todo-name" title={todo.path}>{isTODOReadable(todo) ? <button className="roadmap-todo-link" onClick={() => navigate({ todo_id: todo.id })}>▤ &nbsp;{todo.title}</button> : <>▤ &nbsp;{todo.title}</>}</td><td><span className="roadmap-todo-meta">{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}<small>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</small></span></td><td>{todo.kind === "planning" ? <span className="roadmap-todo-stage">—</span> : <TodoStageStatus todo={todo} className="roadmap-todo-stage todo-status" />}</td>
         </tr>)}</tbody></table></div></div>}
       </section>)}
       {releases.length === 0 && <p className="project-notice">No Releases defined yet.</p>}

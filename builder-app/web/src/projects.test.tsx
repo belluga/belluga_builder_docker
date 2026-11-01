@@ -272,6 +272,26 @@ describe("single root Project experience", () => {
     fireEvent.click(screen.getByText(/Contrato completo/));
     expect(document.querySelector(".todo-source pre")?.textContent).toBe(todoMarkdown);
   });
+  it("uses the Roadmap revision for a migrated exact read and surfaces stale TEACH", async () => {
+    const saved = detail("belluga", "builder");
+    const selected = { id: "builder-company-tenant-mongo-registry", title: "Mongo registry", path: "todos/active/registry.md", kind: "executable" as const, record_state: "active", todo_revision: 0, objective: "Registry objective", objective_state: "complete" as const, next_step: "Next", next_step_state: "complete" as const, ...verifiedStage("In-Progress") };
+    saved.roadmap!.epics[0].releases[0].todos.push(selected);
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/local-todo-source") {
+        calls.push(url);
+        return { ok: false, json: async () => ({ teach: "TEACH: TODO revision is now 1; reload the Project Roadmap." }) };
+      }
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+      return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=builder-company-tenant-mongo-registry");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: TODO revision is now 1");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].searchParams.get("todo_revision")).toBe("0");
+  });
   it("rejects a TODO ID outside its Release before requesting source", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=backlog%3Atodos%2Factive%2Fevil.md&path=todos%2Factive%2Fbacklog-item.md");
     render(<Projects />);

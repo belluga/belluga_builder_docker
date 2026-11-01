@@ -66,7 +66,11 @@ services:
     env_file:
       - path: ./go-app/.env
         required: false
+    environment:
+      DELPHI_PROJECT_READER_URL: http://project-reader:8099
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
     networks:
+      project-reader-private:
       builder-registry-private:
         aliases: [builder-registry]
     read_only: true

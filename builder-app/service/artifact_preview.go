@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -185,6 +186,7 @@ type roadmapRelease struct {
 
 type roadmapTODO struct {
 	ID                    string `json:"id"`
+	TODORevision          *int64 `json:"todo_revision,omitempty"`
 	Title                 string `json:"title"`
 	Path                  string `json:"path"`
 	Kind                  string `json:"kind"`
@@ -546,9 +548,22 @@ func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Req
 	projectID, projectOK := oneQueryValue(q, "project_id")
 	todoID, todoOK := oneQueryValue(q, "todo_id")
 	fingerprintArg, fingerprintOK := oneQueryValue(q, "fingerprint")
-	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 8192 || len(q) != 4 || !companyOK || !projectOK || !todoOK || !fingerprintOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || todoID == "" || len(todoID) > 1200 || !utf8.ValidString(todoID) || !validSHA256(fingerprintArg) {
+	revision, revisionFound := oneQueryValue(q, "todo_revision")
+	revisionPresent := len(q["todo_revision"]) > 0
+	revisionOK := !revisionPresent || revisionFound
+	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 8192 || (len(q) != 4 && len(q) != 5) || !companyOK || !projectOK || !todoOK || !fingerprintOK || !revisionOK || (!revisionPresent && len(q) != 4) || (revisionPresent && len(q) != 5) || !validRegistrationID(companyID) || !validRegistrationID(projectID) || todoID == "" || len(todoID) > 1200 || !utf8.ValidString(todoID) || !validSHA256(fingerprintArg) {
 		writeError(w, http.StatusBadRequest, "todo_source_request_invalid")
 		return
+	}
+	migrated := revisionPresent
+	var expectedRevision int64
+	if revisionPresent {
+		parsed, err := strconv.ParseInt(revision, 10, 64)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "todo_source_request_invalid")
+			return
+		}
+		expectedRevision = parsed
 	}
 	base, token := strings.TrimRight(strings.TrimSpace(p.readerURL), "/"), p.readerToken
 	if base == "" {
@@ -558,6 +573,9 @@ func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Req
 		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
 	}
 	query := url.Values{"company_id": {companyID}, "fingerprint": {fingerprintArg}, "todo_id": {todoID}}
+	if revisionPresent {
+		query.Set("todo_revision", revision)
+	}
 	endpoint, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
 	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" || len(token) < 32 {
 		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
@@ -585,7 +603,19 @@ func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if response.StatusCode == http.StatusConflict {
-		writeError(w, http.StatusConflict, "todo_source_stale_reload_project")
+		var stale struct {
+			Teach        string `json:"teach"`
+			TODORevision *int64 `json:"todo_revision"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&stale)
+		body := map[string]any{"error": "todo_source_stale_reload_project"}
+		if stale.Teach != "" {
+			body["teach"] = stale.Teach
+		}
+		if stale.TODORevision != nil {
+			body["todo_revision"] = *stale.TODORevision
+		}
+		writeJSON(w, http.StatusConflict, body)
 		return
 	}
 	if response.StatusCode != http.StatusOK {
@@ -594,15 +624,35 @@ func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Req
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, (512<<10)+2048))
 	var result struct {
-		TODOID      string `json:"todo_id"`
-		Fingerprint string `json:"fingerprint"`
-		Markdown    string `json:"markdown"`
+		TODOID       string          `json:"todo_id"`
+		Fingerprint  string          `json:"fingerprint"`
+		Markdown     string          `json:"markdown"`
+		TODORevision *int64          `json:"todo_revision"`
+		TODO         json.RawMessage `json:"todo"`
 	}
-	if err != nil || len(body) > (512<<10)+2048 || rejectDuplicateJSONKeys(body) != nil || json.Unmarshal(body, &result) != nil || result.TODOID != todoID || result.Fingerprint != fingerprintArg || len([]byte(result.Markdown)) > 512<<10 || !utf8.ValidString(result.Markdown) {
+	if err != nil || len(body) > (512<<10)+2048 || rejectDuplicateJSONKeys(body) != nil || json.Unmarshal(body, &result) != nil || result.TODOID != todoID || result.Fingerprint != fingerprintArg || len([]byte(result.Markdown)) > 512<<10 || !utf8.ValidString(result.Markdown) || (migrated && (result.TODORevision == nil || *result.TODORevision != expectedRevision || len(result.TODO) == 0 || !json.Valid(result.TODO))) || (!migrated && (result.TODORevision != nil || len(result.TODO) != 0)) {
 		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
 		return
 	}
-	writeJSON(w, http.StatusOK, result)
+	public := map[string]any{"todo_id": result.TODOID, "fingerprint": result.Fingerprint, "markdown": result.Markdown}
+	if migrated {
+		public["todo_revision"] = *result.TODORevision
+		public["todo"] = result.TODO
+	}
+	writeJSON(w, http.StatusOK, public)
+}
+
+func mongoTODOCutoverProject(companyID, projectID string) bool {
+	return companyID == "belluga-solutions" && (projectID == "boora" || projectID == "builder")
+}
+
+func canonicalTODOStage(stage string) bool {
+	switch stage {
+	case "Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed":
+		return true
+	default:
+		return false
+	}
 }
 
 func oneQueryValue(q url.Values, key string) (string, bool) {
@@ -702,7 +752,7 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	if _, err := hex.DecodeString(source.Fingerprint); err != nil || strings.ToLower(source.Fingerprint) != source.Fingerprint {
 		return registeredSnapshot{}, "", errors.New("private Project fingerprint is invalid")
 	}
-	if registryCutoverEnabled() && !validMongoPublicRoadmap(source.Roadmap, projectID) {
+	if registryCutoverEnabled() && mongoTODOCutoverProject(companyID, projectID) && !validMongoPublicRoadmap(source.Roadmap, companyID, projectID) {
 		return registeredSnapshot{}, "", errors.New("private Mongo Roadmap is unavailable or invalid")
 	}
 	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Roadmap: source.Roadmap, Observations: source.Observations}
@@ -711,7 +761,10 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	return snapshot, source.Fingerprint, nil
 }
 
-func validMongoPublicRoadmap(data json.RawMessage, projectID string) bool {
+func validMongoPublicRoadmap(data json.RawMessage, companyID, projectID string) bool {
+	if !mongoTODOCutoverProject(companyID, projectID) {
+		return false
+	}
 	var roadmap roadmapProjection
 	if len(data) == 0 || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &roadmap) != nil || roadmap.SchemaVersion != "builder-roadmap-projection-v3" || roadmap.ProjectID != projectID || roadmap.Epics == nil || roadmap.Backlog.TODOs == nil || roadmap.Backlog.Folders == nil || roadmap.Unclassified == nil || roadmap.Diagnostics == nil || roadmap.FocusRelease != "" || len(roadmap.Backlog.TODOs) != 0 || len(roadmap.Backlog.Folders) != 0 || len(roadmap.Unclassified) != 0 || len(roadmap.Diagnostics) != 0 {
 		return false
@@ -723,10 +776,16 @@ func validMongoPublicRoadmap(data json.RawMessage, projectID string) bool {
 		}
 		seen[epic.ID] = true
 		for _, release := range epic.Releases {
-			if !validRegistrationID(release.ID) || !validRegistrationName(release.Name) || release.TODOs == nil || len(release.TODOs) != 0 || seen[release.ID] {
+			if !validRegistrationID(release.ID) || !validRegistrationName(release.Name) || release.TODOs == nil || seen[release.ID] {
 				return false
 			}
 			seen[release.ID] = true
+			for _, todo := range release.TODOs {
+				if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || !strings.HasPrefix(todo.Path, "todos/") || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.DeliveryStageState != "verified" && todo.DeliveryStageState != "unverified" || todo.DeliveryStageState == "verified" && (!canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage) || todo.DeliveryStageState == "unverified" && (todo.DeliveryStage != "" || todo.DeliveryStageTeach == "") || todo.QualifierState == "" {
+					return false
+				}
+				seen[todo.ID] = true
+			}
 		}
 	}
 	return true
@@ -831,13 +890,13 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 			result["documents"] = files
 		}
 	}
-	if registryCutoverEnabled() && len(snapshot.Roadmap) > 0 && rejectDuplicateJSONKeys(snapshot.Roadmap) == nil {
+	if registryCutoverEnabled() && mongoTODOCutoverProject(snapshot.CompanyID, snapshot.ProjectID) {
 		var authoritative roadmapProjection
-		if json.Unmarshal(snapshot.Roadmap, &authoritative) == nil && authoritative.SchemaVersion == "builder-roadmap-projection-v3" && authoritative.ProjectID == snapshot.ProjectID && authoritative.Epics != nil {
+		if len(snapshot.Roadmap) > 0 && rejectDuplicateJSONKeys(snapshot.Roadmap) == nil && json.Unmarshal(snapshot.Roadmap, &authoritative) == nil && authoritative.SchemaVersion == "builder-roadmap-projection-v3" && authoritative.ProjectID == snapshot.ProjectID && authoritative.Epics != nil {
 			result["roadmap"] = authoritative
 		}
 	}
-	if !registryCutoverEnabled() {
+	if !registryCutoverEnabled() || !mongoTODOCutoverProject(snapshot.CompanyID, snapshot.ProjectID) {
 		for _, artifact := range snapshot.Artifacts {
 			if artifact.Kind != "roadmap" || artifact.State != "available" {
 				continue
@@ -1442,7 +1501,7 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 		writeError(w, 404, "not_found")
 		return
 	}
-	if registryCutoverEnabled() && parts[3] == "roadmap/projection.json" {
+	if registryCutoverEnabled() && mongoTODOCutoverProject(parts[0], parts[1]) && parts[3] == "roadmap/projection.json" {
 		writeError(w, 404, "artifact_not_admitted")
 		return
 	}
