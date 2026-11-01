@@ -42,7 +42,6 @@ type TODOActionRequest struct {
 	ProofReferences  []TODOProofReference `json:"proof_refs"`
 	WaiverReferences []TODOProofReference `json:"waiver_refs"`
 	LocalProof       *LocalProofResult    `json:"local_proof,omitempty"`
-	OwnerAcceptance  *OwnerAcceptance     `json:"owner_acceptance,omitempty"`
 }
 
 type VerifyCurrentTODOStageRequest struct {
@@ -140,7 +139,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	} else if _, selected := selectedTODOContract(record.ID); !selected {
 		switch {
 		case record.Stage == "Planning" && request.RequestedStage == "In-Progress":
-			if request.LocalProof != nil || request.OwnerAcceptance != nil || len(request.WaiverReferences) != 0 ||
+			if request.LocalProof != nil || len(request.WaiverReferences) != 0 ||
 				len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
 				return TODOActionResponse{}, todoTeach("requested_stage/proof_refs", "start an individually admitted TODO from Planning to In-Progress with one owner-approval reference bound to its immutable source digest", ErrConflict)
 			}
@@ -148,9 +147,9 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 			proof.VerificationState = "verified"
 		case request.ProjectID == "builder" && record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented":
 			if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
-				return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and exact separate owner acceptance", ErrConflict)
+				return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and remotely verified commits", ErrConflict)
 			}
-			proof, err = m.validateLocalProof(record.ID, request.LocalProof, request.OwnerAcceptance)
+			proof, err = m.validateLocalProof(record.ID, request.LocalProof)
 			if err != nil {
 				return TODOActionResponse{}, err
 			}
@@ -168,7 +167,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 		switch request.ProjectID {
 		case "builder":
 			if request.TODOID == "builder-mongo-selected-todo-stage-verification" && record.Stage == "Planning" && request.RequestedStage == "In-Progress" {
-				if request.LocalProof != nil || request.OwnerAcceptance != nil || len(request.WaiverReferences) != 0 {
+				if request.LocalProof != nil || len(request.WaiverReferences) != 0 {
 					return TODOActionResponse{}, todoTeach("local_proof/waiver_refs", "do not attach local-completion or waiver evidence to the actual-start operation", ErrConflict)
 				}
 				if len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "owner-chat" || request.ProofReferences[0].Reference != "APROVADO" || request.ProofReferences[0].SourceDigest != record.Source.Digest || request.ProofReferences[0].VerificationState != "unverified" {
@@ -178,9 +177,9 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 				proof.VerificationState = "verified"
 			} else if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
 				if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
-					return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and exact separate owner acceptance", ErrConflict)
+					return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and remotely verified commits", ErrConflict)
 				}
-				proof, err = m.validateLocalProof(record.ID, request.LocalProof, request.OwnerAcceptance)
+				proof, err = m.validateLocalProof(record.ID, request.LocalProof)
 				if err != nil {
 					return TODOActionResponse{}, err
 				}
@@ -192,10 +191,10 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 					return TODOActionResponse{}, err
 				}
 			} else {
-				return TODOActionResponse{}, todoTeach("requested_stage", "use the approved actual-start or accepted-local-run transition for this selected Builder TODO", ErrConflict)
+				return TODOActionResponse{}, todoTeach("requested_stage", "use the approved actual-start or verified-local-run transition for this selected Builder TODO", ErrConflict)
 			}
 		case "boora":
-			if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 || request.LocalProof != nil || request.OwnerAcceptance != nil {
+			if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 || request.LocalProof != nil {
 				return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs/local_proof", "the Reader, not caller-authored evidence, verifies this production transition", ErrConflict)
 			}
 			if request.RequestedStage != "Completed" {
@@ -251,7 +250,7 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			return TODOProofReference{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
 		}
 		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
-			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run, exact owner acceptance and remotely verified implementation commits", ErrConflict)
+			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run and remotely verified implementation commits", ErrConflict)
 		}
 		foundationOnly := len(record.DiffExpectation) > 0
 		for _, scope := range record.DiffExpectation {
@@ -261,12 +260,12 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			}
 		}
 		if foundationOnly {
-			if request.LocalProof != nil || request.OwnerAcceptance != nil {
-				return TODOProofReference{}, todoTeach("local_proof/owner_acceptance", "Foundation-only delivery uses its published revision, not a code-run acceptance", ErrConflict)
+			if request.LocalProof != nil {
+				return TODOProofReference{}, todoTeach("local_proof", "Foundation-only delivery uses its published revision, not a code run", ErrConflict)
 			}
 			return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, TODOProofReference{})
 		}
-		local, err := m.validateLocalProof(record.ID, request.LocalProof, request.OwnerAcceptance)
+		local, err := m.validateLocalProof(record.ID, request.LocalProof)
 		if err != nil {
 			return TODOProofReference{}, err
 		}
@@ -283,8 +282,8 @@ func requireApprovedCurrentContent(record TODORecord, contentDigest string) erro
 }
 
 func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDigest, contentRef string) (TODOProofReference, error) {
-	if request.LocalProof != nil || request.OwnerAcceptance != nil || len(request.WaiverReferences) != 0 {
-		return TODOProofReference{}, todoTeach("local_proof/owner_acceptance/waiver_refs", "provide these only for the Local-Implemented edge", ErrConflict)
+	if request.LocalProof != nil || len(request.WaiverReferences) != 0 {
+		return TODOProofReference{}, todoTeach("local_proof/waiver_refs", "provide these only for the Local-Implemented edge", ErrConflict)
 	}
 	switch {
 	case record.Stage == "Planning" && request.RequestedStage == "Implementation-Approval-Pending":
@@ -304,6 +303,13 @@ func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDi
 			return TODOProofReference{}, todoTeach("approval/content_revision", "start only the currently approved immutable contract; record the first concrete work checkpoint before calling this edge", ErrConflict)
 		}
 		return TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: fmt.Sprintf("%s/revision/%d", contentRef, record.Revision+1), SourceDigest: contentDigest, VerificationState: "verified"}, nil
+	case record.Stage == "In-Progress" && request.RequestedStage == "In-Progress":
+		if record.StageVerification != "unverified" || record.VerifiedTransitionRef != nil || len(request.ProofReferences) != 1 || request.ProofReferences[0].Kind != "owner-approval" || request.ProofReferences[0].Source != "mongo-content-revision" || request.ProofReferences[0].Reference != contentRef || request.ProofReferences[0].SourceDigest != contentDigest || request.ProofReferences[0].VerificationState != "unverified" {
+			return TODOProofReference{}, todoTeach("approval/content_revision", "reapprove the current Mongo TODO contract after an In-Progress content edit; this is not acceptance of a test run", ErrConflict)
+		}
+		proof := request.ProofReferences[0]
+		proof.VerificationState = "verified"
+		return proof, nil
 	default:
 		return TODOProofReference{}, todoTeach("requested_stage", "use the next governed Mongo TODO edge; Local-Implemented additionally requires remote release-branch evidence", ErrConflict)
 	}

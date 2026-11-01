@@ -700,9 +700,8 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	proofResult.ResultDigest = sourceHash(proofBytes)
-	acceptance := &OwnerAcceptance{RunID: proofResult.RunID, ResultDigest: proofResult.ResultDigest, AcceptedBy: "owner"}
 	seven := int64(6)
-	local, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &seven, OperationID: "local-proof-001", RequestedStage: "Local-Implemented", LocalProof: proofResult, OwnerAcceptance: acceptance})
+	local, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &seven, OperationID: "local-proof-001", RequestedStage: "Local-Implemented", LocalProof: proofResult})
 	if err != nil || local.TODORevision != 7 || local.Stage != "Local-Implemented" || local.StageVerification != "verified" {
 		t.Fatalf("individually admitted local transition = %+v, %v", local, err)
 	}

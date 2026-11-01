@@ -50,7 +50,7 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 		{Repository: "belluga_builder_docker", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}},
 		{Repository: "delphi-ai", ExpectedPaths: []string{"local-api/**"}, NotExpectedPaths: []string{}},
 	}}
-	local := TODOProofReference{Kind: "local-run-accepted", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
+	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
 	todo.ImplementationCommits = []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}
 	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
 		t.Fatal("missing PACED implementation was accepted")

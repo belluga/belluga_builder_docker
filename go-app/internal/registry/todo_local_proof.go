@@ -58,12 +58,6 @@ type LocalProofResult struct {
 	ResultDigest           string                       `json:"result_digest"`
 }
 
-type OwnerAcceptance struct {
-	RunID        string `json:"run_id"`
-	ResultDigest string `json:"result_digest"`
-	AcceptedBy   string `json:"accepted_by"`
-}
-
 func sourceHash(data []byte) string {
 	hash := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(hash[:])
@@ -111,9 +105,9 @@ func (m *MongoStore) ConfigureLocalMatrix(path string) error {
 	return nil
 }
 
-func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult, acceptance *OwnerAcceptance) (TODOProofReference, error) {
-	if m.localMatrix == nil || result == nil || acceptance == nil {
-		return TODOProofReference{}, todoTeach("local_proof/owner_acceptance", "provide the fixed PACED local result and separate owner acceptance for this TODO", ErrConflict)
+func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult) (TODOProofReference, error) {
+	if m.localMatrix == nil || result == nil {
+		return TODOProofReference{}, todoTeach("local_proof", "provide the fixed PACED local result for this TODO", ErrConflict)
 	}
 	required := m.localMatrix.RequiredBy[todoID]
 	if len(required) == 0 {
@@ -154,10 +148,10 @@ func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult,
 		return TODOProofReference{}, ErrInvalid
 	}
 	canonical := bytes.TrimSpace(encoded.Bytes())
-	if result.ResultDigest != sourceHash(canonical) || acceptance.RunID != result.RunID || acceptance.ResultDigest != result.ResultDigest || acceptance.AcceptedBy == "" {
-		return TODOProofReference{}, todoTeach("owner_acceptance", "bind explicit owner acceptance to this exact run ID and result digest", ErrConflict)
+	if result.ResultDigest != sourceHash(canonical) {
+		return TODOProofReference{}, todoTeach("local_proof.result_digest", "match the exact fixed PACED local result digest", ErrConflict)
 	}
-	return TODOProofReference{Kind: "local-run-accepted", Source: "paced-local-runner", Reference: result.RunID, SourceDigest: result.ResultDigest, VerificationState: "verified"}, nil
+	return TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: result.RunID, SourceDigest: result.ResultDigest, VerificationState: "verified"}, nil
 }
 
 type remoteCommitResult struct {
@@ -188,8 +182,8 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 			break
 		}
 	}
-	if !foundationOnly && (local.Kind != "local-run-accepted" || local.VerificationState != "verified") {
-		return TODOProofReference{}, todoTeach("local_proof", "pass the accepted PACED local run before remote code proof", ErrConflict)
+	if !foundationOnly && (local.Kind != "local-run-verified" || local.VerificationState != "verified") {
+		return TODOProofReference{}, todoTeach("local_proof", "pass the fixed PACED local run before remote code proof", ErrConflict)
 	}
 	var verified []remoteCommitResult
 	for _, scope := range todo.DiffExpectation {

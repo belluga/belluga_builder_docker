@@ -59,7 +59,27 @@ func TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit(t *testing.T) {
 	}
 }
 
-func TestSelectedLocalProofRequiresExactMatrixRunAndOwnerAcceptance(t *testing.T) {
+func TestMongoBornInProgressContentReapproval(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	ref := "builder/todo-a/content/8"
+	record := TODORecord{Stage: "In-Progress", StageVerification: "unverified"}
+	request := TODOActionRequest{RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{{Kind: "owner-approval", Source: "mongo-content-revision", Reference: ref, SourceDigest: digest, VerificationState: "unverified"}}}
+	proof, err := mongoBornStageProof(record, request, digest, ref)
+	if err != nil || proof.VerificationState != "verified" || proof.SourceDigest != digest {
+		t.Fatalf("current content reapproval = %+v, %v", proof, err)
+	}
+	request.ProofReferences[0].SourceDigest = "sha256:" + strings.Repeat("b", 64)
+	if _, err := mongoBornStageProof(record, request, digest, ref); err == nil {
+		t.Fatal("stale content reapproval was accepted")
+	}
+	record.StageVerification = "verified"
+	request.ProofReferences[0].SourceDigest = digest
+	if _, err := mongoBornStageProof(record, request, digest, ref); err == nil {
+		t.Fatal("already verified In-Progress TODO was reapproved without a content edit")
+	}
+}
+
+func TestSelectedLocalProofRequiresExactMatrixRun(t *testing.T) {
 	store := &MongoStore{}
 	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
 		t.Fatal(err)
@@ -88,42 +108,36 @@ func TestSelectedLocalProofRequiresExactMatrixRunAndOwnerAcceptance(t *testing.T
 		result.ResultDigest = sourceHash(canonical)
 	}
 	seal()
-	acceptance := &OwnerAcceptance{RunID: result.RunID, ResultDigest: result.ResultDigest, AcceptedBy: "owner"}
-	if proof, err := store.validateLocalProof(id, result, acceptance); err != nil || proof.Kind != "local-run-accepted" {
+	if proof, err := store.validateLocalProof(id, result); err != nil || proof.Kind != "local-run-verified" {
 		t.Fatalf("valid proof = %+v, %v", proof, err)
 	}
 	result.TODOID = "builder-mongo-todo-history-storage-implementation"
 	result.Commands = result.Commands[:len(store.localMatrix.DefaultRequired)]
 	seal()
-	acceptance.ResultDigest = result.ResultDigest
-	if proof, err := store.validateLocalProof(result.TODOID, result, acceptance); err != nil || proof.Kind != "local-run-accepted" {
+	if proof, err := store.validateLocalProof(result.TODOID, result); err != nil || proof.Kind != "local-run-verified" {
 		t.Fatalf("individually admitted TODO proof = %+v, %v", proof, err)
 	}
 	result.TODOID = id
 	result.Commands = append(result.Commands, localProofCommand{ID: "P-TEST", ExitCode: 0})
 	seal()
-	acceptance.ResultDigest = result.ResultDigest
-	if _, err := store.validateLocalProof(id, result, nil); err == nil {
-		t.Fatal("missing separate owner acceptance was accepted")
+	if _, err := store.validateLocalProof(id, nil); err == nil {
+		t.Fatal("missing local result was accepted")
 	}
-	wrongAcceptance := *acceptance
-	wrongAcceptance.ResultDigest = digest
-	if _, err := store.validateLocalProof(id, result, &wrongAcceptance); err == nil {
-		t.Fatal("wrong owner result digest was accepted")
+	result.ResultDigest = digest
+	if _, err := store.validateLocalProof(id, result); err == nil {
+		t.Fatal("wrong local result digest was accepted")
 	}
+	seal()
 	result.Commands[0].ExitCode = 1
 	seal()
-	acceptance.ResultDigest = result.ResultDigest
-	if _, err := store.validateLocalProof(id, result, acceptance); err == nil {
+	if _, err := store.validateLocalProof(id, result); err == nil {
 		t.Fatal("failed fixed command was accepted")
 	}
 	result.Commands[0].ExitCode = 0
 	seal()
-	acceptance.ResultDigest = result.ResultDigest
 	result.After.BuilderInputsDigest = "sha256:" + strings.Repeat("b", 64)
 	seal()
-	acceptance.ResultDigest = result.ResultDigest
-	if _, err := store.validateLocalProof(id, result, acceptance); err == nil {
+	if _, err := store.validateLocalProof(id, result); err == nil {
 		t.Fatal("changed test input was accepted")
 	}
 }
