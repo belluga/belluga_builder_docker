@@ -13,6 +13,35 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+func TestSameLifecycleMigrationTreatsReorderedJSONAsEquivalent(t *testing.T) {
+	expected := &LifecycleMigration{
+		State:       "complete",
+		ProjectIDs:  []string{"boora", "builder"},
+		Excluded:    []LifecycleMigrationDiagnostic{{ProjectID: "builder", TODOID: "todo-a", Path: "todos/active/todo-a.md", Message: "excluded at cutover"}},
+		StartedAt:   "2026-10-31T12:00:00Z",
+		CompletedAt: "2026-10-31T12:30:00Z",
+	}
+	reordered := json.RawMessage(`{
+		"completed_at": "2026-10-31T12:30:00Z",
+		"excluded": [{ "message": "excluded at cutover", "path": "todos/active/todo-a.md", "todo_id": "todo-a", "project_id": "builder" }],
+		"project_ids": ["boora", "builder"],
+		"state": "complete",
+		"started_at": "2026-10-31T12:00:00Z"
+	}`)
+	if !sameLifecycleMigration(reordered, expected) {
+		t.Fatalf("reordered semantically equal lifecycle migration was not accepted: %s", reordered)
+	}
+	if sameLifecycleMigration(json.RawMessage(`{"state":"incomplete"}`), expected) {
+		t.Fatal("semantically different lifecycle migration was accepted")
+	}
+	if sameLifecycleMigration(json.RawMessage(`not-json`), expected) {
+		t.Fatal("malformed lifecycle JSON was accepted")
+	}
+	if sameLifecycleMigration(reordered, nil) {
+		t.Fatal("nil expected lifecycle migration was accepted")
+	}
+}
+
 func validTestBinding() Binding {
 	return Binding{WorkspaceRoot: "/workspace", ProjectRoot: "project", FoundationRoot: "foundation", RepositoryID: "belluga/test", PublicationBranch: "main"}
 }
@@ -365,8 +394,8 @@ func TestMongoImportIsRepeatableAndRejectsChangedHierarchy(t *testing.T) {
 	}
 	control, err := store.LifecycleControl(ctx)
 	expectedLifecycle, marshalErr := json.Marshal(input.LifecycleMigration)
-	if err != nil || marshalErr != nil || bytes.Equal(control.Value, expectedLifecycle) {
-		t.Fatalf("test fixture did not produce semantically equal but differently encoded lifecycle state: stored=%s expected=%s err=%v marshal_err=%v", control.Value, expectedLifecycle, err, marshalErr)
+	if err != nil || marshalErr != nil || !bytes.Equal(control.Value, expectedLifecycle) || !sameLifecycleMigration(control.Value, input.LifecycleMigration) {
+		t.Fatalf("stored lifecycle state does not match the exact canonical readback: stored=%s expected=%s err=%v marshal_err=%v", control.Value, expectedLifecycle, err, marshalErr)
 	}
 	second, err := store.Import(ctx, input)
 	if err != nil || !second.NoOp {

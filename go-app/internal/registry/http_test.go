@@ -18,8 +18,10 @@ type testService struct {
 	lastTenant    TenantRequest
 }
 
-func (s *testService) Catalog(context.Context) (Catalog, error)         { return s.catalog, nil }
-func (s *testService) Project(context.Context, string, string) (Project, error) { return s.project, nil }
+func (s *testService) Catalog(context.Context) (Catalog, error) { return s.catalog, nil }
+func (s *testService) Project(context.Context, string, string) (Project, error) {
+	return s.project, nil
+}
 func (s *testService) Register(_ context.Context, in Registration) (Project, error) {
 	s.registerCalls++
 	return Project{ID: in.ProjectID, CompanyID: in.CompanyID}, nil
@@ -104,5 +106,108 @@ func TestPrivateAPIRejectsCompanyMismatchBeforeRegister(t *testing.T) {
 	NewHandler(service).ServeHTTP(res, req)
 	if res.Code != http.StatusBadRequest || service.registerCalls != 0 {
 		t.Fatalf("mismatched Company reached registry: status=%d calls=%d", res.Code, service.registerCalls)
+	}
+}
+
+type testSelectedTODOImporter struct {
+	*testService
+	calls int
+}
+
+func (s *testSelectedTODOImporter) ImportSelectedTODOs(_ context.Context, request SelectedTODOImportRequest) (SelectedTODOImportReport, error) {
+	s.calls++
+	return ValidateSelectedTODOImport(request)
+}
+
+func TestSelectedTODOImportRouteReturnsActionableTeach(t *testing.T) {
+	service := &testSelectedTODOImporter{testService: &testService{}}
+	validBody, err := json.Marshal(validSelectedTODORequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	validRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(validBody)))
+	validResponse := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(validResponse, validRequest)
+	if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), `"imported":4`) || service.calls != 1 {
+		t.Fatalf("valid import response = %d %s; calls=%d", validResponse.Code, validResponse.Body.String(), service.calls)
+	}
+
+	invalidRequestData := validSelectedTODORequest()
+	invalidRequestData.TODOs[0].Stage = "Invented"
+	invalidBody, err := json.Marshal(invalidRequestData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(invalidBody)))
+	invalidResponse := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), `"teach":"TEACH:`) || !strings.Contains(invalidResponse.Body.String(), "stage") || service.calls != 2 {
+		t.Fatalf("invalid import response = %d %s; calls=%d", invalidResponse.Code, invalidResponse.Body.String(), service.calls)
+	}
+}
+
+type testSelectedTODOLifecycle struct {
+	*testService
+	readCalls       int
+	transitionCalls int
+	verifyCalls     int
+	readRevision    *int64
+	readErr         error
+}
+
+func (s *testSelectedTODOLifecycle) ReadTODO(_ context.Context, companyID, projectID, todoID string, expected *int64) (TODOReadResponse, error) {
+	s.readCalls++
+	s.readRevision = expected
+	if s.readErr != nil {
+		return TODOReadResponse{}, s.readErr
+	}
+	return TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: "fingerprint", TODO: TODORecord{ID: todoID, ProjectID: projectID, Stage: "Completed", StageVerification: "unverified", Revision: 4}, TODORevision: 4}, nil
+}
+
+func (s *testSelectedTODOLifecycle) TransitionTODO(_ context.Context, _ string, _ TODOActionRequest) (TODOActionResponse, error) {
+	s.transitionCalls++
+	return TODOActionResponse{}, todoTeach("requested_stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
+}
+
+func (s *testSelectedTODOLifecycle) VerifyCurrentTODOStage(_ context.Context, companyID string, request VerifyCurrentTODOStageRequest) (TODOActionResponse, error) {
+	s.verifyCalls++
+	return TODOActionResponse{}, todoTeach("verify-current-stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
+}
+
+func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
+	service := &testSelectedTODOLifecycle{testService: &testService{}}
+	handler := NewHandler(service)
+	read := httptest.NewRecorder()
+	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01?todo_revision=4", nil))
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"todo_revision":4`) || !strings.Contains(read.Body.String(), `"snapshot_fingerprint":"fingerprint"`) || service.readCalls != 1 || service.readRevision == nil || *service.readRevision != 4 {
+		t.Fatalf("exact TODO read = %d %s; calls=%d revision=%v", read.Code, read.Body.String(), service.readCalls, service.readRevision)
+	}
+
+	service.readErr = &todoRevisionConflict{Revision: 5}
+	stale := httptest.NewRecorder()
+	handler.ServeHTTP(stale, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01?todo_revision=4", nil))
+	if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"todo_revision":5`) || !strings.Contains(stale.Body.String(), "reload the Project Roadmap") {
+		t.Fatalf("stale TODO detail response = %d %s", stale.Code, stale.Body.String())
+	}
+
+	transition := httptest.NewRecorder()
+	body := `{"project_id":"builder","todo_id":"builder-company-tenant-mongo-registry","expected_revision":4,"operation_id":"op-1","requested_stage":"Local-Implemented","proof_refs":[],"waiver_refs":[]}`
+	handler.ServeHTTP(transition, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/builder-company-tenant-mongo-registry/transition", strings.NewReader(body)))
+	if transition.Code != http.StatusConflict || !strings.Contains(transition.Body.String(), "proof guard defined and approved in a later TODO") || !strings.Contains(transition.Body.String(), "no write occurred") || strings.Contains(transition.Body.String(), `"stage":"Local-Implemented"`) || service.transitionCalls != 1 {
+		t.Fatalf("guardless transition did not fail closed = %d %s; calls=%d", transition.Code, transition.Body.String(), service.transitionCalls)
+	}
+
+	verify := httptest.NewRecorder()
+	body = `{"project_id":"boora","todo_id":"t-b9e3ea9e3a616b01","expected_revision":4,"operation_id":"verify-1"}`
+	handler.ServeHTTP(verify, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01/verify-current-stage", strings.NewReader(body)))
+	if verify.Code != http.StatusConflict || strings.Contains(verify.Body.String(), `"stage_verification":"verified"`) || !strings.Contains(verify.Body.String(), "proof guard defined and approved in a later TODO") || !strings.Contains(verify.Body.String(), "no write occurred") || service.verifyCalls != 1 {
+		t.Fatalf("verify-current-stage did not fail closed = %d %s; calls=%d", verify.Code, verify.Body.String(), service.verifyCalls)
+	}
+
+	invalid := httptest.NewRecorder()
+	body = `{"project_id":"boora","todo_id":"t-b9e3ea9e3a616b01","expected_revision":4,"operation_id":"verify-2","verified_proof":{"kind":"publication","source":"production-record","ref":"release-proof","source_digest":"sha256:` + strings.Repeat("a", 64) + `"}}`
+	handler.ServeHTTP(invalid, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01/verify-current-stage", strings.NewReader(body)))
+	if invalid.Code != http.StatusBadRequest || service.verifyCalls != 1 {
+		t.Fatalf("caller-supplied proof claim reached verifier: %d %s calls=%d", invalid.Code, invalid.Body.String(), service.verifyCalls)
 	}
 }

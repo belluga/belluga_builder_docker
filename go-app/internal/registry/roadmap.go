@@ -30,10 +30,32 @@ type roadmapRelease struct {
 	Position    int           `bson:"position"`
 }
 type roadmapReleaseView struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	TODOs       []any  `json:"todos"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	TODOs       []roadmapTODOView `json:"todos"`
+}
+
+// roadmapTODOView preserves the v3 Reader vocabulary and adds only the
+// Mongo-owned revision needed to reject stale list-to-detail reads.
+type roadmapTODOView struct {
+	ID                    string `json:"id"`
+	Title                 string `json:"title"`
+	Path                  string `json:"path"`
+	Kind                  string `json:"kind"`
+	Objective             string `json:"objective"`
+	ObjectiveState        string `json:"objective_state"`
+	NextStep              string `json:"next_step"`
+	NextStepState         string `json:"next_step_state"`
+	RecordState           string `json:"record_state"`
+	DeliveryStage         string `json:"delivery_stage,omitempty"`
+	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
+	DeliveryStageState    string `json:"delivery_stage_state"`
+	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
+	Blocked               bool   `json:"blocked"`
+	QualifierState        string `json:"qualifier_state"`
+	WorkState             string `json:"work_state"`
+	TODORevision          int64  `json:"todo_revision"`
 }
 type roadmapEpicView struct {
 	ID          string               `json:"id"`
@@ -42,7 +64,7 @@ type roadmapEpicView struct {
 	Releases    []roadmapReleaseView `json:"releases"`
 }
 
-func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRelease) (json.RawMessage, error) {
+func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRelease, todos []roadmapTODOView) (json.RawMessage, error) {
 	views := make([]roadmapEpicView, 0, len(epics))
 	byID := make(map[string]int, len(epics))
 	for _, epic := range epics {
@@ -62,7 +84,26 @@ func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRel
 			return nil, ErrUnavailable
 		}
 		seen[release.ID] = true
-		views[index].Releases = append(views[index].Releases, roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, TODOs: []any{}})
+		views[index].Releases = append(views[index].Releases, roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, TODOs: []roadmapTODOView{}})
+	}
+	releaseViews := make(map[string]*roadmapReleaseView)
+	for i := range views {
+		for j := range views[i].Releases {
+			releaseViews[views[i].Releases[j].ID] = &views[i].Releases[j]
+		}
+	}
+	for _, todo := range todos {
+		// The source-to-release relation was verified while loading Mongo records;
+		// a missing target here indicates a corrupted hierarchy and must fail closed.
+		contract, ok := selectedTODOSources[todo.ID]
+		if !ok || contract.ProjectID != projectID {
+			return nil, ErrUnavailable
+		}
+		release := releaseViews[contract.ReleaseID]
+		if release == nil {
+			return nil, ErrUnavailable
+		}
+		release.TODOs = append(release.TODOs, todo)
 	}
 	backlog := struct {
 		TODOs   []any `json:"todos"`
@@ -82,6 +123,32 @@ func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRel
 		return nil, ErrUnavailable
 	}
 	return data, nil
+}
+
+func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
+	contract := selectedTODOSources[record.ID]
+	kind := "executable"
+	if record.ID == "t-9936500c9582e07e" {
+		kind = "planning"
+	}
+	blocked := containsTODOString(record.Qualifiers, "Blocked")
+	workState := "unknown"
+	if blocked {
+		workState = "blocked"
+	}
+	view := roadmapTODOView{
+		ID: record.ID, Title: record.Title, Path: contract.Path, Kind: kind,
+		Objective: record.Objective, ObjectiveState: "complete", NextStep: record.NextExactStep, NextStepState: "complete",
+		RecordState: "active", AuthoredDeliveryStage: record.Stage, DeliveryStageState: "unverified",
+		Blocked: blocked, QualifierState: "verified", WorkState: workState, TODORevision: record.Revision,
+	}
+	if record.StageVerification == "verified" && record.VerifiedTransitionRef != nil {
+		view.DeliveryStage = record.Stage
+		view.DeliveryStageState = "verified"
+	} else {
+		view.DeliveryStageTeach = fmt.Sprintf("TEACH: authored stage %s has no verified current-stage proof; have the private verifier validate the current stage before treating it as effective.", record.Stage)
+	}
+	return view
 }
 
 func roadmapStorageID(projectID, recordID string) string { return projectID + ":" + recordID }

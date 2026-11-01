@@ -19,11 +19,19 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "import" {
-		if err := runImport(os.Args[2:]); err != nil {
-			log.Fatal(err)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "import":
+			if err := runImport(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "provision-selected-todos":
+			if err := runProvisionSelectedTODOs(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
-		return
 	}
 	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
 	controlDatabase := strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE"))
@@ -66,6 +74,42 @@ func main() {
 			log.Fatal("registry API failed")
 		}
 	}
+}
+
+func runProvisionSelectedTODOs(args []string) error {
+	if len(args) != 0 {
+		return errors.New("provision-selected-todos accepts no arguments; it is bounded to belluga-solutions")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required to provision selected TODOs")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; TODO collection was not provisioned")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	if err := store.ProvisionTODOCollection(context.Background(), "belluga-solutions"); err != nil {
+		return errors.New("selected TODO collection provisioning/readback failed; import was not attempted")
+	}
+	return printTODOProvisionReport()
+}
+
+func printTODOProvisionReport() error {
+	data, err := json.Marshal(struct {
+		State      string `json:"state"`
+		CompanyID  string `json:"company_id"`
+		Collection string `json:"collection"`
+	}{"provisioned_and_verified", "belluga-solutions", "todos"})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, string(data))
+	return err
 }
 
 type sourceRegistry struct {

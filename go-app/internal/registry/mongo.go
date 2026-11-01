@@ -33,11 +33,11 @@ const (
 var mongoDatabaseName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
 type MongoStore struct {
-	client             *mongo.Client
-	control            *mongo.Database
-	beforeProjectWrite func() error
+	client              *mongo.Client
+	control             *mongo.Database
+	beforeProjectWrite  func() error
 	beforeSnapshotWrite func() error
-	tenantPrefix       string
+	tenantPrefix        string
 }
 
 const maxSnapshotReferenceBytes = 128 << 10
@@ -541,7 +541,11 @@ func (m *MongoStore) Roadmap(ctx context.Context, id, companyID string) (json.Ra
 	if releaseCursor.Err() != nil {
 		return nil, ErrUnavailable
 	}
-	return projectRoadmap(id, epics, releases)
+	todos, err := m.roadmapTODOs(ctx, m.client.Database(company.DatabaseName).Collection(todosCollection), id, releases)
+	if err != nil {
+		return nil, err
+	}
+	return projectRoadmap(id, epics, releases, todos)
 }
 
 func (m *MongoStore) ResolveTenant(ctx context.Context, request TenantRequest) (TenantResolution, error) {
