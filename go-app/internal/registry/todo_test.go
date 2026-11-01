@@ -246,6 +246,81 @@ func TestTODOCollectionOptionsRequireStrictErrorValidation(t *testing.T) {
 	}
 }
 
+func TestTODOValidatorRecognizesOnlyPriorContentEditEvolution(t *testing.T) {
+	priorRaw, err := bson.Marshal(priorTODOCollectionValidator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bsonValidatorEqual(bson.Raw(priorRaw), priorTODOCollectionValidator()) {
+		t.Fatal("prior strict TODO validator did not match its canonical historical shape")
+	}
+	if bsonValidatorEqual(bson.Raw(priorRaw), TODOCollectionValidator()) {
+		t.Fatal("prior validator unexpectedly matched the current content-edit schema")
+	}
+	currentRaw, err := bson.Marshal(TODOCollectionValidator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bsonValidatorEqual(bson.Raw(currentRaw), TODOCollectionValidator()) {
+		t.Fatal("current validator did not match canonical shape")
+	}
+
+	unrelated := TODOCollectionValidator()
+	jsonSchema := unrelated[0].Value.(bson.D)
+	for i := range jsonSchema {
+		if jsonSchema[i].Key != "properties" {
+			continue
+		}
+		properties := jsonSchema[i].Value.(bson.D)
+		for j := range properties {
+			if properties[j].Key != "stage" {
+				continue
+			}
+			stage := properties[j].Value.(bson.D)
+			for k := range stage {
+				if stage[k].Key == "enum" {
+					stage[k].Value = bson.A{"Planning"}
+				}
+			}
+			properties[j].Value = stage
+		}
+		jsonSchema[i].Value = properties
+	}
+	unrelated[0].Value = jsonSchema
+	unrelatedRaw, err := bson.Marshal(unrelated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bsonValidatorEqual(bson.Raw(unrelatedRaw), TODOCollectionValidator()) || bsonValidatorEqual(bson.Raw(unrelatedRaw), priorTODOCollectionValidator()) {
+		t.Fatal("unrelated stage enum drift matched a recognized validator")
+	}
+}
+
+func TestAuthoredContentPreservesSparseSourcePositionsAfterRecordSectionRemoval(t *testing.T) {
+	record := TODORecord{
+		Title: "TODO: Historical authored content", Objective: "Preserve authored section order.",
+		Sections: []TODOSection{
+			{Key: "approval", Title: "Approval", BodyMarkdown: "owner state", Position: 0, Ownership: "record"},
+			{Key: "objective", Title: "Objective", BodyMarkdown: "First authored section", Position: 1, Ownership: "contract"},
+			{Key: "implementation-evidence", Title: "Implementation Evidence", BodyMarkdown: "record-owned", Position: 2, Ownership: "record"},
+			{Key: "scope", Title: "Scope", BodyMarkdown: "Second authored section", Position: 3, Ownership: "contract"},
+		},
+	}
+	content := contentFromTODO(record)
+	if len(content.Sections) != 2 || content.Sections[0].Position != 0 || content.Sections[1].Position != 1 {
+		t.Fatalf("new authored baseline positions = %+v; want compact order after excluding record-owned sections", content.Sections)
+	}
+	content.Sections[0].Position = 1
+	content.Sections[1].Position = 3
+	if err := validateAuthoredContent(content); err != nil {
+		t.Fatalf("historical sparse source positions must remain readable: %v", err)
+	}
+	content.Sections[1].Position = 0
+	if err := validateAuthoredContent(content); err == nil {
+		t.Fatal("authored source positions must remain strictly increasing")
+	}
+}
+
 func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {

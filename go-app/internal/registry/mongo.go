@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"regexp"
 	"sort"
@@ -38,6 +39,21 @@ type MongoStore struct {
 	beforeProjectWrite  func() error
 	beforeSnapshotWrite func() error
 	tenantPrefix        string
+	proofReaderURL      string
+	proofReaderToken    string
+	proofHTTPClient     *http.Client
+	localMatrix         *localProofMatrix
+}
+
+func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
+	parsed, err := url.Parse(readerURL)
+	if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(token) < 32 {
+		return fmt.Errorf("%w: private proof Reader URL/token is invalid", ErrInvalid)
+	}
+	m.proofReaderURL = strings.TrimRight(parsed.String(), "/")
+	m.proofReaderToken = token
+	m.proofHTTPClient = &http.Client{Timeout: 20 * time.Second}
+	return nil
 }
 
 const maxSnapshotReferenceBytes = 128 << 10

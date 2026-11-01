@@ -1,0 +1,18 @@
+{
+  "schema_version": "builder-local-proof-v1",
+  "default_required": ["G-TEST", "G-VET", "G-IMAGE"],
+  "commands": [
+    {"id": "G-TEST", "argv": ["docker", "build", "--target", "test", "-f", "go-app/Dockerfile", "go-app"]},
+    {"id": "G-VET", "argv": ["docker", "build", "--target", "test", "-f", "go-app/Dockerfile", "go-app"]},
+    {"id": "G-IMAGE", "argv": ["docker", "build", "--target", "runtime", "-f", "go-app/Dockerfile", "go-app"]},
+    {"id": "P-TEST", "argv": ["docker", "build", "--target", "test", "-f", "delphi-ai/local-api/Dockerfile.test", "delphi-ai"]},
+    {"id": "S-TEST", "argv": ["docker", "build", "--target", "go-test", "-f", "builder-app/Dockerfile", "builder-app"]},
+    {"id": "W-TEST", "argv": ["docker", "build", "--target", "web-test", "-f", "builder-app/Dockerfile", "builder-app"]},
+    {"id": "W-BUILD", "argv": ["docker", "build", "--target", "web-test", "-f", "builder-app/Dockerfile", "builder-app"]}
+  ],
+  "required_by": {
+    "builder-company-tenant-mongo-registry": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST"],
+    "builder-mongo-v0-7-1-todo-migration": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST"],
+    "builder-mongo-selected-todo-stage-verification": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
+  }
+}

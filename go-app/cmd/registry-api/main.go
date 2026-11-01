@@ -31,6 +31,21 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "provision-todo-history":
+			if err := runProvisionTODOHistory(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "check-todo-history":
+			if err := runCheckTODOHistory(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
+		case "diagnose-todo-schema":
+			if err := runDiagnoseTODOCollectionSchema(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		}
 	}
 	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
@@ -47,6 +62,12 @@ func main() {
 		defer cancel()
 		_ = store.Close(ctx)
 	}()
+	if err := store.ConfigureProofReader(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_TOKEN"))); err != nil {
+		log.Fatal("private proof Reader is unavailable")
+	}
+	if err := store.ConfigureLocalMatrix(strings.TrimSpace(os.Getenv("LOCAL_PROOF_MATRIX"))); err != nil {
+		log.Fatal("local proof matrix is unavailable")
+	}
 
 	address := strings.TrimSpace(os.Getenv("LISTEN_ADDR"))
 	if address == "" {
@@ -97,6 +118,105 @@ func runProvisionSelectedTODOs(args []string) error {
 		return errors.New("selected TODO collection provisioning/readback failed; import was not attempted")
 	}
 	return printTODOProvisionReport()
+}
+
+func runProvisionTODOHistory(args []string) error {
+	if len(args) != 1 || !registry.ValidCompanyID(args[0]) {
+		return errors.New("provision-todo-history requires one valid Company ID; database selection is server-resolved")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required to provision TODO history")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; TODO history was not provisioned")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := store.ProvisionTODOHistory(ctx, args[0]); err != nil {
+		return fmt.Errorf("TODO history provisioning/baseline failed: %w", err)
+	}
+	report, err := store.PreflightTODOHistory(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("TODO history post-provision verification failed: %w", err)
+	}
+	if !report.CoverageComplete {
+		return errors.New("TODO history post-provision verification is incomplete; current TODOs and truthful baselines do not reconcile")
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, string(data))
+	return err
+}
+
+func runCheckTODOHistory(args []string) error {
+	if len(args) != 1 || !registry.ValidCompanyID(args[0]) {
+		return errors.New("check-todo-history requires one valid Company ID; database selection is server-resolved")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required to inspect TODO history")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; no history state was changed")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	report, err := store.PreflightTODOHistory(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("TODO history read-only preflight failed: %w", err)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, string(data))
+	return err
+}
+
+func runDiagnoseTODOCollectionSchema(args []string) error {
+	if len(args) != 1 || !registry.ValidCompanyID(args[0]) {
+		return errors.New("diagnose-todo-schema requires one valid Company ID; database selection is server-resolved")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required for TODO schema diagnostics")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; no data was changed")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	report, err := store.DiagnoseTODOCollectionSchema(ctx, args[0])
+	if err != nil {
+		return fmt.Errorf("read-only TODO schema diagnostic failed: %w", err)
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintln(os.Stdout, string(data))
+	return err
 }
 
 func printTODOProvisionReport() error {

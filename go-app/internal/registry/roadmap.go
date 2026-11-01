@@ -40,8 +40,9 @@ type roadmapReleaseView struct {
 // Mongo-owned revision needed to reject stale list-to-detail reads.
 type roadmapTODOView struct {
 	ID                    string `json:"id"`
+	ReleaseID             string `json:"-"`
 	Title                 string `json:"title"`
-	Path                  string `json:"path"`
+	Path                  string `json:"path,omitempty"`
 	Kind                  string `json:"kind"`
 	Objective             string `json:"objective"`
 	ObjectiveState        string `json:"objective_state"`
@@ -92,23 +93,24 @@ func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRel
 			releaseViews[views[i].Releases[j].ID] = &views[i].Releases[j]
 		}
 	}
+	backlogTODOs := make([]roadmapTODOView, 0)
 	for _, todo := range todos {
+		if todo.ReleaseID == "" {
+			backlogTODOs = append(backlogTODOs, todo)
+			continue
+		}
 		// The source-to-release relation was verified while loading Mongo records;
 		// a missing target here indicates a corrupted hierarchy and must fail closed.
-		contract, ok := selectedTODOSources[todo.ID]
-		if !ok || contract.ProjectID != projectID {
-			return nil, ErrUnavailable
-		}
-		release := releaseViews[contract.ReleaseID]
+		release := releaseViews[todo.ReleaseID]
 		if release == nil {
 			return nil, ErrUnavailable
 		}
 		release.TODOs = append(release.TODOs, todo)
 	}
 	backlog := struct {
-		TODOs   []any `json:"todos"`
-		Folders []any `json:"folders"`
-	}{TODOs: []any{}, Folders: []any{}}
+		TODOs   []roadmapTODOView `json:"todos"`
+		Folders []any             `json:"folders"`
+	}{TODOs: backlogTODOs, Folders: []any{}}
 	result := struct {
 		SchemaVersion string            `json:"schema_version"`
 		ProjectID     string            `json:"project_id"`
@@ -126,21 +128,25 @@ func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRel
 }
 
 func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
-	contract := selectedTODOSources[record.ID]
-	kind := "executable"
-	if record.ID == "t-9936500c9582e07e" {
-		kind = "planning"
+	contract, selected := selectedTODOContract(record.ID)
+	path := record.Source.Path
+	if selected {
+		path = contract.Path
 	}
+	kind := "executable"
 	blocked := containsTODOString(record.Qualifiers, "Blocked")
 	workState := "unknown"
 	if blocked {
 		workState = "blocked"
 	}
 	view := roadmapTODOView{
-		ID: record.ID, Title: record.Title, Path: contract.Path, Kind: kind,
+		ID: record.ID, ReleaseID: record.ReleaseID, Title: record.Title, Path: path, Kind: kind,
 		Objective: record.Objective, ObjectiveState: "complete", NextStep: record.NextExactStep, NextStepState: "complete",
 		RecordState: "active", AuthoredDeliveryStage: record.Stage, DeliveryStageState: "unverified",
 		Blocked: blocked, QualifierState: "verified", WorkState: workState, TODORevision: record.Revision,
+	}
+	if record.Source.Kind == "mongo-content-revision" {
+		view.Path = ""
 	}
 	if record.StageVerification == "verified" && record.VerifiedTransitionRef != nil {
 		view.DeliveryStage = record.Stage

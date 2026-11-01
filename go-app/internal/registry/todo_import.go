@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -101,6 +102,120 @@ func (m *MongoStore) ImportSelectedTODOs(ctx context.Context, request SelectedTO
 	}
 	report.NoOp = !imported
 	return report, nil
+}
+
+const additionalTODOSchemaVersion = "builder-selected-todos-additional-v1"
+
+// AdmitAdditionalTODOs admits only the two Builder r-08 identities after the
+// original four-record import. It never replays or overwrites that import.
+func (m *MongoStore) AdmitAdditionalTODOs(ctx context.Context, request SelectedTODOImportRequest) (SelectedTODOImportReport, error) {
+	if request.SchemaVersion != additionalTODOSchemaVersion || len(request.TODOs) != len(additionalTODOSources) {
+		return SelectedTODOImportReport{}, todoTeach("schema_version/todos", "provide exactly the two approved Builder r-08 IDs using builder-selected-todos-additional-v1", ErrInvalid)
+	}
+	seen := make(map[string]bool, len(request.TODOs))
+	for _, record := range request.TODOs {
+		contract, ok := additionalTODOSources[record.ID]
+		if !ok || seen[record.ID] || record.ProjectID != contract.ProjectID || record.ReleaseID != contract.ReleaseID || record.Position == nil || *record.Position != contract.Position {
+			return SelectedTODOImportReport{}, todoTeach("todos[].identity", "use each of the two approved Builder TODO IDs once under e-06/r-08", ErrConflict)
+		}
+		seen[record.ID] = true
+		if err := validateTODORecord(record, contract); err != nil {
+			return SelectedTODOImportReport{}, err
+		}
+	}
+	records := canonicalSelectedTODOs(request.TODOs)
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	company, err := m.company(ctx, "belluga-solutions")
+	if err != nil {
+		return SelectedTODOImportReport{}, err
+	}
+	database := m.client.Database(company.DatabaseName)
+	if err := verifyTODOCollection(ctx, database); err != nil {
+		return SelectedTODOImportReport{}, err
+	}
+	collection := database.Collection(todosCollection)
+	if err := verifyTODOIndexes(ctx, collection); err != nil {
+		return SelectedTODOImportReport{}, err
+	}
+	for i := range records {
+		digest, err := todoMappingDigest(records[i])
+		if err != nil {
+			return SelectedTODOImportReport{}, ErrInvalid
+		}
+		records[i].Source.MappingDigest = digest
+	}
+	session, err := m.client.StartSession()
+	if err != nil {
+		return SelectedTODOImportReport{}, ErrUnavailable
+	}
+	defer session.EndSession(ctx)
+	var imported bool
+	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) {
+		imported = false
+		if err := validateSelectedProjects(txCtx, database); err != nil {
+			return nil, err
+		}
+		if err := ensureBuilderImportHierarchy(txCtx, database); err != nil {
+			return nil, err
+		}
+		for id, source := range selectedTODOSources {
+			var prior TODORecord
+			if err := collection.FindOne(txCtx, bson.D{{Key: "project_id", Value: source.ProjectID}, {Key: "id", Value: id}}).Decode(&prior); err != nil {
+				if errors.Is(err, mongo.ErrNoDocuments) {
+					return nil, todoTeach("todos", "complete the original four-record import before admitting Builder TODOs", ErrConflict)
+				}
+				return nil, ErrUnavailable
+			}
+			if err := validateStoredSelectedTODO(prior, source); err != nil {
+				return nil, err
+			}
+		}
+		existing := 0
+		for _, record := range records {
+			var prior TODORecord
+			err := collection.FindOne(txCtx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ID}}).Decode(&prior)
+			if err == nil {
+				if err := validateStoredSelectedTODO(prior, additionalTODOSources[record.ID]); err != nil || prior.Source.MappingDigest != record.Source.MappingDigest {
+					return nil, todoTeach("todos[].source", "preserve the exact admitted Builder source and mapping", ErrConflict)
+				}
+				existing++
+			} else if !errors.Is(err, mongo.ErrNoDocuments) {
+				return nil, ErrUnavailable
+			}
+		}
+		if existing == len(records) {
+			return false, nil
+		}
+		if existing != 0 {
+			return nil, todoTeach("todos", "avoid partially admitting the two Builder records", ErrConflict)
+		}
+		now := bson.DateTime(time.Now().UTC().UnixMilli())
+		for _, record := range records {
+			record.ObjectID = bson.NewObjectID()
+			record.Revision = 0
+			record.CreatedAt, record.UpdatedAt = now, now
+			record.Source.ImportedAt = now
+			record.StageVerification = "unverified"
+			if _, err := collection.InsertOne(txCtx, record); err != nil {
+				return nil, normalizeMongoError(err)
+			}
+		}
+		imported = true
+		return true, nil
+	})
+	if err != nil {
+		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrConflict) {
+			return SelectedTODOImportReport{}, err
+		}
+		return SelectedTODOImportReport{}, normalizeMongoError(err)
+	}
+	data, err := json.Marshal(records)
+	if err != nil {
+		return SelectedTODOImportReport{}, ErrUnavailable
+	}
+	hash := sha256.Sum256(data)
+	return SelectedTODOImportReport{Imported: len(records), NoOp: !imported, Digest: "sha256:" + hex.EncodeToString(hash[:])}, nil
 }
 
 func canonicalSelectedTODOs(input []TODORecord) []TODORecord {

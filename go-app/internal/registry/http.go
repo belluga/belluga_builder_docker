@@ -19,10 +19,39 @@ type selectedTODOImporter interface {
 	ImportSelectedTODOs(context.Context, SelectedTODOImportRequest) (SelectedTODOImportReport, error)
 }
 
+type additionalTODOAdmitter interface {
+	AdmitAdditionalTODOs(context.Context, SelectedTODOImportRequest) (SelectedTODOImportReport, error)
+}
+
+type individualTODOAdmitter interface {
+	AdmitTODO(context.Context, string, string, TODOAdmissionRequest) (TODOAdmissionReport, error)
+}
+
+type todoCreationTemplateReader interface {
+	TODOCreationTemplate(context.Context, string, string) (TODOCreationTemplate, error)
+}
+
 type selectedTODOLifecycle interface {
 	ReadTODO(context.Context, string, string, string, *int64) (TODOReadResponse, error)
 	TransitionTODO(context.Context, string, TODOActionRequest) (TODOActionResponse, error)
 	VerifyCurrentTODOStage(context.Context, string, VerifyCurrentTODOStageRequest) (TODOActionResponse, error)
+}
+
+type todoHistoryService interface {
+	ReadTODOHistory(context.Context, string, string, string, int64, int) (TODOHistoryPage, error)
+	ReadTODOAsOf(context.Context, string, string, string, int64) (TODOAsOfResponse, error)
+	CompareTODOHistory(context.Context, string, string, string, int64, int64) (TODOContentComparison, error)
+	EditTODOContent(context.Context, string, TODOContentEditRequest) (TODOContentEditResponse, error)
+	RestoreTODOContent(context.Context, string, TODOContentRestoreRequest) (TODOContentEditResponse, error)
+	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
+	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
+	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
+}
+
+type todoRecordMutationService interface {
+	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
+	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
+	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
 }
 
 func NewHandler(service Service) http.Handler {
@@ -38,9 +67,20 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap", h.roadmap)
 	mux.HandleFunc("GET /internal/v1/tenants/resolve", h.resolveTenant)
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
+	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos", h.admitTODO)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", h.todoCreationTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}", h.readTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition", h.transitionTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage", h.verifyCurrentTODOStage)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare", h.compareTODOHistory)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}", h.readTODOAsOf)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history", h.readTODOHistory)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content", h.editTODOContent)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
 	return mux
 }
 
@@ -130,6 +170,44 @@ func (h *Handler) importSelectedTODOs(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, report, err)
 }
 
+func (h *Handler) admitAdditionalTODOs(w http.ResponseWriter, r *http.Request) {
+	admitter, ok := h.service.(additionalTODOAdmitter)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input SelectedTODOImportRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	report, err := admitter.AdmitAdditionalTODOs(r.Context(), input)
+	h.respond(w, report, err)
+}
+
+func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
+	admitter, ok := h.service.(individualTODOAdmitter)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOAdmissionRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	value, err := admitter.AdmitTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) todoCreationTemplate(w http.ResponseWriter, r *http.Request) {
+	reader, ok := h.service.(todoCreationTemplateReader)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := reader.TODOCreationTemplate(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
+	h.respond(w, value, err)
+}
+
 func (h *Handler) readTODO(w http.ResponseWriter, r *http.Request) {
 	lifecycle, ok := h.service.(selectedTODOLifecycle)
 	if !ok {
@@ -188,6 +266,155 @@ func (h *Handler) verifyCurrentTODOStage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	value, err := lifecycle.VerifyCurrentTODOStage(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readTODOHistory(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	after := int64(-1)
+	if raw := r.URL.Query().Get("after_revision"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil {
+			h.writeError(w, todoTeach("after_revision", "be an integer aggregate revision cursor", ErrInvalid))
+			return
+		}
+		after = value
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		value, err := strconv.Atoi(raw)
+		if err != nil {
+			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
+			return
+		}
+		limit = value
+	}
+	value, err := service.ReadTODOHistory(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("todoID")), after, limit)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readTODOAsOf(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	revision, err := strconv.ParseInt(strings.TrimSpace(r.PathValue("revision")), 10, 64)
+	if err != nil {
+		h.writeError(w, todoTeach("revision", "be a nonnegative aggregate revision", ErrInvalid))
+		return
+	}
+	value, err := service.ReadTODOAsOf(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("todoID")), revision)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) compareTODOHistory(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	from, fromErr := strconv.ParseInt(r.URL.Query().Get("from"), 10, 64)
+	to, toErr := strconv.ParseInt(r.URL.Query().Get("to"), 10, 64)
+	if fromErr != nil || toErr != nil {
+		h.writeError(w, todoTeach("from/to", "be integer aggregate revisions", ErrInvalid))
+		return
+	}
+	value, err := service.CompareTODOHistory(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("todoID")), from, to)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOContentEditRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.EditTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) restoreTODOContent(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOContentRestoreRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.RestoreTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRecordMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOEvidenceEditRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.EditTODOEvidence(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRecordMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOPlacementEditRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.EditTODOPlacement(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRecordMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOSectionOwnershipRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.NormalizeTODOSectionOwnership(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

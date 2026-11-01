@@ -70,6 +70,33 @@ var selectedTODOSources = map[string]selectedTODOSourceContract{
 	},
 }
 
+// additionalTODOSources is admitted after the original four-record cut. Keep
+// the first import's exact cardinality and source mapping unchanged.
+var additionalTODOSources = map[string]selectedTODOSourceContract{
+	"builder-mongo-v0-7-1-todo-migration": {
+		ProjectID: "builder", ReleaseID: "r-08", EpicID: "e-06", Position: 1,
+		Stage: "In-Progress", Foundation: "builder",
+		FoundationSHA: "e2430eff748f72fd7abb6dd6f903b12484ed5e61",
+		Path:          "todos/active/TODO-builder-mongo-v0-7-1-todo-migration.md",
+		SourceDigest:  "sha256:d2ee2fa7fcb027b5e7ee229989a86966750bd7cde2d6cfe3bcdae8883f63c2dc",
+	},
+	"builder-mongo-selected-todo-stage-verification": {
+		ProjectID: "builder", ReleaseID: "r-08", EpicID: "e-06", Position: 2,
+		Stage: "Planning", Foundation: "builder",
+		FoundationSHA: "e2430eff748f72fd7abb6dd6f903b12484ed5e61",
+		Path:          "todos/active/TODO-builder-mongo-selected-todo-stage-verification.md",
+		SourceDigest:  "sha256:48b9a25580856a348f1db227b6f15ed0cd1ad79cfe504b711df2d570d8da3ad4",
+	},
+}
+
+func selectedTODOContract(id string) (selectedTODOSourceContract, bool) {
+	if source, ok := selectedTODOSources[id]; ok {
+		return source, true
+	}
+	source, ok := additionalTODOSources[id]
+	return source, ok
+}
+
 // TODOSection is authored Markdown preserved in source order. Typed fields,
 // not headings or statements here, remain the API's governance authority.
 type TODOSection struct {
@@ -77,17 +104,20 @@ type TODOSection struct {
 	Title        string `json:"title" bson:"title"`
 	BodyMarkdown string `json:"body_markdown" bson:"body_markdown"`
 	Position     int    `json:"position" bson:"position"`
+	Ownership    string `json:"ownership,omitempty" bson:"ownership,omitempty"`
 }
 
 // TODOSource records the immutable source identity supplied by the trusted
 // executor. ImportedAt is assigned by Go and never accepted from the request.
 type TODOSource struct {
-	Foundation    string        `json:"foundation" bson:"foundation"`
-	Revision      string        `json:"revision" bson:"revision"`
-	Path          string        `json:"path" bson:"path"`
-	Digest        string        `json:"digest" bson:"digest"`
-	MappingDigest string        `json:"-" bson:"mapping_digest"`
-	ImportedAt    bson.DateTime `json:"-" bson:"imported_at"`
+	Kind          string        `json:"kind,omitempty" bson:"kind,omitempty"`
+	Ref           string        `json:"ref,omitempty" bson:"ref,omitempty"`
+	Foundation    string        `json:"foundation,omitempty" bson:"foundation,omitempty"`
+	Revision      string        `json:"revision,omitempty" bson:"revision,omitempty"`
+	Path          string        `json:"path,omitempty" bson:"path,omitempty"`
+	Digest        string        `json:"digest,omitempty" bson:"digest,omitempty"`
+	MappingDigest string        `json:"-" bson:"mapping_digest,omitempty"`
+	ImportedAt    bson.DateTime `json:"-" bson:"imported_at,omitempty"`
 }
 
 type TODOProofReference struct {
@@ -321,6 +351,21 @@ func validRepositoryPattern(value string) bool {
 
 // TODOCollectionValidator declares the closed MongoDB document contract.
 func TODOCollectionValidator() bson.D {
+	return todoCollectionValidator(true, true, true)
+}
+
+func priorTODOCollectionValidator() bson.D {
+	return todoCollectionValidator(false, false, false)
+}
+
+func TODOCollectionValidatorBeforeRecordEvents() bson.D {
+	return todoCollectionValidator(true, false, true)
+}
+func TODOCollectionValidatorBeforeOwnership() bson.D {
+	return todoCollectionValidator(true, false, false)
+}
+
+func todoCollectionValidator(allowContentEdit, allowRecordEvents, allowOwnership bool) bson.D {
 	properties := bson.D{
 		{Key: "_id", Value: bson.D{{Key: "bsonType", Value: "objectId"}}},
 		{Key: "id", Value: nonemptyStringSchema()},
@@ -334,7 +379,7 @@ func TODOCollectionValidator() bson.D {
 		{Key: "stage", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOStages)}}},
 		{Key: "qualifiers", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "uniqueItems", Value: true}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOQualifiers)}}}}},
 		{Key: "work_state", Value: bson.D{{Key: "bsonType", Value: "string"}}},
-		{Key: "sections", Value: sectionsSchema()},
+		{Key: "sections", Value: sectionsSchema(allowOwnership)},
 		{Key: "proof_refs", Value: proofArraySchema()},
 		{Key: "waiver_refs", Value: proofArraySchema()},
 		{Key: "diff_expectation", Value: diffArraySchema()},
@@ -346,11 +391,15 @@ func TODOCollectionValidator() bson.D {
 		{Key: "updated_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
 		{Key: "stage_verification", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"unverified", "verified"}}}},
 		{Key: "verified_transition_ref", Value: verifiedTransitionSchema()},
-		{Key: "last_operation", Value: lastTODOOperationSchema()},
+		{Key: "last_operation", Value: lastTODOOperationSchema(allowContentEdit, allowRecordEvents)},
 	}
 	schema := bson.D{
 		{Key: "bsonType", Value: "object"},
 		{Key: "required", Value: bson.A{"_id", "id", "project_id", "title", "objective", "next_exact_step", "artifact_type", "stage", "qualifiers", "sections", "affected_files", "source", "revision", "created_at", "updated_at", "stage_verification"}},
+		{Key: "oneOf", Value: bson.A{
+			bson.D{{Key: "required", Value: bson.A{"release_id", "position"}}},
+			bson.D{{Key: "not", Value: bson.D{{Key: "anyOf", Value: bson.A{bson.D{{Key: "required", Value: bson.A{"release_id"}}}, bson.D{{Key: "required", Value: bson.A{"position"}}}}}}}},
+		}},
 		{Key: "additionalProperties", Value: false},
 		{Key: "properties", Value: properties},
 	}
@@ -364,9 +413,16 @@ func verifiedTransitionSchema() bson.D {
 	}}}
 }
 
-func lastTODOOperationSchema() bson.D {
+func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
+	kinds := bson.A{"transition", "verify-current-stage"}
+	if allowContentEdit {
+		kinds = append(kinds, "content-edit")
+	}
+	if allowRecordEvents {
+		kinds = append(kinds, "evidence-edit", "placement-edit")
+	}
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"id", "kind", "request_digest", "result_revision"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
-		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"transition", "verify-current-stage"}}}},
+		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: kinds}}},
 		{Key: "request_digest", Value: nonemptyStringSchema()}, {Key: "result_revision", Value: nonnegativeLongSchema()},
 	}}}
 }
@@ -395,7 +451,7 @@ func stringTODOArray(values []string) bson.A {
 	return result
 }
 
-func sectionsSchema() bson.D {
+func sectionsSchema(allowOwnership bool) bson.D {
 	section := bson.D{
 		{Key: "bsonType", Value: "object"},
 		{Key: "required", Value: bson.A{"key", "title", "body_markdown", "position"}},
@@ -406,6 +462,9 @@ func sectionsSchema() bson.D {
 			{Key: "body_markdown", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "maxLength", Value: 65536}}},
 			{Key: "position", Value: nonnegativeIntSchema()},
 		}},
+	}
+	if allowOwnership {
+		section[3].Value = append(section[3].Value.(bson.D), bson.E{Key: "ownership", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"contract", "record"}}}})
 	}
 	return bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: maxTODOSections}, {Key: "items", Value: section}}
 }
@@ -458,9 +517,14 @@ func commitArraySchema() bson.D {
 func sourceSchema() bson.D {
 	source := bson.D{
 		{Key: "bsonType", Value: "object"},
-		{Key: "required", Value: bson.A{"foundation", "revision", "path", "digest", "mapping_digest", "imported_at"}},
+		{Key: "oneOf", Value: bson.A{
+			bson.D{{Key: "required", Value: bson.A{"foundation", "revision", "path", "digest", "mapping_digest", "imported_at"}}},
+			bson.D{{Key: "required", Value: bson.A{"kind", "ref", "digest"}}},
+		}},
 		{Key: "additionalProperties", Value: false},
 		{Key: "properties", Value: bson.D{
+			{Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"mongo-content-revision"}}}},
+			{Key: "ref", Value: nonemptyStringSchema()},
 			{Key: "foundation", Value: nonemptyStringSchema()}, {Key: "revision", Value: nonemptyStringSchema()},
 			{Key: "path", Value: nonemptyStringSchema()}, {Key: "digest", Value: nonemptyStringSchema()},
 			{Key: "mapping_digest", Value: nonemptyStringSchema()},
