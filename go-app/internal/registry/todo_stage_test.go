@@ -8,6 +8,37 @@ import (
 	"time"
 )
 
+func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	ref := "builder/todo-a/content/1"
+	approval := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: ref, SourceDigest: digest, VerificationState: "verified"}
+	record := TODORecord{ID: "todo-a", Stage: "Implementation-Approval-Pending", StageVerification: "verified", VerifiedTransitionRef: &approval, Revision: 2}
+	request := TODOActionRequest{RequestedStage: "Ready-for-Implementation", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}
+	proof, err := mongoBornStageProof(record, request, digest, ref)
+	if err != nil || proof != approval {
+		t.Fatalf("approved Ready edge = %+v, %v", proof, err)
+	}
+	record.Stage = "Ready-for-Implementation"
+	record.Revision++
+	request.RequestedStage = "In-Progress"
+	proof, err = mongoBornStageProof(record, request, digest, ref)
+	if err != nil || proof.Kind != "work-started" || proof.Source != "mongo-todo-api" || proof.SourceDigest != digest {
+		t.Fatalf("governed start edge = %+v, %v", proof, err)
+	}
+	record.Stage = "Implementation-Approval-Pending"
+	record.VerifiedTransitionRef = nil
+	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Ready-for-Implementation"}, digest, ref); err == nil {
+		t.Fatal("Ready accepted without owner approval")
+	}
+	record.VerifiedTransitionRef = &approval
+	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Ready-for-Implementation"}, digest+"changed", ref); err == nil {
+		t.Fatal("Ready accepted stale content approval")
+	}
+	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Completed"}, digest, ref); err == nil {
+		t.Fatal("Mongo-born TODO skipped adjacent lifecycle stages")
+	}
+}
+
 func TestSelectedLocalProofRequiresExactMatrixRunAndOwnerAcceptance(t *testing.T) {
 	store := &MongoStore{}
 	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
