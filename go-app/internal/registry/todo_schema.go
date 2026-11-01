@@ -115,8 +115,8 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	if bsonValidatorEqual(actual, TODOCollectionValidator()) {
 		return nil
 	}
-	if !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) {
-		return todoTeach("todos.validator", "match the canonical schema or one of the three recognized strict/error predecessors", ErrConflict)
+	if !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
+		return todoTeach("todos.validator", "match the canonical schema or a recognized strict/error predecessor", ErrConflict)
 	}
 	cursor, err := database.Collection(todosCollection).Find(ctx, bson.D{})
 	if err != nil {

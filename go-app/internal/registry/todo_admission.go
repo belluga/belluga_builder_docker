@@ -114,6 +114,17 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		return TODOAdmissionReport{}, todoTeach("company.database_name", "match the server-owned Company tenant database", ErrConflict)
 	}
 	database := m.client.Database(company.DatabaseName)
+	if mongoBorn {
+		if err := upgradeTODOCollectionForHistory(ctx, database); err != nil {
+			return TODOAdmissionReport{}, err
+		}
+		if err := provisionHistoryCollection(ctx, database, todoContentVersionsCollection, TODOContentVersionsValidator(), todoContentVersionIndexes()); err != nil {
+			return TODOAdmissionReport{}, err
+		}
+		if err := provisionHistoryCollection(ctx, database, todoEventsCollection, TODOEventsValidator(), todoEventIndexes()); err != nil {
+			return TODOAdmissionReport{}, err
+		}
+	}
 	if err := verifyTODOCollection(ctx, database); err != nil {
 		return TODOAdmissionReport{}, err
 	}

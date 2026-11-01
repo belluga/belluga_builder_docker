@@ -354,6 +354,10 @@ func TODOCollectionValidator() bson.D {
 	return todoCollectionValidator(true, true, true)
 }
 
+func TODOCollectionValidatorBeforeCreation() bson.D {
+	return todoCollectionValidatorWithCreation(true, true, true, false)
+}
+
 func priorTODOCollectionValidator() bson.D {
 	return todoCollectionValidator(false, false, false)
 }
@@ -366,6 +370,10 @@ func TODOCollectionValidatorBeforeOwnership() bson.D {
 }
 
 func todoCollectionValidator(allowContentEdit, allowRecordEvents, allowOwnership bool) bson.D {
+	return todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, allowOwnership, true)
+}
+
+func todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, allowOwnership, allowCreation bool) bson.D {
 	properties := bson.D{
 		{Key: "_id", Value: bson.D{{Key: "bsonType", Value: "objectId"}}},
 		{Key: "id", Value: nonemptyStringSchema()},
@@ -385,7 +393,7 @@ func todoCollectionValidator(allowContentEdit, allowRecordEvents, allowOwnership
 		{Key: "diff_expectation", Value: diffArraySchema()},
 		{Key: "implementation_commits", Value: commitArraySchema()},
 		{Key: "affected_files", Value: bson.D{{Key: "bsonType", Value: bson.A{"array", "null"}}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "minLength", Value: 1}}}}},
-		{Key: "source", Value: sourceSchema()},
+		{Key: "source", Value: sourceSchemaForCreation(allowCreation)},
 		{Key: "revision", Value: bson.D{{Key: "bsonType", Value: bson.A{"int", "long"}}, {Key: "minimum", Value: int64(0)}}},
 		{Key: "created_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
 		{Key: "updated_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
@@ -393,15 +401,18 @@ func todoCollectionValidator(allowContentEdit, allowRecordEvents, allowOwnership
 		{Key: "verified_transition_ref", Value: verifiedTransitionSchema()},
 		{Key: "last_operation", Value: lastTODOOperationSchema(allowContentEdit, allowRecordEvents)},
 	}
+	required := bson.A{"_id", "id", "project_id", "title", "objective", "next_exact_step", "artifact_type", "stage", "qualifiers", "sections", "affected_files", "source", "revision", "created_at", "updated_at", "stage_verification"}
 	schema := bson.D{
 		{Key: "bsonType", Value: "object"},
-		{Key: "required", Value: bson.A{"_id", "id", "project_id", "title", "objective", "next_exact_step", "artifact_type", "stage", "qualifiers", "sections", "affected_files", "source", "revision", "created_at", "updated_at", "stage_verification"}},
-		{Key: "oneOf", Value: bson.A{
-			bson.D{{Key: "required", Value: bson.A{"release_id", "position"}}},
-			bson.D{{Key: "not", Value: bson.D{{Key: "anyOf", Value: bson.A{bson.D{{Key: "required", Value: bson.A{"release_id"}}}, bson.D{{Key: "required", Value: bson.A{"position"}}}}}}}},
-		}},
+		{Key: "required", Value: required},
 		{Key: "additionalProperties", Value: false},
 		{Key: "properties", Value: properties},
+	}
+	if allowCreation {
+		schema = append(schema, bson.E{Key: "oneOf", Value: bson.A{
+			bson.D{{Key: "required", Value: bson.A{"release_id", "position"}}},
+			bson.D{{Key: "not", Value: bson.D{{Key: "anyOf", Value: bson.A{bson.D{{Key: "required", Value: bson.A{"release_id"}}}, bson.D{{Key: "required", Value: bson.A{"position"}}}}}}}},
+		}})
 	}
 	return bson.D{{Key: "$jsonSchema", Value: schema}}
 }
@@ -515,6 +526,18 @@ func commitArraySchema() bson.D {
 }
 
 func sourceSchema() bson.D {
+	return sourceSchemaForCreation(true)
+}
+
+func sourceSchemaForCreation(allowCreation bool) bson.D {
+	if !allowCreation {
+		return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"foundation", "revision", "path", "digest", "mapping_digest", "imported_at"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
+			{Key: "foundation", Value: nonemptyStringSchema()}, {Key: "revision", Value: nonemptyStringSchema()},
+			{Key: "path", Value: nonemptyStringSchema()}, {Key: "digest", Value: nonemptyStringSchema()},
+			{Key: "mapping_digest", Value: nonemptyStringSchema()},
+			{Key: "imported_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
+		}}}
+	}
 	source := bson.D{
 		{Key: "bsonType", Value: "object"},
 		{Key: "oneOf", Value: bson.A{

@@ -310,9 +310,19 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("Mongo Project creation template = %+v, %v", creationTemplate, err)
 	}
 	mongoBorn := mongoBornTODOFixture()
+	setTODOValidator(TODOCollectionValidatorBeforeCreation())
+	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: historyValidatorBeforeContentDigest(TODOContentVersionsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatalf("set pre-creation content-version validator: %v", err)
+	}
+	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoEventsCollection}, {Key: "validator", Value: historyValidatorBeforeClearPlacement(TODOEventsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatalf("set pre-creation event validator: %v", err)
+	}
 	mongoAdmission, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: creationTemplate.SchemaVersion, TODO: mongoBorn})
 	if err != nil || mongoAdmission.TODOID != mongoBorn.ID || mongoAdmission.ReleaseID != "" || mongoAdmission.ContentRevision != 0 || !validSourceDigest(mongoAdmission.ContentDigest) {
 		t.Fatalf("Mongo-born Backlog admission = %+v, %v", mongoAdmission, err)
+	}
+	if err := verifyTODOCollection(ctx, database); err != nil {
+		t.Fatalf("Mongo-born admission did not upgrade the recognized pre-creation validator: %v", err)
 	}
 	mongoCreationEvent, err := readHistoryBaseline(ctx, database, "builder", mongoBorn.ID)
 	if err != nil || mongoCreationEvent.ProofReference == nil || mongoCreationEvent.ProofReference.Kind != "created" || mongoCreationEvent.ProofReference.SourceDigest != mongoAdmission.ContentDigest {

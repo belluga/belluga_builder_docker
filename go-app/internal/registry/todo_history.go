@@ -509,11 +509,15 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 	}
 	if !bsonValidatorEqual(actualValidator.Document(), validator) {
 		prior := historyValidatorBeforeOwnership(validator)
-		if !bsonValidatorEqual(actualValidator.Document(), prior) {
+		beforeDigest := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentDigest(validator))
+		beforePlacement := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeClearPlacement(validator))
+		if !bsonValidatorEqual(actualValidator.Document(), prior) && !beforeDigest && !beforePlacement {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
-		if err := scanLegacyHistoryOwnership(ctx, database, name); err != nil {
-			return err
+		if !beforeDigest && !beforePlacement {
+			if err := scanLegacyHistoryOwnership(ctx, database, name); err != nil {
+				return err
+			}
 		}
 		command := bson.D{{Key: "collMod", Value: name}, {Key: "validator", Value: validator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}
 		if err := database.RunCommand(ctx, command).Err(); err != nil {
@@ -537,6 +541,40 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		return ErrUnavailable
 	}
 	return verifyHistoryIndexes(ctx, collection, indexes)
+}
+
+func historyValidatorBeforeContentDigest(value bson.D) bson.D {
+	return validatorWithoutProperty(value, "$jsonSchema", "properties", "digest")
+}
+
+func historyValidatorBeforeClearPlacement(value bson.D) bson.D {
+	return validatorWithoutProperty(value, "$jsonSchema", "properties", "changes", "properties", "clear_placement")
+}
+
+func validatorWithoutProperty(value bson.D, path ...string) bson.D {
+	raw, err := bson.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var copy bson.D
+	if bson.Unmarshal(raw, &copy) != nil {
+		return nil
+	}
+	return removeValidatorProperty(copy, path)
+}
+
+func removeValidatorProperty(value bson.D, path []string) bson.D {
+	result := make(bson.D, 0, len(value))
+	for _, field := range value {
+		if field.Key == path[0] {
+			if len(path) == 1 {
+				continue
+			}
+			field.Value = removeValidatorProperty(field.Value.(bson.D), path[1:])
+		}
+		result = append(result, field)
+	}
+	return result
 }
 
 func historyValidatorBeforeOwnership(value bson.D) bson.D {
@@ -642,8 +680,7 @@ func verifyTODOHistoryCollections(ctx context.Context, database *mongo.Database)
 		actualValidator := optionsDocument.Lookup("validator")
 		level, levelOK := optionsDocument.Lookup("validationLevel").StringValueOK()
 		action, actionOK := optionsDocument.Lookup("validationAction").StringValueOK()
-		want, marshalErr := bson.Marshal(expected.validator)
-		if marshalErr != nil || actualValidator.Type != bson.TypeEmbeddedDocument || !equalBSONDocument(actualValidator.Document(), want) || !levelOK || level != "strict" || !actionOK || action != "error" {
+		if actualValidator.Type != bson.TypeEmbeddedDocument || !bsonValidatorEqual(actualValidator.Document(), expected.validator) || !levelOK || level != "strict" || !actionOK || action != "error" {
 			return todoTeach(expected.name+".validator", "match the canonical strict/error history schema", ErrConflict)
 		}
 		if err := verifyHistoryIndexes(ctx, database.Collection(expected.name), expected.indexes); err != nil {
