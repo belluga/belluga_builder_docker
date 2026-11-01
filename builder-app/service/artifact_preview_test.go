@@ -254,6 +254,20 @@ func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
 	if !validMongoPublicRoadmap(seventh, "belluga-solutions", "builder") {
 		t.Fatal("seventh API-admitted TODO was rejected")
 	}
+	mongoBorn := makeTODO("builder-local-implemented-remote-proof", "executable", "Remote proof")
+	mongoBorn.Path = ""
+	builder.Epics[0].Releases[0].TODOs = append(builder.Epics[0].Releases[0].TODOs, mongoBorn)
+	created, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(created, "belluga-solutions", "builder") {
+		t.Fatal("Mongo-born TODO without a Foundation path rejected the public Roadmap")
+	}
+	for _, path := range []string{"todos/../escape", "todos/.git/config", "todos/with\nnewline"} {
+		builder.Epics[0].Releases[0].TODOs[len(builder.Epics[0].Releases[0].TODOs)-1].Path = path
+		invalidPath, _ := json.Marshal(builder)
+		if validMongoPublicRoadmap(invalidPath, "belluga-solutions", "builder") {
+			t.Fatalf("invalid nonempty source path %q was accepted", path)
+		}
+	}
 }
 
 func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T) {

@@ -781,11 +781,28 @@ func validMongoPublicRoadmap(data json.RawMessage, companyID, projectID string) 
 			}
 			seen[release.ID] = true
 			for _, todo := range release.TODOs {
-				if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || !strings.HasPrefix(todo.Path, "todos/") || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.DeliveryStageState != "verified" && todo.DeliveryStageState != "unverified" || todo.DeliveryStageState == "verified" && (!canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage) || todo.DeliveryStageState == "unverified" && (todo.DeliveryStage != "" || todo.DeliveryStageTeach == "") || todo.QualifierState == "" {
+				if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || todo.Path != "" && !validMongoTODOPath(todo.Path) || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.DeliveryStageState != "verified" && todo.DeliveryStageState != "unverified" || todo.DeliveryStageState == "verified" && (!canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage) || todo.DeliveryStageState == "unverified" && (todo.DeliveryStage != "" || todo.DeliveryStageTeach == "") || todo.QualifierState == "" {
 					return false
 				}
 				seen[todo.ID] = true
 			}
+		}
+	}
+	return true
+}
+
+func validMongoTODOPath(value string) bool {
+	if !strings.HasPrefix(value, "todos/") || !safeSnapshotPath(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." || segment == ".git" {
+			return false
 		}
 	}
 	return true
