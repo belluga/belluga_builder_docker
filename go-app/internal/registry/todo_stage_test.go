@@ -39,6 +39,26 @@ func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	}
 }
 
+func TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	proof := TODOProofReference{Kind: "work-started", SourceDigest: digest, VerificationState: "verified"}
+	record := TODORecord{Stage: "In-Progress", StageVerification: "verified", VerifiedTransitionRef: &proof}
+	if err := requireApprovedCurrentContent(record, digest); err != nil {
+		t.Fatalf("current approved content rejected: %v", err)
+	}
+	record.StageVerification = "unverified"
+	record.VerifiedTransitionRef = nil
+	if err := requireApprovedCurrentContent(record, digest); err == nil {
+		t.Fatal("unverified content edit was accepted for Local-Implemented")
+	}
+	record.StageVerification = "verified"
+	proof.SourceDigest = "sha256:" + strings.Repeat("b", 64)
+	record.VerifiedTransitionRef = &proof
+	if err := requireApprovedCurrentContent(record, digest); err == nil {
+		t.Fatal("approval for an older content digest was accepted")
+	}
+}
+
 func TestSelectedLocalProofRequiresExactMatrixRunAndOwnerAcceptance(t *testing.T) {
 	store := &MongoStore{}
 	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {

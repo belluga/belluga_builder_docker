@@ -244,6 +244,9 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		return TODOProofReference{}, err
 	}
 	if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+		if err := requireApprovedCurrentContent(record, contentDigest); err != nil {
+			return TODOProofReference{}, err
+		}
 		if project.Binding == nil {
 			return TODOProofReference{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
 		}
@@ -270,6 +273,13 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, local)
 	}
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
+}
+
+func requireApprovedCurrentContent(record TODORecord, contentDigest string) error {
+	if record.StageVerification != "verified" || record.VerifiedTransitionRef == nil || record.VerifiedTransitionRef.VerificationState != "verified" || record.VerifiedTransitionRef.SourceDigest != contentDigest {
+		return todoTeach("approval/content_revision", "reconcile approval of the current Mongo TODO contract before Local-Implemented", ErrConflict)
+	}
+	return nil
 }
 
 func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDigest, contentRef string) (TODOProofReference, error) {
