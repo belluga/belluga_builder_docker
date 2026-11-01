@@ -154,6 +154,13 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 			if err != nil {
 				return TODOActionResponse{}, err
 			}
+			if project.Binding == nil {
+				return TODOActionResponse{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
+			}
+			proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, record.Source.Digest, proof)
+			if err != nil {
+				return TODOActionResponse{}, err
+			}
 		default:
 			return TODOActionResponse{}, todoTeach("requested_stage", "use a governed transition supported by the individually admitted TODO proof contract", ErrConflict)
 		}
@@ -174,6 +181,13 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 					return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the fixed local result and exact separate owner acceptance", ErrConflict)
 				}
 				proof, err = m.validateLocalProof(record.ID, request.LocalProof, request.OwnerAcceptance)
+				if err != nil {
+					return TODOActionResponse{}, err
+				}
+				if project.Binding == nil {
+					return TODOActionResponse{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
+				}
+				proof, err = m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, record.Source.Digest, proof)
 				if err != nil {
 					return TODOActionResponse{}, err
 				}
@@ -235,6 +249,19 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		}
 		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
 			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run, exact owner acceptance and remotely verified implementation commits", ErrConflict)
+		}
+		foundationOnly := len(record.DiffExpectation) > 0
+		for _, scope := range record.DiffExpectation {
+			if !foundationScope(scope.Repository) {
+				foundationOnly = false
+				break
+			}
+		}
+		if foundationOnly {
+			if request.LocalProof != nil || request.OwnerAcceptance != nil {
+				return TODOProofReference{}, todoTeach("local_proof/owner_acceptance", "Foundation-only delivery uses its published revision, not a code-run acceptance", ErrConflict)
+			}
+			return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, TODOProofReference{})
 		}
 		local, err := m.validateLocalProof(record.ID, request.LocalProof, request.OwnerAcceptance)
 		if err != nil {

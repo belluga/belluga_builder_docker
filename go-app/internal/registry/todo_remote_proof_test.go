@@ -63,4 +63,31 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
 		t.Fatal("PACED commit changing a Builder path was accepted")
 	}
+	badPACEDPath = false
+	todo.DiffExpectation[0].Repository, todo.DiffExpectation[1].Repository = "Builder", "PACED"
+	todo.ImplementationCommits[0].Repository, todo.ImplementationCommits[1].Repository = "Builder", "PACED"
+	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err != nil {
+		t.Fatalf("legacy Builder/PACED repository labels were rejected: %v", err)
+	}
+}
+
+func TestFoundationOnlyDeliveryUsesPublishedMainCommit(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"modules/promotion_lane_module.md"}, Outcome: "verified"})
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	digest := sourceHash([]byte("document contract"))
+	todo := TODORecord{ID: "foundation-only", ProjectID: "builder", ReleaseID: "r-08", DiffExpectation: []TODORepositoryScope{{Repository: "belluga_builder_foundation_documentation", ExpectedPaths: []string{"modules/promotion_lane_module.md"}, NotExpectedPaths: []string{}}}}
+	todo.ImplementationCommits = []TODOCommitReference{{Repository: "belluga_builder_foundation_documentation", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}
+	proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, TODOProofReference{})
+	if err != nil || proof.Kind != "foundation-publication" || !strings.Contains(proof.Reference, "@main:") {
+		t.Fatalf("Foundation proof=%+v err=%v", proof, err)
+	}
+	todo.ImplementationCommits = nil
+	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, TODOProofReference{}); err == nil {
+		t.Fatal("missing Foundation commit accepted")
+	}
 }

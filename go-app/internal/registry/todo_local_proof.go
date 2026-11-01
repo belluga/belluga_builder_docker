@@ -173,7 +173,6 @@ type remoteCommitResult struct {
 }
 
 // The approved scope, not the current checkout diff, decides attribution.
-// Foundation-only Markdown is not an implementation repository.
 func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
@@ -182,9 +181,19 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return TODOProofReference{}, todoTeach("remote_proof", "use the registered Project Foundation repository owner", ErrConflict)
 	}
+	foundationOnly := len(todo.DiffExpectation) > 0
+	for _, scope := range todo.DiffExpectation {
+		if !foundationScope(scope.Repository) {
+			foundationOnly = false
+			break
+		}
+	}
+	if !foundationOnly && (local.Kind != "local-run-accepted" || local.VerificationState != "verified") {
+		return TODOProofReference{}, todoTeach("local_proof", "pass the accepted PACED local run before remote code proof", ErrConflict)
+	}
 	var verified []remoteCommitResult
 	for _, scope := range todo.DiffExpectation {
-		if strings.HasSuffix(scope.Repository, "_foundation_documentation") {
+		if foundationScope(scope.Repository) && !foundationOnly {
 			continue
 		}
 		branch, ok := implementationBranch(todo.ProjectID, todo.ReleaseID, scope.Repository)
@@ -200,7 +209,10 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 			if !validGitCommit(claim.Commit) || claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
 				return TODOProofReference{}, todoTeach("implementation_commits", "bind each full commit SHA to the approved current TODO content revision", ErrConflict)
 			}
-			repository := parts[0] + "/" + scope.Repository
+			repository := parts[0] + "/" + canonicalImplementationLabel(scope.Repository)
+			if foundationScope(scope.Repository) {
+				repository = foundationRepositoryID
+			}
 			result, err := m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit)
 			if err != nil {
 				return TODOProofReference{}, err
@@ -227,19 +239,43 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 		return TODOProofReference{}, ErrInvalid
 	}
 	claims := make([]string, 0, len(verified)+1)
-	claims = append(claims, "run="+local.Reference)
+	if !foundationOnly {
+		claims = append(claims, "run="+local.Reference)
+	}
 	for _, result := range verified {
 		claims = append(claims, result.Repository+"@"+result.Branch+":"+result.CommitSHA+"/parent="+result.ParentSHA+"/head="+result.RemoteHead)
 	}
-	return TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: strings.Join(claims, ";"), SourceDigest: sourceHash(data), VerificationState: "verified"}, nil
+	kind, source := "remote-local-delivery", "private-reader-and-paced-runner"
+	if foundationOnly {
+		kind, source = "foundation-publication", "private-reader"
+	}
+	return TODOProofReference{Kind: kind, Source: source, Reference: strings.Join(claims, ";"), SourceDigest: sourceHash(data), VerificationState: "verified"}, nil
+}
+
+func foundationScope(repository string) bool {
+	return repository == "Foundation" || strings.HasSuffix(repository, "_foundation_documentation")
+}
+
+func canonicalImplementationLabel(repository string) string {
+	switch repository {
+	case "Builder":
+		return "belluga_builder_docker"
+	case "PACED":
+		return "delphi-ai"
+	default:
+		return repository
+	}
 }
 
 func implementationBranch(projectID, releaseID, repository string) (string, bool) {
+	if foundationScope(repository) {
+		return "main", true
+	}
 	if projectID == "builder" {
-		if repository == "delphi-ai" {
+		if repository == "delphi-ai" || repository == "PACED" {
 			return "builder", true
 		}
-		if repository == "belluga_builder_docker" && strings.HasPrefix(releaseID, "r-") {
+		if (repository == "belluga_builder_docker" || repository == "Builder") && strings.HasPrefix(releaseID, "r-") {
 			return releaseID + "-rc", true
 		}
 	}
