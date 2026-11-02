@@ -7,11 +7,323 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
+
+func TestTodoSourceRequestRejectsDuplicateSelectorsAndInvalidMappings(t *testing.T) {
+	for _, raw := range []string{
+		"company_id=c&project_id=p&todo_id=one&todo_id=two&fingerprint=" + strings.Repeat("a", 64),
+		"company_id=c&company_id=other&project_id=p&todo_id=one&fingerprint=" + strings.Repeat("a", 64),
+	} {
+		values, _ := url.ParseQuery(raw)
+		if _, ok := oneQueryValue(values, "todo_id"); ok && strings.Contains(raw, "todo_id=") && strings.Count(raw, "todo_id=") > 1 {
+			t.Fatalf("duplicate TODO selector accepted: %s", raw)
+		}
+		if strings.Count(raw, "company_id=") > 1 {
+			if _, ok := oneQueryValue(values, "company_id"); ok {
+				t.Fatalf("duplicate Company selector accepted: %s", raw)
+			}
+		}
+	}
+	valid := todoSource{Path: "todos/active/item.md", SHA256: strings.Repeat("a", 64)}
+	if !validTodoSourceEntry("related-todo:abc", valid) {
+		t.Fatal("valid admitted TODO source rejected")
+	}
+	if !validTodoSourceEntry("related-todo:abc", todoSource{Path: "todos/active/foo..bar.md", SHA256: valid.SHA256}) {
+		t.Fatal("safe TODO path containing adjacent periods was over-rejected")
+	}
+	for _, invalid := range []todoSource{
+		{Path: "../todos/item.md", SHA256: strings.Repeat("a", 64)},
+		{Path: "todos/item.md", SHA256: "not-a-digest"},
+	} {
+		if validTodoSourceEntry("x", invalid) {
+			t.Fatalf("invalid source mapping accepted: %+v", invalid)
+		}
+	}
+}
+
+func TestTodoSourceHandlerRejectsDuplicateQuerySelectorsBeforeSnapshotRead(t *testing.T) {
+	preview := &registeredPreview{}
+	for _, request := range []string{
+		"/api/local-todo-source?company_id=company&project_id=project&todo_id=one&todo_id=two&fingerprint=" + strings.Repeat("a", 64),
+		"/api/local-todo-source?company_id=company&company_id=other&project_id=project&todo_id=one&fingerprint=" + strings.Repeat("a", 64),
+		"/api/local-todo-source?company_id=company&project_id=project&todo_id=one&fingerprint=short",
+		"/api/local-todo-source?company_id=company&project_id=project&todo_id=" + strings.Repeat("x", 1201) + "&fingerprint=" + strings.Repeat("a", 64),
+		"/api/local-todo-source?company_id=company&project_id=project&todo_id=one&fingerprint=" + strings.Repeat("a", 64) + "&extra=ignored",
+	} {
+		response := httptest.NewRecorder()
+		preview.todoSourceHandler(response, httptest.NewRequest(http.MethodGet, request, nil))
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("duplicate selector was not rejected before snapshot access: status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	oversized := "/api/local-todo-source?company_id=company&project_id=project&todo_id=one&fingerprint=" + strings.Repeat("a", 64) + "&padding=" + strings.Repeat("x", 8200)
+	response := httptest.NewRecorder()
+	preview.todoSourceHandler(response, httptest.NewRequest(http.MethodGet, oversized, nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("oversized source selectors were not bounded: status=%d", response.Code)
+	}
+}
+
+func TestRoadmapAPIProxyIsRegisteredReadOnlyAndAllowsPlanningTODOWithoutApproval(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "false")
+	root := t.TempDir()
+	registration := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies: map[string]registeredCompany{"third-company": {ID: "third-company", Name: "Third Company"}},
+		Projects: map[string]persistedProject{"schema": {registeredProject: registeredProject{ID: "schema", Name: "Schema", CompanyID: "third-company"}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/workspace", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "example/schema", PublicationBranch: "main"}}},
+		Preferences: map[string]persistedPreference{},
+	}
+	data, err := json.Marshal(registration)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roadmap := `{"schema_version":"builder-roadmap-projection-v3","project_id":"schema","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`
+	todo := `{"company_id":"third-company","project_id":"schema","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `","todo":{"id":"schema-study","project_id":"schema","revision":0,"title":"Schema study","objective":"Study schema","next_exact_step":"Inspect fields","stage":"Planning","sections":[{"key":"objective","title":"Objective","body_markdown":"Study"}],"proof_refs":[]},"todo_revision":0,"content_revision":3,"content_digest":"sha256:` + strings.Repeat("b", 64) + `"}`
+	var requestedRoadmap atomic.Bool
+	upstreamStatus := http.StatusOK
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"third-company"}],"projects":[{"id":"schema","company_id":"third-company"}],"preferences":[]}`))
+			return
+		}
+		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/roadmap" {
+			requestedRoadmap.Store(true)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(upstreamStatus)
+			_, _ = w.Write([]byte(roadmap))
+			return
+		}
+		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/todos/schema-study" && r.URL.Query().Get("todo_revision") == "0" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(todo))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer upstream.Close()
+	preview := &registeredPreview{root: root, registryURL: upstream.URL, client: upstream.Client()}
+
+	roadResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(roadResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema", nil))
+	if roadResponse.Code != http.StatusOK || !requestedRoadmap.Load() || !strings.Contains(roadResponse.Body.String(), `"project_id":"schema"`) {
+		t.Fatalf("third-company Roadmap proxy status=%d body=%s", roadResponse.Code, roadResponse.Body.String())
+	}
+	planningResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(planningResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema&todo_id=schema-study&todo_revision=0", nil))
+	if planningResponse.Code != http.StatusOK || !strings.Contains(planningResponse.Body.String(), "Schema study") || !strings.Contains(planningResponse.Body.String(), `"content_digest":"sha256:`) {
+		t.Fatalf("unapproved Planning TODO must remain readable: status=%d body=%s", planningResponse.Code, planningResponse.Body.String())
+	}
+	unregisteredResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(unregisteredResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=outside&project_id=secret", nil))
+	if unregisteredResponse.Code != http.StatusNotFound {
+		t.Fatalf("unregistered Project was proxied: status=%d body=%s", unregisteredResponse.Code, unregisteredResponse.Body.String())
+	}
+	upstreamStatus = http.StatusServiceUnavailable
+	failedResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(failedResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema", nil))
+	if failedResponse.Code != http.StatusServiceUnavailable || !strings.Contains(failedResponse.Body.String(), "roadmap_api_unavailable") {
+		t.Fatalf("Registry failure did not fail closed: status=%d body=%s", failedResponse.Code, failedResponse.Body.String())
+	}
+}
+
+func TestTodoSourceHandlerKeepsStaleAndUnavailableResponsesDistinct(t *testing.T) {
+	const todoID = "related-todo:opaque"
+	privateStatus := http.StatusOK
+	privateToken := strings.Repeat("t", 32)
+	fingerprint := strings.Repeat("a", 64)
+	privateMarkdown := "# Authored source\n"
+	var exactRequest atomic.Bool
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/projects/project-a" && r.URL.Query().Get("company_id") == "company-a" && r.URL.Query().Get("todo_id") == todoID && r.URL.Query().Get("fingerprint") == fingerprint && r.Header.Get("Authorization") == "Bearer "+privateToken {
+			exactRequest.Store(true)
+		}
+		if privateStatus != http.StatusOK {
+			if privateStatus == http.StatusConflict {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(privateStatus)
+				_, _ = w.Write([]byte(`{"state":"stale","teach":"TEACH: revision conflict test","todo_revision":7}`))
+				return
+			}
+			w.WriteHeader(privateStatus)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"todo_id": todoID, "fingerprint": fingerprint, "markdown": privateMarkdown})
+	}))
+	defer private.Close()
+	preview := &registeredPreview{readerURL: private.URL, readerToken: privateToken, client: private.Client()}
+	for _, test := range []struct {
+		privateStatus, wantStatus int
+		wantError                 string
+	}{
+		{http.StatusConflict, http.StatusConflict, "todo_source_stale_reload_project"},
+		{http.StatusNotFound, http.StatusNotFound, "todo_source_not_found"},
+		{http.StatusServiceUnavailable, http.StatusServiceUnavailable, "todo_source_unavailable"},
+	} {
+		privateStatus = test.privateStatus
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "/api/local-todo-source?company_id=company-a&project_id=project-a&todo_id="+todoID+"&fingerprint="+fingerprint, nil)
+		preview.todoSourceHandler(response, request)
+		var body struct {
+			Error        string `json:"error"`
+			Teach        string `json:"teach"`
+			TODORevision int64  `json:"todo_revision"`
+		}
+		if response.Code != test.wantStatus || json.Unmarshal(response.Body.Bytes(), &body) != nil || body.Error != test.wantError || (test.privateStatus == http.StatusConflict && (body.Teach != "TEACH: revision conflict test" || body.TODORevision != 7)) {
+			t.Errorf("private status %d mapped incorrectly: response=%d body=%s", test.privateStatus, response.Code, response.Body.String())
+		}
+	}
+	privateStatus = http.StatusOK
+	exactRequest.Store(false)
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/local-todo-source?company_id=company-a&project_id=project-a&todo_id="+todoID+"&fingerprint="+fingerprint, nil)
+	preview.todoSourceHandler(response, request)
+	var body map[string]string
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &body) != nil || body["todo_id"] != todoID || body["fingerprint"] != fingerprint || body["markdown"] != privateMarkdown || !exactRequest.Load() {
+		t.Fatalf("public TODO route did not forward exact identity/bearer and return matching bytes: status=%d body=%s private_exact=%v", response.Code, response.Body.String(), exactRequest.Load())
+	}
+}
+
+func TestTodoSourceHandlerForwardsAndChecksMigratedRevision(t *testing.T) {
+	const todoID = "builder-company-tenant-mongo-registry"
+	const fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	token := strings.Repeat("t", 32)
+	var forwarded atomic.Int64
+	private := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("revision or private authorization not forwarded: %s", r.URL.RawQuery)
+		}
+		forwarded.Add(1)
+		if r.URL.Query().Get("todo_revision") == "" {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"teach":"TEACH: reload the Project Roadmap and request this migrated TODO with its todo_revision."}`))
+			return
+		}
+		if r.URL.Query().Get("todo_revision") != "0" {
+			t.Errorf("revision not forwarded: %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"todo_id":"` + todoID + `","fingerprint":"` + fingerprint + `","markdown":"# Registry\n","todo_revision":0,"todo":{"id":"` + todoID + `"}}`))
+	}))
+	defer private.Close()
+	preview := &registeredPreview{readerURL: private.URL, readerToken: token, client: private.Client()}
+	base := "/api/local-todo-source?company_id=belluga-solutions&project_id=builder&todo_id=" + todoID + "&fingerprint=" + fingerprint
+	missing := httptest.NewRecorder()
+	preview.todoSourceHandler(missing, httptest.NewRequest(http.MethodGet, base, nil))
+	if missing.Code != http.StatusConflict || !strings.Contains(missing.Body.String(), "todo_revision") || forwarded.Load() != 1 {
+		t.Fatalf("migrated read without revision must preserve the private TEACH: %d %s", missing.Code, missing.Body.String())
+	}
+	response := httptest.NewRecorder()
+	preview.todoSourceHandler(response, httptest.NewRequest(http.MethodGet, base+"&todo_revision=0", nil))
+	var result struct {
+		TODORevision int64           `json:"todo_revision"`
+		TODO         json.RawMessage `json:"todo"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil || result.TODORevision != 0 || len(result.TODO) == 0 || forwarded.Load() != 2 {
+		t.Fatalf("migrated exact response did not preserve revision and typed record: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
+	revision := int64(0)
+	makeTODO := func(id, kind, title string) roadmapTODO {
+		return roadmapTODO{ID: id, TODORevision: &revision, Title: title, Path: "todos/active/selected.md", Kind: kind, RecordState: "active", Objective: "Objective", ObjectiveState: "complete", NextStep: "Next", NextStepState: "complete", AuthoredDeliveryStage: "In-Progress", DeliveryStageState: "unverified", DeliveryStageTeach: "TEACH: source stage awaits verifier.", QualifierState: "verified", WorkState: "unknown"}
+	}
+	roadmap := roadmapProjection{SchemaVersion: "builder-roadmap-projection-v3", ProjectID: "boora", Epics: []roadmapEpic{{ID: "epic-pilot", Name: "Pilot", Releases: []roadmapRelease{{ID: "release-v0-7-1-participant-media", Name: "v0.7.1", TODOs: []roadmapTODO{
+		makeTODO("t-9936500c9582e07e", "executable", "Release package"),
+		makeTODO("t-cf5c0ffd07c4f50d", "executable", "Participant media"),
+		makeTODO("t-b9e3ea9e3a616b01", "executable", "Flutter stage domain"),
+	}}}}}, Backlog: roadmapBacklog{TODOs: []roadmapTODO{}, Folders: []roadmapBacklogFolder{}}, Unclassified: []roadmapUnclassified{}, Diagnostics: []roadmapDiagnostic{}}
+	data, err := json.Marshal(roadmap)
+	if err != nil || !validMongoPublicRoadmap(data, "belluga-solutions", "boora") {
+		t.Fatalf("valid selected Bóora Roadmap summary rejected: %v %s", err, data)
+	}
+	if !validMongoPublicRoadmap(data, "another-tenant", "boora") {
+		t.Fatal("the Mongo Roadmap contract must be shared across registered Companies")
+	}
+	otherProject := roadmapProjection{SchemaVersion: "builder-roadmap-projection-v3", ProjectID: "other", Epics: []roadmapEpic{{ID: "e-other", Name: "Other", Releases: []roadmapRelease{{ID: "r-other", Name: "Other", TODOs: []roadmapTODO{}}}}}, Backlog: roadmapBacklog{TODOs: []roadmapTODO{}, Folders: []roadmapBacklogFolder{}}, Unclassified: []roadmapUnclassified{}, Diagnostics: []roadmapDiagnostic{}}
+	otherData, _ := json.Marshal(otherProject)
+	if !validMongoPublicRoadmap(otherData, "another-tenant", "other") {
+		t.Fatal("third-company Project must satisfy the Mongo Roadmap contract")
+	}
+	roadmap.Epics[0].Releases[0].TODOs = roadmap.Epics[0].Releases[0].TODOs[:2]
+	partial, _ := json.Marshal(roadmap)
+	if !validMongoPublicRoadmap(partial, "belluga-solutions", "boora") {
+		t.Fatal("individually populated Bóora Roadmap was rejected")
+	}
+	builder := roadmapProjection{SchemaVersion: "builder-roadmap-projection-v3", ProjectID: "builder", Epics: []roadmapEpic{{ID: "e-06", Name: "Mongo", Releases: []roadmapRelease{{ID: "r-08", Name: "Migration", TODOs: []roadmapTODO{
+		makeTODO("builder-company-tenant-mongo-registry", "executable", "Registry"),
+		makeTODO("builder-mongo-v0-7-1-todo-migration", "executable", "Import"),
+		makeTODO("builder-mongo-selected-todo-stage-verification", "executable", "Verification"),
+	}}}}}, Backlog: roadmapBacklog{TODOs: []roadmapTODO{}, Folders: []roadmapBacklogFolder{}}, Unclassified: []roadmapUnclassified{}, Diagnostics: []roadmapDiagnostic{}}
+	builderData, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(builderData, "belluga-solutions", "builder") {
+		t.Fatal("complete selected Builder Roadmap summary was rejected")
+	}
+	builder.Epics[0].Releases[0].TODOs = builder.Epics[0].Releases[0].TODOs[:2]
+	builderPartial, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(builderPartial, "belluga-solutions", "builder") {
+		t.Fatal("individually populated Builder Roadmap was rejected")
+	}
+	builder.Epics[0].Releases[0].TODOs = append(builder.Epics[0].Releases[0].TODOs, makeTODO("builder-mongo-todo-history-storage-implementation", "executable", "History"))
+	seventh, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(seventh, "belluga-solutions", "builder") {
+		t.Fatal("seventh API-admitted TODO was rejected")
+	}
+	mongoBorn := makeTODO("builder-local-implemented-remote-proof", "executable", "Remote proof")
+	mongoBorn.Path = ""
+	builder.Epics[0].Releases[0].TODOs = append(builder.Epics[0].Releases[0].TODOs, mongoBorn)
+	created, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(created, "belluga-solutions", "builder") {
+		t.Fatal("Mongo-born TODO without a Foundation path rejected the public Roadmap")
+	}
+	backlogTODO := makeTODO("builder-mongo-backlog-item", "executable", "Backlog item")
+	backlogTODO.Path = ""
+	builder.Backlog.TODOs = []roadmapTODO{backlogTODO}
+	backlogData, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(backlogData, "belluga-solutions", "builder") {
+		t.Fatal("Mongo-born Backlog TODO without a Foundation path rejected the public Roadmap")
+	}
+	invalidBacklog := builder
+	invalidBacklog.Backlog.TODOs = []roadmapTODO{backlogTODO}
+	badRevision := *backlogTODO.TODORevision
+	badRevision = -1
+	invalidBacklog.Backlog.TODOs[0].TODORevision = &badRevision
+	invalidBacklogData, _ := json.Marshal(invalidBacklog)
+	if validMongoPublicRoadmap(invalidBacklogData, "belluga-solutions", "builder") {
+		t.Fatal("Backlog TODO with a negative revision was accepted")
+	}
+	backlogTODO.Path = "todos/active/folder-work.md"
+	builder.Backlog.TODOs = []roadmapTODO{}
+	builder.Backlog.Folders = []roadmapBacklogFolder{{Name: "active", Path: "todos/active", Folders: []roadmapBacklogFolder{{Name: "nested", Path: "todos/active/nested", Folders: []roadmapBacklogFolder{}, TODOs: []roadmapTODO{backlogTODO}}}, TODOs: []roadmapTODO{}}}
+	nestedData, _ := json.Marshal(builder)
+	if !validMongoPublicRoadmap(nestedData, "belluga-solutions", "builder") {
+		t.Fatal("valid nested Backlog folder with Mongo summary was rejected")
+	}
+	badFolder := builder
+	badFolder.Backlog.Folders = []roadmapBacklogFolder{{Name: "active", Path: "todos/../escape", Folders: []roadmapBacklogFolder{}, TODOs: []roadmapTODO{}}}
+	badFolderData, _ := json.Marshal(badFolder)
+	if validMongoPublicRoadmap(badFolderData, "belluga-solutions", "builder") {
+		t.Fatal("Backlog folder path traversal was accepted")
+	}
+	for _, path := range []string{"todos/../escape", "todos/.git/config", "todos/with\nnewline"} {
+		builder.Epics[0].Releases[0].TODOs[len(builder.Epics[0].Releases[0].TODOs)-1].Path = path
+		invalidPath, _ := json.Marshal(builder)
+		if validMongoPublicRoadmap(invalidPath, "belluga-solutions", "builder") {
+			t.Fatalf("invalid nonempty source path %q was accepted", path)
+		}
+	}
+}
 
 func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -26,10 +338,107 @@ func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T
 	}
 }
 
+func TestProjectAPIKeepsPrivateReaderResponsesBoundToSelectedProject(t *testing.T) {
+	root := t.TempDir()
+	registry := persistedRegistration{
+		SchemaVersion: "builder-project-registry-v1",
+		Companies: map[string]registeredCompany{
+			"company-a": {ID: "company-a", Name: "Company A"},
+			"company-b": {ID: "company-b", Name: "Company B"},
+		},
+		Projects: map[string]persistedProject{}, Preferences: map[string]persistedPreference{},
+	}
+	for _, identity := range []struct{ projectID, projectName, companyID, repositoryID string }{
+		{"project-a", "Project A", "company-a", "belluga/project-a"},
+		{"project-b", "Project B", "company-b", "belluga/project-b"},
+	} {
+		registry.Projects[identity.projectID] = persistedProject{
+			registeredProject: registeredProject{ID: identity.projectID, Name: identity.projectName, CompanyID: identity.companyID, PreparationState: "ready"},
+			Binding:           &persistedBinding{WorkspaceRoot: filepath.Join(root, identity.projectID), ProjectRoot: ".", FoundationRoot: "foundation", RepositoryID: identity.repositoryID, PublicationBranch: "main"},
+		}
+	}
+	registryData, err := json.Marshal(registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "registry.json"), registryData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	token := strings.Repeat("t", 32)
+	projectDetails := map[string]privateReaderResponse{}
+	for _, identity := range []struct{ projectID, projectName, companyID, sha, fingerprint, summary string }{
+		{"project-a", "Project A", "company-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A"},
+		{"project-b", "Project B", "company-b", strings.Repeat("b", 40), strings.Repeat("2", 64), "portfolio bytes from Project B"},
+	} {
+		portfolio, err := json.Marshal(portfolioSummary{SchemaVersion: "1", Summary: identity.summary})
+		if err != nil {
+			t.Fatal(err)
+		}
+		projectDetails[identity.projectID] = privateReaderResponse{
+			ProjectID: identity.projectID, ProjectName: identity.projectName, CompanyID: identity.companyID,
+			ProjectSHA: identity.sha, ObservedAt: "2026-10-17T12:00:00Z", Fingerprint: identity.fingerprint,
+			Artifacts: []registeredArtifact{{ID: "portfolio", Kind: "portfolio", Name: "Portfolio", State: "available", Files: []string{"project_portfolio.json"}}},
+			Files:     map[string][]byte{"project_portfolio.json": portfolio}, Assets: map[string]registeredAssetReference{}, Observations: map[string]json.RawMessage{"fixture_status": json.RawMessage(`{"outcome":"go"}`)},
+		}
+	}
+	var failProjectB atomic.Bool
+	readerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "invalid private reader request", http.StatusUnauthorized)
+			return
+		}
+		projectID := strings.TrimPrefix(r.URL.Path, "/internal/v1/projects/")
+		if projectID == "project-b" && failProjectB.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"state": "unavailable", "teach": "synthetic source outage"})
+			return
+		}
+		response, ok := projectDetails[projectID]
+		if !ok || r.URL.Path != "/internal/v1/projects/"+projectID {
+			http.Error(w, "unknown Project", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer readerServer.Close()
+	consumer := &registeredPreview{root: root, readerURL: readerServer.URL, readerToken: token, client: readerServer.Client()}
+	requestProject := func(companyID, projectID string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		path := "/api/local-preview?company_id=" + companyID + "&project_id=" + projectID
+		consumer.apiHandler(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response
+	}
+	assertProject := func(companyID, projectID, sha, fingerprint, summary string) {
+		t.Helper()
+		response := requestProject(companyID, projectID)
+		var detail struct {
+			ProjectID        string `json:"project_id"`
+			CompanyID        string `json:"company_id"`
+			ProjectSHA       string `json:"project_sha"`
+			Fingerprint      string `json:"snapshot_fingerprint"`
+			PortfolioSummary string `json:"portfolio_summary"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &detail); response.Code != http.StatusOK || err != nil || detail.ProjectID != projectID || detail.CompanyID != companyID || detail.ProjectSHA != sha || detail.Fingerprint != fingerprint || detail.PortfolioSummary != summary {
+			t.Fatalf("Builder mixed or misbound %s response: status=%d err=%v detail=%+v body=%s", projectID, response.Code, err, detail, response.Body.String())
+		}
+	}
+	assertProject("company-a", "project-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A")
+	assertProject("company-b", "project-b", strings.Repeat("b", 40), strings.Repeat("2", 64), "portfolio bytes from Project B")
+
+	failProjectB.Store(true)
+	bUnavailable := requestProject("company-b", "project-b")
+	if bUnavailable.Code != http.StatusServiceUnavailable || strings.Contains(bUnavailable.Body.String(), strings.Repeat("1", 64)) || strings.Contains(bUnavailable.Body.String(), "portfolio bytes from Project A") {
+		t.Fatalf("Project B reader outage fell back to Project A: status=%d body=%s", bUnavailable.Code, bUnavailable.Body.String())
+	}
+	assertProject("company-a", "project-a", strings.Repeat("a", 40), strings.Repeat("1", 64), "portfolio bytes from Project A")
+}
+
 func TestPathOnlyRegistryCannotServePinnedArtifact(t *testing.T) {
 	root := t.TempDir()
 	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
 		Files:        map[string][]byte{"design/landing/index.html": []byte("legacy content")},
 		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html"}}},
 		Observations: map[string]json.RawMessage{},
@@ -111,12 +520,14 @@ func testReaderConsumer(t *testing.T, root string) *registeredPreview {
 }
 
 func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning"},{"id":"active","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "done", Stage: "unknown"}, roadmapLocalStage{ID: "active", Stage: "Local-Implemented", WorkState: "blocked"})
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "false")
+	projectionBytes := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"done","path":"todos/completed/done.md","kind":"planning","title":"Planning record","record_state":"completed","authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: status is not applicable to this planning record.","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"},{"id":"active","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"Local-Implemented","delivery_stage":"Local-Implemented","delivery_stage_state":"verified","blocked":true,"qualifier_state":"verified","work_state":"blocked","objective":"Exact objective","objective_state":"complete","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	mapBytes, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"done": {Path: "todos/completed/done.md", SHA256: strings.Repeat("a", 64)}, "active": {Path: "todos/active/work.md", SHA256: strings.Repeat("b", 64)}}})
 	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v1", ProjectID: "project-a", CompanyID: "company-a",
-		Files:     map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/completed/done.md": []byte("# Planning record\n"), "todos/active/work.md": []byte("# Work item\n")},
-		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/completed/done.md", "todos/active/work.md"}}},
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "project-a", CompanyID: "company-a",
+		Roadmap:   projectionBytes,
+		Files:     map[string][]byte{"roadmap/projection.json": projectionBytes, "roadmap/todo-sources.json": mapBytes},
+		Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/projection.json"}}},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
 	projection, ok := detail["roadmap"].(roadmapProjection)
@@ -128,11 +539,23 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.
 		t.Fatalf("roadmap still exposes a duplicate delivery status: %s, %v", encoded, err)
 	}
 	release := projection.Epics[0].Releases[0]
-	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[0].LocalStage != "unknown" || release.TODOs[1].RecordState != "active" || release.TODOs[1].LocalStage != "Local-Implemented" || release.TODOs[1].WorkState != "blocked" {
+	if release.TODOs[0].RecordState != "completed" || release.TODOs[0].Kind != "planning" || release.TODOs[0].DeliveryStageState != "unverified" || release.TODOs[1].RecordState != "active" || release.TODOs[1].DeliveryStage != "Local-Implemented" || !release.TODOs[1].Blocked || release.TODOs[1].WorkState != "blocked" {
 		t.Fatalf("roadmap claims are not truthful: %+v", release)
 	}
 	if release.TODOs[1].Title != "Work item" {
 		t.Fatal("Roadmap title was not derived from the admitted TODO H1")
+	}
+	if release.TODOs[1].Objective != "Exact objective" || release.TODOs[1].ObjectiveState != "complete" {
+		t.Fatalf("authored metadata was not passed through exactly: %+v", release.TODOs[1])
+	}
+	encoded, _ = json.Marshal(detail)
+	if strings.Contains(string(encoded), "todo-sources.json") || strings.Contains(string(encoded), "builder-todo-sources-v2") {
+		t.Fatal("private TODO source map leaked into browser detail")
+	}
+	snapshot.Roadmap = nil
+	preCutover := registeredProjectDetail(snapshot, "fingerprint-a")
+	if _, ok := preCutover["roadmap"].(roadmapProjection); !ok {
+		t.Fatal("pre-cutover detail lost its admitted Foundation Roadmap projection")
 	}
 
 	snapshot.ProjectID = "project-b"
@@ -141,34 +564,170 @@ func TestRegisteredProjectDetailExposesOnlyProjectBoundRoadmapStages(t *testing.
 	}
 }
 
-func TestRegisteredProjectDetailFailsClosedForContradictoryRoadmapStageProjection(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	valid := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
-	invalid := [][]byte{
-		nil,
-		[]byte(`not-json`),
-		[]byte(`{"schema_version":"builder-roadmap-status-v1","catalog_sha256":"wrong","todos":[{"id":"todo-a","local_stage":"Pending"}]}`),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "different-id", Stage: "Pending"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "delivered"}),
-		roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending", WorkState: "delivered"}),
+func TestRegisteredProjectDetailUsesMongoRoadmapAsSolePublicSource(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	legacy := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"boora","focus_release_id":"legacy","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	authoritative := json.RawMessage(`{"schema_version":"builder-roadmap-projection-v3","project_id":"boora","focus_release_id":"","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	snapshot := registeredSnapshot{
+		ProjectID: "boora", CompanyID: "belluga-solutions", Roadmap: authoritative,
+		Files:     map[string][]byte{"roadmap/projection.json": legacy},
+		Artifacts: []registeredArtifact{{Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json"}}},
 	}
-	for index, status := range invalid {
-		snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Work item\n")}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json", "roadmap/todo-status.json", "todos/active/work.md"}}}}
-		if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
-			t.Errorf("contradictory stage projection %d was exposed", index)
-		}
+	detail := registeredProjectDetail(snapshot, "fingerprint")
+	projection, ok := detail["roadmap"].(roadmapProjection)
+	if !ok || projection.FocusRelease != "" {
+		t.Fatalf("public Roadmap did not come from Mongo: %#v", detail["roadmap"])
 	}
-	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": valid}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/catalog.json"}}}}
-	if _, ok := registeredProjectDetail(snapshot, "fp")["roadmap"]; ok {
-		t.Fatal("projection was exposed when derived file was not admitted by the artifact")
+	snapshot.Roadmap = nil
+	if _, ok := registeredProjectDetail(snapshot, "fingerprint")["roadmap"]; ok {
+		t.Fatal("missing Mongo Roadmap fell back to the private lifecycle projection")
 	}
 }
 
-func roadmapStatusForTest(catalog []byte, todos ...roadmapLocalStage) []byte {
-	digest := sha256.Sum256(catalog)
-	status, _ := json.Marshal(roadmapStatusProjection{SchemaVersion: "builder-roadmap-status-v1", CatalogSHA256: hex.EncodeToString(digest[:]), TODOs: todos})
-	return status
+func TestRegistryCutoverReadsCatalogOnlyThroughPrivateReader(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/catalog" || r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("unexpected private Reader request: %s %s", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"company-a","name":"Company A"}],"projects":[{"id":"project-a","name":"Project A","company_id":"company-a","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `"}]}`))
+	}))
+	defer server.Close()
+	preview := &registeredPreview{root: "/nonexistent/registry", readerURL: server.URL, readerToken: token}
+	catalog, err := preview.catalog()
+	if err != nil || len(catalog.Projects) != 1 || catalog.Projects[0].SnapshotFingerprint != strings.Repeat("a", 64) {
+		t.Fatalf("cutover did not resolve catalog through Reader: %+v, %v", catalog, err)
+	}
+	server.Close()
+	if _, err := preview.catalog(); err == nil {
+		t.Fatal("unavailable private Reader fell back to the retained file registry")
+	}
+}
+
+func TestRegistryCutoverAllowsSameProjectIDInDifferentCompanies(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"company-a","name":"Company A"},{"id":"company-b","name":"Company B"}],"projects":[{"id":"project-a","name":"Project A","company_id":"company-a"},{"id":"project-a","name":"Project A","company_id":"company-b"}]}`))
+	}))
+	defer server.Close()
+	preview := &registeredPreview{readerURL: server.URL, readerToken: token}
+	catalog, err := preview.catalog()
+	if err != nil || len(catalog.Projects) != 2 {
+		t.Fatalf("company-scoped Project IDs were rejected: %+v, %v", catalog, err)
+	}
+}
+
+func TestRegistryCutoverProjectDetailRejectsMalformedRoadmap(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Errorf("private Reader request missing authentication: %s", r.URL.Path)
+		}
+		switch r.URL.Path {
+		case "/internal/v1/catalog":
+			_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"belluga-solutions","name":"Belluga Solutions"}],"projects":[{"id":"boora","name":"Bóora","company_id":"belluga-solutions","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `"}]}`))
+		case "/internal/v1/projects/boora":
+			_, _ = w.Write([]byte(`{"schema_version":"1","project_id":"boora","project_name":"Bóora","company_id":"belluga-solutions","project_sha":"` + strings.Repeat("b", 40) + `","observed_at":"2026-10-30T00:00:00Z","snapshot_fingerprint":"` + strings.Repeat("a", 64) + `","artifacts":[],"files":{},"observations":{},"roadmap":{"schema_version":"builder-roadmap-projection-v3","project_id":"boora","epics":{"invalid":true}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	preview := &registeredPreview{root: "/nonexistent/registry", readerURL: server.URL, readerToken: token}
+	response := httptest.NewRecorder()
+	preview.apiHandler(response, httptest.NewRequest(http.MethodGet, "/api/local-preview?company_id=belluga-solutions&project_id=boora", nil))
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), `"consumer_readiness":"ready"`) {
+		t.Fatalf("malformed Mongo Roadmap was silently omitted from ready detail: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestFoundationRoadmapProjectionIsNotPubliclyDownloadable(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	response := httptest.NewRecorder()
+	(&registeredPreview{}).artifactHandler(response, httptest.NewRequest(http.MethodGet, "/snapshot/belluga-solutions/boora/"+strings.Repeat("a", 64)+"/roadmap/projection.json", nil))
+	if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "snapshot_unavailable") {
+		t.Fatalf("retained Foundation Roadmap projection was not explicitly hidden: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestRegisteredProjectDetailRejectsV2RoadmapWithoutInvalidatingLanding(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v2","project_id":"project-a","focus_release_id":"r-01","epics":[],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v3",
+		ProjectID:     "project-a",
+		CompanyID:     "company-a",
+		Files: map[string][]byte{
+			"roadmap/projection.json":   projection,
+			"design/landing/index.html": []byte("<main>Project Landing</main>"),
+		},
+		Artifacts: []registeredArtifact{
+			{ID: "roadmap", Kind: "roadmap", Name: "Roadmap", State: "available", Files: []string{"roadmap/projection.json"}},
+			{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html"}},
+		},
+	}
+	detail := registeredProjectDetail(snapshot, "fingerprint-a")
+	if _, ok := detail["roadmap"]; ok {
+		t.Fatal("v2 Roadmap projection was admitted after the v3 cutover")
+	}
+	artifacts, ok := detail["artifacts"].([]registeredArtifact)
+	if !ok || len(artifacts) != 2 || artifacts[1].Kind != "landing" || artifacts[1].State != "available" || !snapshotHasFile(snapshot, artifacts[1].Entry) {
+		t.Fatalf("rejecting the old Roadmap projection invalidated an unrelated Landing: %#v", detail)
+	}
+}
+
+func TestRegisteredProjectDetailExposesOpaquePrototypeTODOEvidenceCorrelation(t *testing.T) {
+	const todoPath = "todos/completed/decision.md"
+	const todoID = "related-todo:opaque"
+	manifest := []byte(`{"schema_version":"2","related":[{"kind":"documentation","path":"todos/completed/decision.md"}]}`)
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{todoID: {Path: todoPath, SHA256: strings.Repeat("a", 64)}}})
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "project-a", CompanyID: "company-a",
+		Files:     map[string][]byte{"roadmap/todo-sources.json": mapping, "prototypes/demo/prototype.json": manifest},
+		Artifacts: []registeredArtifact{{ID: "demo", Kind: "prototype", State: "available", Entry: "prototypes/demo/index.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/index.html"}}},
+	}
+	detail := registeredProjectDetail(snapshot, "fingerprint-a")
+	sources, ok := detail["prototype_todo_sources"].([]map[string]string)
+	if !ok || len(sources) != 1 || sources[0]["prototype_id"] != "demo" || sources[0]["todo_id"] != todoID || sources[0]["path"] != todoPath {
+		t.Fatalf("Prototype TODO evidence was not correlated to its admitted opaque ID and path: %#v", detail["prototype_todo_sources"])
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil || strings.Contains(string(encoded), "builder-todo-sources-v2") || strings.Contains(string(encoded), "todo-sources.json") {
+		t.Fatalf("private TODO source-map authority leaked into browser detail: %s, %v", encoded, err)
+	}
+}
+
+func TestRegisteredProjectDetailPreservesPendingOverviewAlongsideLanding(t *testing.T) {
+	snapshot := registeredSnapshot{
+		ProjectID: "project-a", CompanyID: "company-a",
+		Artifacts: []registeredArtifact{
+			{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html"},
+			{ID: "overview", Kind: "overview", Name: "Project Overview", State: "pending", Diagnostic: "TEACH: request targeted Overview status."},
+		},
+		Files: map[string][]byte{"design/landing/index.html": []byte("<main>landing</main>")},
+	}
+	detail := registeredProjectDetail(snapshot, strings.Repeat("a", 64))
+	artifacts, ok := detail["artifacts"].([]registeredArtifact)
+	if !ok || len(artifacts) != 2 || artifacts[0].Kind != "landing" || artifacts[0].State != "available" || artifacts[1].Kind != "overview" || artifacts[1].State != "pending" || !strings.Contains(artifacts[1].Diagnostic, "TEACH") {
+		t.Fatalf("Project detail did not preserve independent Landing and pending Overview: %#v", detail["artifacts"])
+	}
+}
+
+func TestRegisteredProjectDetailKeepsStaleExecutableBlockingAndPlanningDiagnosticOnly(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Epic description","releases":[{"id":"r-01","name":"Release","description":"Release description","todos":[{"id":"stale-executable","path":"todos/active/moved.md","kind":"executable","missing":true,"authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: source is missing.","blocked":false,"qualifier_state":"verified","work_state":"unknown"},{"id":"stale-planning","path":"todos/active/ledger.md","kind":"planning","missing":true,"authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: source is missing.","blocked":false,"qualifier_state":"verified","work_state":"unknown"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[{"code":"stale_assignment","path":"todos/active/moved.md","message":"Missing source"}]}`)
+	mapping := []byte(`{"schema_version":"builder-todo-sources-v2","sources":{}}`)
+	snapshot := registeredSnapshot{ProjectID: "project-a", Files: map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}, Artifacts: []registeredArtifact{{ID: "roadmap", Kind: "roadmap", State: "available", Files: []string{"roadmap/projection.json"}}}}
+	detail := registeredProjectDetail(snapshot, "fp")
+	read, ok := detail["roadmap"].(roadmapProjection)
+	if !ok {
+		t.Fatal("stale references must remain visible in an otherwise valid Roadmap")
+	}
+	todos := read.Epics[0].Releases[0].TODOs
+	if len(todos) != 2 || !todos[0].Missing || todos[0].Kind != "executable" || todos[0].DeliveryStageState != "unverified" || !todos[1].Missing || todos[1].Kind != "planning" || todos[1].DeliveryStageState != "unverified" {
+		t.Fatalf("stale assignment status or source visibility is incorrect: %+v", todos)
+	}
 }
 
 func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
@@ -189,30 +748,92 @@ func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
 	}
 }
 
-func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedCatalog(t *testing.T) {
-	for _, value := range []string{
-		`{"schema_version":"builder-roadmap-v1","schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
-		`{"schema_version":"builder-roadmap-v1","project_id":"project-b","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`,
+func TestAdmittedRoadmapProjectionRejectsDuplicateAndMismatchedProject(t *testing.T) {
+	const validProjection = `{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"","epics":[{"id":"epic-a","name":"Epic","description":"","releases":[{"id":"release-a","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"Pending","delivery_stage":"Planning","delivery_stage_state":"verified","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`
+	mapping, err := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{
+		"todo-a": {Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string][]byte{"roadmap/projection.json": []byte(validProjection), "roadmap/todo-sources.json": mapping}
+	sources := parseTodoSourceMap(registeredSnapshot{Files: files})
+	admit := func(projection []byte) bool {
+		_, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, sources)
+		return ok
+	}
+	if !admit(files["roadmap/projection.json"]) {
+		t.Fatal("valid v3 projection with a matching private source map was rejected")
+	}
+	for _, test := range []struct {
+		name       string
+		projection string
+	}{
+		{"duplicate project key", strings.Replace(validProjection, `"project_id":"project-a"`, `"project_id":"project-a","project_id":"project-a"`, 1)},
+		{"foreign project", strings.Replace(validProjection, `"project_id":"project-a"`, `"project_id":"project-b"`, 1)},
 	} {
-		catalog := []byte(value)
-		if _, ok := admittedRoadmapProjection("project-a", catalog, roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"}), map[string][]byte{"todos/active/work.md": []byte("# Work item\n")}, []string{"todos/active/work.md"}); ok {
-			t.Fatalf("invalid or foreign catalog admitted: %s", value)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if admit([]byte(test.projection)) {
+				t.Fatalf("invalid projection admitted: %s", test.projection)
+			}
+		})
+	}
+	legacyV2 := strings.Replace(validProjection, "builder-roadmap-projection-v3", "builder-roadmap-projection-v2", 1)
+	if admit([]byte(legacyV2)) {
+		t.Fatal("obsolete v2 projection was admitted")
 	}
 }
 
-func TestAdmittedRoadmapProjectionRequiresAdmittedTODOBody(t *testing.T) {
-	catalog := []byte(`{"schema_version":"builder-roadmap-v1","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable"}]}]}]}`)
-	status := roadmapStatusForTest(catalog, roadmapLocalStage{ID: "todo-a", Stage: "Pending"})
-	files := map[string][]byte{"roadmap/catalog.json": catalog, "roadmap/todo-status.json": status, "todos/active/work.md": []byte("# Authored title\n")}
-	admitted := []string{"roadmap/catalog.json", "roadmap/todo-status.json"}
-	if _, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted); ok {
-		t.Fatal("unlisted TODO body was exposed")
+func TestAdmittedRoadmapProjectionNeedsMetadataAndPrivateSourceMapButNoTODOBody(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"Strategic checkpoint","releases":[{"id":"r-01","name":"Release","description":"Selected grouping","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Authored title","record_state":"active","authored_delivery_stage":"Pending","delivery_stage":"Planning","delivery_stage_state":"verified","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	result, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok || result.Epics[0].Releases[0].TODOs[0].Title != "Authored title" {
+		t.Fatal("metadata-only TODO projection was rejected")
 	}
-	admitted = append(admitted, "todos/active/work.md")
-	projection, ok := admittedRoadmapProjection("project-a", catalog, status, files, admitted)
-	if !ok || projection.Epics[0].Releases[0].TODOs[0].Title != "Authored title" {
-		t.Fatal("admitted source H1 was not used")
+	if _, leaked := files[item.Path]; leaked {
+		t.Fatal("TODO body present in compact snapshot")
+	}
+}
+
+func TestAdmittedRoadmapProjectionKeepsHistoricalDisposition(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Historical work","record_state":"active","authored_delivery_stage":"Planning","delivery_stage":"Planning","delivery_stage_state":"verified","historical_disposition":"Superseded","disposition_reason":"Replaced by a narrower TODO.","successor_todo":"todo-b","disposition_state":"valid","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	_, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok {
+		t.Fatal("valid historical disposition made the whole Roadmap unavailable")
+	}
+}
+
+func TestAdmittedRoadmapProjectionKeepsInvalidLifecycleStatusScopedToTODO(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"Production-Ready","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: this historical value is not trusted for a new Project.","blocked":false,"qualifier_state":"unverified","qualifier_teach":"TEACH: blocked status requires review.","work_state":"blocked","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	result, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok {
+		t.Fatal("one unverified TODO must not invalidate the complete Roadmap projection")
+	}
+	todo := result.Epics[0].Releases[0].TODOs[0]
+	if todo.DeliveryStageState != "unverified" || todo.DeliveryStage != "" || !strings.HasPrefix(todo.DeliveryStageTeach, "TEACH:") || todo.QualifierState != "unverified" || !strings.HasPrefix(todo.QualifierTeach, "TEACH:") || todo.Blocked || todo.WorkState != "blocked" {
+		t.Fatalf("unverified stage/qualifier must remain scoped to its TODO and separate from work state: %+v", todo)
+	}
+}
+
+func TestAdmittedRoadmapProjectionKeepsLongLifecycleTeachScopedToTODO(t *testing.T) {
+	projection := []byte(`{"schema_version":"builder-roadmap-projection-v3","project_id":"project-a","focus_release_id":"r-01","epics":[{"id":"e-01","name":"Epic","description":"","releases":[{"id":"r-01","name":"Release","description":"","todos":[{"id":"todo-a","path":"todos/active/work.md","kind":"executable","title":"Work item","record_state":"active","authored_delivery_stage":"unknown","delivery_stage_state":"unverified","delivery_stage_teach":"TEACH: placeholder","blocked":false,"qualifier_state":"verified","work_state":"unknown","objective_state":"absent","next_step_state":"absent"}]}]}],"backlog":{"todos":[],"folders":[]},"unclassified":[],"diagnostics":[]}`)
+	longTeach := "TEACH: " + strings.Repeat("historical recovery context ", 45)
+	projection = []byte(strings.Replace(string(projection), "TEACH: placeholder", longTeach, 1))
+	item := todoSource{Path: "todos/active/work.md", SHA256: strings.Repeat("a", 64)}
+	mapping, _ := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{"todo-a": item}})
+	files := map[string][]byte{"roadmap/projection.json": projection, "roadmap/todo-sources.json": mapping}
+	result, ok := admittedRoadmapProjection("project-a", projection, files, []string{"roadmap/projection.json"}, parseTodoSourceMap(registeredSnapshot{Files: files}))
+	if !ok || result.Epics[0].Releases[0].TODOs[0].DeliveryStageTeach != longTeach {
+		t.Fatal("a long lifecycle TEACH must remain scoped to its TODO, not hide the Roadmap")
 	}
 }
 
@@ -233,9 +854,18 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	for _, name := range imagePaths {
 		files[name] = []byte("fixture-image")
 	}
+	imageDigest := sha256.Sum256([]byte("fixture-image"))
+	imageSHA := hex.EncodeToString(imageDigest[:])
+	delete(files, "design/landing/assets/marker.PNG")
+	if err := os.MkdirAll(filepath.Join(root, "assets"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "assets", imageSHA), []byte("fixture-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	artifactFiles := []string{"design/landing/index.html", "design/landing/landing.css", "design/landing/assets/marker.svg", "design/landing/assets/icons.ttf", "project_mandate.md"}
 	artifactFiles = append(artifactFiles, imagePaths...)
-	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v1", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-07T00:00:00Z", Files: files, Artifacts: []registeredArtifact{{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html", Files: artifactFiles}}, Observations: map[string]json.RawMessage{}}
+	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-07T00:00:00Z", Files: files, Assets: map[string]registeredAssetReference{"design/landing/assets/marker.PNG": {SHA256: imageSHA, Size: int64(len("fixture-image"))}}, Artifacts: []registeredArtifact{{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html", Files: artifactFiles}}, Observations: map[string]json.RawMessage{}}
 	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -262,6 +892,11 @@ func TestRegisteredPreviewUsesPrivateRegistryAndImmutableAdmittedSnapshot(t *tes
 	consumer.apiHandler(api, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
 	if api.Code != 200 || !strings.Contains(api.Body.String(), fingerprint) || strings.Contains(api.Body.String(), root) {
 		t.Fatalf("API response=%d %s", api.Code, api.Body.String())
+	}
+	mutation := httptest.NewRecorder()
+	consumer.apiHandler(mutation, httptest.NewRequest(http.MethodPost, "/api/local-preview?company_id=trial-company&project_id=trial-project", strings.NewReader(`{"company_id":"attacker"}`)))
+	if mutation.Code != http.StatusNotFound {
+		t.Fatalf("public Project API exposed a mutation route: status=%d body=%s", mutation.Code, mutation.Body.String())
 	}
 	before, err := os.ReadFile(registryPath)
 	if err != nil {
@@ -533,7 +1168,7 @@ func TestRegisteredPreviewRejectsPrivatePrototypeRelatedFromSnapshot(t *testing.
 	root := t.TempDir()
 	secret := []byte("PRIVATE_SHOULD_NOT_BE_SERVED")
 	manifest := []byte(`{"schema_version":"1","related":[{"kind":"documentation","path":".env"}]}`)
-	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v1", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-07T00:00:00Z", Files: map[string][]byte{"prototypes/demo/prototype.json": manifest, "prototypes/demo/index.html": []byte("<main>fixture</main>"), ".env": secret}, Artifacts: []registeredArtifact{{ID: "demo", Kind: "prototype", Name: "Disposable Prototype", State: "available", Entry: "prototypes/demo/index.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/index.html", ".env"}}}, Observations: map[string]json.RawMessage{}}
+	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-07T00:00:00Z", Files: map[string][]byte{"prototypes/demo/prototype.json": manifest, "prototypes/demo/index.html": []byte("<main>fixture</main>"), ".env": secret}, Artifacts: []registeredArtifact{{ID: "demo", Kind: "prototype", Name: "Disposable Prototype", State: "available", Entry: "prototypes/demo/index.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/index.html", ".env"}}}, Observations: map[string]json.RawMessage{}}
 	snapshotBytes, err := json.Marshal(snapshot)
 	if err != nil {
 		t.Fatal(err)
@@ -557,7 +1192,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	root := t.TempDir()
 	manifest := []byte(`{"schema_version":"2","id":"demo","entry_point":"index.html","related":[]}`)
 	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v1",
+		SchemaVersion: "builder-project-snapshot-v3",
 		ProjectID:     "trial-project",
 		CompanyID:     "trial-company",
 		ObservedAt:    "2026-10-07T00:00:00Z",
@@ -702,7 +1337,7 @@ func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalf
 		entry := []byte("<main>Scenario entry</main>")
 		status := json.RawMessage(`{"schema_version":"3","project_id":"trial-project","target":"prototypes","authority_scope":"local_structure_only","outcome":"go","items":[{"id":"demo","root":"prototypes/demo","entry_point":"start.html","screens":[{"id":"start","path":"start.html","default_state_id":"default","states":[{"id":"default","approved_references":[]}]}],"transitions":[],"scenarios":` + statusScenario + `}]}`)
 		snapshot := registeredSnapshot{
-			SchemaVersion: "builder-project-snapshot-v1", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-08T00:00:00Z",
+			SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-08T00:00:00Z",
 			Files:        map[string][]byte{"prototypes/demo/prototype.json": manifest, "prototypes/demo/start.html": entry},
 			Artifacts:    []registeredArtifact{{ID: "demo", Kind: "prototype", Name: "Demo", State: "available", Entry: "prototypes/demo/start.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/start.html"}}},
 			Observations: map[string]json.RawMessage{"prototype_status": status},
@@ -783,7 +1418,7 @@ func TestRegisteredPreviewLazilyServesVerifiedV2PNG(t *testing.T) {
 	digest := hex.EncodeToString(sum[:])
 	assetName := "design/landing/assets/logo.png"
 	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
 		Files:        map[string][]byte{"design/landing/index.html": []byte("<img src=\"assets/logo.png\">")},
 		Assets:       map[string]registeredAssetReference{assetName: {SHA256: digest, Size: int64(len(png))}},
 		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html", assetName}}},
@@ -864,7 +1499,7 @@ func TestRegisteredPreviewRejectsInvalidV2AssetReferences(t *testing.T) {
 	png := []byte("authored-png-bytes")
 	sum := sha256.Sum256(png)
 	valid := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
 		Files:        map[string][]byte{"design/landing/index.html": []byte("landing")},
 		Assets:       map[string]registeredAssetReference{assetName: {SHA256: hex.EncodeToString(sum[:]), Size: int64(len(png))}},
 		Artifacts:    []registeredArtifact{{ID: "landing", Kind: "landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html", assetName}}},
@@ -927,7 +1562,7 @@ func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v2", ProjectID: "trial-project", CompanyID: "trial-company",
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
 		Files: map[string][]byte{"project_overview.json": data, "prototypes/example/index.html": []byte("prototype"), "prototypes/example/prototype.json": []byte(`{"related":[]}`)},
 		Assets: map[string]registeredAssetReference{
 			"project_overview/desktop.png": image, "project_overview/mobile.png": image,
@@ -943,7 +1578,37 @@ func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
 	if !ok || projected.Media["desktop"] == "" || projected.Media["mobile"] == "" {
 		t.Fatalf("v2 Overview image references were not projected: %#v", detail["overview"])
 	}
-	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1]) {
+	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1], parseTodoSourceMap(snapshot)) {
 		t.Fatal("v2 Prototype image reference was not admitted")
+	}
+}
+
+func TestPrototypeRelatedTODOManifestReconcilesFromAToB(t *testing.T) {
+	entry := registeredArtifact{ID: "sample", Kind: "prototype", State: "available", Entry: "prototypes/sample/index.html", Files: []string{"prototypes/sample/index.html", "prototypes/sample/prototype.json"}}
+	makeMap := func(id, todoPath, digest string) []byte {
+		data, err := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{id: {Path: todoPath, SHA256: digest}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	manifest := func(todoPath string) []byte {
+		return []byte(`{"related":[{"kind":"documentation","path":"` + todoPath + `"}]}`)
+	}
+	pathA, pathB := "todos/active/a.md", "todos/active/b.md"
+	idA, idB := "related-todo:a", "related-todo:b"
+	digestA, digestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	snapshot := registeredSnapshot{Files: map[string][]byte{"prototypes/sample/index.html": []byte("<main>sample</main>"), "prototypes/sample/prototype.json": manifest(pathA), "roadmap/todo-sources.json": makeMap(idA, pathA, digestA)}}
+	if !validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
+		t.Fatal("Prototype manifest A did not resolve through its admitted TODO source ID")
+	}
+	snapshot.Files["prototypes/sample/prototype.json"] = manifest(pathB)
+	snapshot.Files["roadmap/todo-sources.json"] = makeMap(idB, pathB, digestB)
+	if !validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
+		t.Fatal("updated Prototype manifest B was not reconciled with the refreshed TODO source map")
+	}
+	snapshot.Files["roadmap/todo-sources.json"] = makeMap(idA, pathA, digestA)
+	if validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
+		t.Fatal("stale A source map remained available after the manifest moved to B")
 	}
 }

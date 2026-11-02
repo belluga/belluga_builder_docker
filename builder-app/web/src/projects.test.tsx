@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { Projects } from "./projects";
 
 const fingerprint = "a".repeat(64);
@@ -14,32 +15,38 @@ const theme = { tokens: [
   ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["font-family-sans", "string", "Arial"],
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
-const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`\n";
-function roadmap(projectID: string) { return { schema_version: "builder-roadmap-v1", project_id: projectID, focus_release_id: "r-04", epics: [
+const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
+function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
+  return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
+}
+function unverifiedStage(authored = "unknown", teach = "TEACH: stage requires review.") {
+  return { authored_delivery_stage: authored, delivery_stage_state: "unverified", delivery_stage_teach: teach, blocked: false, qualifier_state: "verified", work_state: "unknown" } as const;
+}
+function roadmap(projectID: string) { return { schema_version: "builder-roadmap-projection-v3", project_id: projectID, focus_release_id: "r-04", backlog: { todos: [{ id: "backlog:todos/active/backlog-item.md", title: "Unassigned active task", path: "todos/active/backlog-item.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }, { id: "backlog:todos/active/backlog-item-two.md", title: "Second unassigned task", path: "todos/active/backlog-item-two.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }], folders: [] }, unclassified: [], diagnostics: [], epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
     { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
-      { id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", local_stage: "unknown" },
-      { id: "architecture-ledger", title: "Architecture ledger", path: "todos/active/architecture.md", kind: "planning", record_state: "active", local_stage: "unknown" },
-      { id: "completed-todo", title: "Published MVP task", path: "todos/completed/published.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
-      { id: "second-done", title: "Second published task", path: "todos/completed/second.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
-      { id: "third-done", title: "Third published task", path: "todos/completed/third.md", kind: "executable", record_state: "completed", local_stage: "Production-Ready" },
+      { id: "viewer-ledger", title: "Builder genesis ledger", path: "todos/completed/builder-genesis.md", kind: "planning", record_state: "completed", ...unverifiedStage() },
+      { id: "architecture-ledger", title: "Architecture ledger", path: "todos/active/architecture.md", kind: "planning", record_state: "active", ...unverifiedStage() },
+      { id: "completed-todo", title: "Published MVP task", path: "todos/completed/published.md", kind: "executable", record_state: "completed", ...verifiedStage("Completed", "Production-Ready") },
+      { id: "second-done", title: "Second published task", path: "todos/completed/second.md", kind: "executable", record_state: "completed", ...verifiedStage("Completed", "Production-Ready") },
+      { id: "third-done", title: "Third published task", path: "todos/completed/third.md", kind: "executable", record_state: "completed", ...verifiedStage("Completed", "Production-Ready") },
     ] },
     { id: "r-04", name: "Project UI and real Roadmap", description: "Project pages", todos: [
-      { id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", local_stage: "Local-Implemented", work_state: "blocked" },
-      { id: "promoted-todo", title: "Promotion pending task", path: "todos/promotion_lane/promoted.md", kind: "executable", record_state: "promotion_lane", local_stage: "Lane-Promoted" },
+      { id: "roadmap-runtime", title: "Project Roadmap connection", path: "todos/active/roadmap_runtime_connection.md", kind: "executable", record_state: "active", ...verifiedStage("Local-Implemented", "Local-Implemented", true), work_state: "blocked", objective: "Exact objective from Foundation.", objective_state: "complete", next_step: "Exact authored step.", next_step_state: "complete" },
+      { id: "promoted-todo", title: "Promotion pending task", path: "todos/promotion_lane/promoted.md", kind: "executable", record_state: "promotion_lane", ...verifiedStage("Promotion-Lane", "Lane-Promoted") },
     ] },
   ] },
   { id: "e-02", name: `${projectID} Other developers`, description: "Local projects for other developers", releases: [] },
   { id: "e-03", name: `${projectID} Remote APIs`, description: "Remote Delphi APIs", releases: [] },
   { id: "e-04", name: `${projectID} Internal service`, description: "Internal company service", releases: [
-    { id: "r-05", name: "Company and Project Schema Study", description: "Initial planning record", todos: [{ id: "company-schema", title: "Company and Project Schema Study", path: "todos/active/company_project_schema_study.md", kind: "planning", record_state: "active", local_stage: "Pending" }] },
+    { id: "r-05", name: "Company and Project Schema Study", description: "Initial planning record", todos: [{ id: "company-schema", title: "Company and Project Schema Study", path: "todos/active/company_project_schema_study.md", kind: "planning", record_state: "active", ...verifiedStage("Planning", "Pending") }] },
   ] },
   { id: "e-05", name: `${projectID} External service`, description: "External service", releases: [] },
 ] }; }
 function detail(companyID: string, projectID: string, documents: { path: string; url: string }[] = []) { return { consumer_readiness: "ready", company_id: companyID, project_id: projectID, snapshot_fingerprint: fingerprint, project_sha: "c".repeat(40),
   artifacts: [{ id: "system", kind: "design_system", name: "Design System", state: "available", entry_point: "design/system/examples.html", files: ["design/system/design-system.json"] },
     { id: "landing", kind: "landing", name: "Landing", state: "available", entry_point: "design/landing/index.html" },
-    { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/catalog.json", files: ["roadmap/catalog.json", "todos/active/roadmap_runtime_connection.md", "todos/completed/published.md", "todos/completed/second.md", "todos/completed/third.md", "todos/promotion_lane/promoted.md"] }], roadmap: roadmap(projectID),
+    { id: "roadmap", kind: "roadmap", name: "Roadmap", state: "available", entry_point: "roadmap/projection.json", files: ["roadmap/projection.json"] }], roadmap: roadmap(projectID),
   overview: { schema_version: "1", tagline: "Product direction", summary: `Overview for ${projectID}`, desktop_alt: "Desktop Project view", mobile_alt: "Mobile Project view", media: { desktop: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/desktop.png`, mobile: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/mobile.png`, proposal: `/snapshot/${companyID}/${projectID}/${fingerprint}/project_overview/proposal.png` }, sections: {
     problem: { heading: "The problem", body: "Problem evidence", points: [] },
     proposal: { heading: "The proposal", body: "Proposal evidence", points: [], image_alt: "Admitted Builder document view" },
@@ -51,39 +58,184 @@ function detail(companyID: string, projectID: string, documents: { path: string;
   } }; }
 function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
+  if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
   if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": documentResponse?.fingerprint || fingerprint }), text: async (): Promise<string> => documentResponse?.body || "" };
   if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async (): Promise<string> => todoResponse };
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
 })); }
+function mockProjectDetail(saved: ReturnType<typeof detail>, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+  const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
+  if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
+  if (url.pathname === "/api/local-preview") return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+  if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async () => todoResponse };
+  return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+})); }
 beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
-  it("keeps one live detail request during visible-tab refresh", async () => {
+  it("loads Mongo Roadmap when the Foundation Reader returns unavailable", async () => {
+    const registryRoadmap = roadmap("builder");
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ diagnostic: "Reader unavailable" }) };
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Reader unavailable/)).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/roadmap?"))).toBe(true);
+  });
+
+  it("shows Registry TEACH without falling back to an available Foundation Roadmap", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: false, status: 503, json: async () => ({ error: "roadmap_api_unavailable" }) };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: true, json: async () => detail("belluga", "builder") };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText("TEACH: Mongo Roadmap indisponível. Verifique a Registry API e recarregue; não é usado snapshot Foundation como fallback.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Project UI and real Roadmap/ })).not.toBeInTheDocument();
+  });
+
+  it("reads a Planning Backlog TODO from its exact Mongo revision without approval or Reader", async () => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.backlog.todos.push({ id: "schema-study", title: "Schema study", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Inspect schema", objective_state: "complete", next_step: "Review fields", next_step_state: "complete", ...verifiedStage("Planning") } as typeof registryRoadmap.backlog.todos[number]);
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: "a".repeat(64), todo: { id: "schema-study", project_id: "builder", revision: 0, title: "Schema study", objective: "Inspect schema", next_exact_step: "Review fields", stage: "Planning", sections: [{ key: "objective", title: "Objective", body_markdown: "Inspect the typed schema fields.", position: 0 }] } };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ diagnostic: "Reader unavailable" }) };
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=schema-study");
+    render(<Projects />);
+    expect(await screen.findByText("Inspect the typed schema fields.")).toBeInTheDocument();
+    const exactCall = fetcher.mock.calls.map(([input]) => new URL(String(input), location.origin)).find((url) => url.searchParams.has("todo_id"));
+    expect(exactCall?.searchParams.get("todo_revision")).toBe("0");
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+
+  it("opens a Mongo Backlog TODO whose Roadmap summary has no Foundation path", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false, media: "(max-width: 1200px)", onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })));
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.backlog.todos.push({ id: "schema-study", title: "Schema study", kind: "executable", todo_revision: 0, record_state: "active", objective: "Inspect schema", objective_state: "complete", next_step: "Review fields", next_step_state: "complete", ...verifiedStage("Planning") } as unknown as typeof registryRoadmap.backlog.todos[number]);
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"a".repeat(64)}`, todo: { id: "schema-study", project_id: "builder", revision: 0, title: "Schema study", objective: "Typed schema objective", next_exact_step: "Review fields", stage: "Planning", sections: [] } };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ diagnostic: "Reader unavailable" }) };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog&todo_id=schema-study");
+    render(<Projects />);
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByText("Typed schema objective")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Schema study" })).toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+
+  it("does not start another detail request on tab return or elapsed time", async () => {
+    const interval = vi.spyOn(window, "setInterval");
     let resolveDetail!: (value: unknown) => void;
     const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
     const detailCalls = vi.fn();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
-      if (url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
-    expect(screen.getByRole("status")).toHaveTextContent("Extraindo dados dos seus TODOs");
-    fireEvent(document, new Event("visibilitychange"));
+    expect(screen.getByRole("status")).toHaveTextContent("A leitura da Foundation publicada está em andamento");
+    for (let index = 0; index < 10; index++) fireEvent(document, new Event("visibilitychange"));
     expect(detailCalls).toHaveBeenCalledTimes(1);
     resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
     expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    fireEvent(document, new Event("visibilitychange"));
+    expect(detailCalls).toHaveBeenCalledTimes(1);
+    expect(interval.mock.calls.some(([, delay]) => delay === 30_000)).toBe(false);
+    interval.mockRestore();
+  });
+  it("restarts elapsed time for each retry and Project selection", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    const requests = new Map<string, ((value: unknown) => void)[]>();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") });
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
+      if (url.pathname === "/api/local-preview") return new Promise((resolve) => {
+        const projectID = url.searchParams.get("project_id")!;
+        requests.set(projectID, [...(requests.get(projectID) || []), resolve]);
+      });
+      return Promise.resolve({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme });
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(requests.get("builder")).toHaveLength(1);
+    await act(async () => { vi.advanceTimersByTime(5_000); });
+    expect(screen.getByText("Aguardando há 5 s")).toBeInTheDocument();
+    await act(async () => { requests.get("builder")![0]({ ok: false, status: 500 }); await Promise.resolve(); });
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(requests.get("builder")).toHaveLength(2);
+    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(2_000); });
+    expect(screen.getByText("Aguardando há 2 s")).toBeInTheDocument();
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(requests.get("boora")).toHaveLength(1);
+    expect(screen.getByRole("region", { name: "Abrindo projeto" })).toHaveTextContent("Belluga / Bóora!");
+    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
+    await act(async () => { vi.advanceTimersByTime(1_000); });
+    expect(screen.getByText("Aguardando há 1 s")).toBeInTheDocument();
+    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
+    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
+    cleanup();
+    vi.useRealTimers();
+  });
+  it("keeps the loaded Project detail through page, brand and invalid-link recovery navigation", async () => {
+    const fetcher = vi.mocked(fetch);
+    const detailCalls = () => fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/local-preview?company_id=")).length;
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
+    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
+    expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&page=missing"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    fireEvent.click(screen.getByRole("link", { name: "Back to Overview" }));
+    expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype%3Ademo"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    fireEvent.click(screen.getByRole("link", { name: "Open Prototype" }));
+    expect(await screen.findByRole("heading", { name: "Prototypes" })).toBeInTheDocument();
+    expect(detailCalls()).toBe(1);
   });
   it("shows normal saved review and visual-origin observations with their snapshot time", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     const status = await screen.findByRole("region", { name: "Snapshot status" });
-    expect(status).toHaveTextContent("Published source · current read");
+    expect(status).toHaveTextContent("Published source · loaded revision");
     expect(status).toHaveTextContent("Foundation cccccccccccc");
     expect(status).toHaveTextContent("Observations saved 2026-10-15T12:00:00Z");
     expect(status).toHaveTextContent("Landing reviewCurrent against reviewed source (match)");
@@ -100,6 +252,7 @@ describe("single root Project experience", () => {
     };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
     }));
@@ -117,6 +270,7 @@ describe("single root Project experience", () => {
     saved.snapshot_observations.knowledge_status.landing = { status: "review_required", reason_code: "source_changed" };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
     }));
@@ -132,6 +286,7 @@ describe("single root Project experience", () => {
     saved.snapshot_observed_at = "2026-10-15T12:34:56.123456789Z";
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
     }));
@@ -149,6 +304,7 @@ describe("single root Project experience", () => {
     saved.snapshot_observed_at = timestamp;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
     }));
@@ -161,33 +317,218 @@ describe("single root Project experience", () => {
     expect(status).toHaveTextContent("Visual originUnavailable");
     expect(within(status).getByRole("status")).toBeInTheDocument();
   });
-  it("opens the same admitted TODO from Release and renders only authored sections", async () => {
+  it("does not use a Foundation Markdown TODO as current Roadmap content", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-04");
     render(<Projects />);
-    fireEvent.click(await screen.findByRole("button", { name: /Project Roadmap connection/ }));
+    const invokingTODO = await screen.findByRole("button", { name: /Project Roadmap connection/ });
+    fireEvent.click(invokingTODO);
     expect(location.search).toContain("todo_id=roadmap-runtime");
-    expect(await screen.findByText("Exact objective from Foundation.")).toBeInTheDocument();
-    expect(screen.getByText("Exact authored step.")).toBeInTheDocument();
-    expect(document.querySelector(".todo-work")).toHaveTextContent("Exact acceptance criterion.");
-    expect(screen.getByText("Review the source.")).toBeInTheDocument();
-    expect(screen.queryByText("Nenhum bloqueio declarado no arquivo.")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText(/Contrato completo/));
-    expect(document.querySelector(".todo-source pre")?.textContent).toBe(todoMarkdown);
+    const dialog = await screen.findByRole("dialog", { name: "Prévia do TODO" });
+    const closePreview = within(dialog).getByRole("button", { name: "Fechar prévia" });
+    const openFull = within(dialog).getByRole("button", { name: /Abrir TODO completo/ });
+    expect(closePreview).toHaveFocus();
+    invokingTODO.focus();
+    expect(closePreview).toHaveFocus();
+    fireEvent.click(openFull);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByText("Exact objective from Foundation.")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+  it("uses the Roadmap revision for a migrated exact read and surfaces stale TEACH", async () => {
+    const saved = detail("belluga", "builder");
+    const selected = { id: "builder-company-tenant-mongo-registry", title: "Mongo registry", path: "todos/active/registry.md", kind: "executable" as const, record_state: "active", todo_revision: 0, objective: "Registry objective", objective_state: "complete" as const, next_step: "Next", next_step_state: "complete" as const, ...verifiedStage("In-Progress") };
+    saved.roadmap!.epics[0].releases[0].todos.push(selected);
+    const calls: URL[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) {
+        calls.push(url);
+        return { ok: false, json: async () => ({ teach: "TEACH: TODO revision is now 1; reload the Project Roadmap." }) };
+      }
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+      return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=builder-company-tenant-mongo-registry");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: TODO revision is now 1");
+    expect(calls).toHaveLength(1);
+    expect(calls[0].searchParams.get("todo_revision")).toBe("0");
   });
   it("rejects a TODO ID outside its Release before requesting source", async () => {
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=roadmap-runtime");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&epic_id=e-01&release_id=r-01&todo_id=backlog%3Atodos%2Factive%2Fevil.md&path=todos%2Factive%2Fbacklog-item.md");
     render(<Projects />);
     expect(await screen.findByRole("alert")).toHaveTextContent("TODO indisponível");
     expect(screen.queryByText("Exact objective from Foundation.")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("backlog-item.md"))).toBe(false);
   });
-  it("omits absent authored sections on a direct TODO link", async () => {
+  it("requires exact Mongo revision before reading a direct TODO link", async () => {
     mockFetch([], undefined, "# Project Roadmap connection\n\n## Objective\nOnly authored objective.\n");
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=roadmap-runtime");
     render(<Projects />);
-    expect(await screen.findByText("Only authored objective.")).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Scope" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Definition of Done" })).not.toBeInTheDocument();
-    expect(document.querySelector(".todo-source pre")?.textContent).toBe("# Project Roadmap connection\n\n## Objective\nOnly authored objective.\n");
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByText("Only authored objective.")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+  it("does not read a Foundation-only Primary module for current Roadmap TODO detail", async () => {
+    mockFetch([], undefined, "# Project Roadmap connection\n\n## Delivery Status Canon\n- **Primary module:** `modules/roadmap.md`.\n");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=roadmap-runtime");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByRole("heading", { name: "Primary module" })).not.toBeInTheDocument();
+  });
+  it("ignores an exact Mongo TODO read that resolves after switching Projects", async () => {
+    let resolveTODO!: (response: unknown) => void;
+    const mongoRoadmap = roadmap("builder");
+    mongoRoadmap.epics[0].releases[0].todos.push({ id: "mongo-late", title: "Delayed Mongo TODO", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Delayed objective", objective_state: "complete", next_step: "Review", next_step_state: "complete", ...verifiedStage("Planning") } as typeof mongoRoadmap.backlog.todos[number]);
+    const fetcher = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) return new Promise((resolve) => { resolveTODO = resolve; });
+      if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => mongoRoadmap });
+      if (url.pathname === "/api/local-preview") return Promise.resolve({ ok: true, json: async () => url.searchParams.has("project_id") ? detail("belluga", url.searchParams.get("project_id")!) : { companies, projects } });
+      return Promise.resolve({ ok: true, json: async () => theme });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=mongo-late");
+    render(<Projects />);
+    await waitFor(() => expect(resolveTODO).toBeTypeOf("function"));
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    expect(await screen.findByText("Overview for boora")).toBeInTheDocument();
+    await act(async () => { resolveTODO({ ok: true, json: async () => ({ company_id: "belluga", project_id: "builder", todo_revision: 0, todo: { id: "mongo-late", revision: 0, title: "Delayed Mongo TODO", objective: "Delayed objective", next_exact_step: "Review", stage: "Planning", sections: [] } }) }); });
+    expect(screen.queryByText("Delayed objective")).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+  it("opens a path-bound Backlog preview by keyboard but requires Mongo revision for full detail", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, media: "(max-width: 1200px)", onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })));
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog");
+    const fetchSpy = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => detail("belluga", url.searchParams.get("project_id") || "builder").roadmap });
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
+      if (url.pathname === "/api/local-preview") return Promise.resolve({ ok: true, json: async () => detail("belluga", "builder") });
+      if (url.pathname.endsWith("/design/system/design-system.json")) return Promise.resolve({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme });
+      return Promise.resolve({ ok: true, json: async () => theme });
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const user = userEvent.setup();
+    render(<Projects />);
+    const first = await screen.findByRole("button", { name: /Unassigned active task/ });
+    first.focus();
+    await user.keyboard("{Enter}");
+    fireEvent.click(screen.getByRole("button", { name: /Second unassigned task/ }));
+    expect(screen.getByLabelText("Prévia do TODO")).toHaveFocus();
+    expect(fetchSpy.mock.calls.filter(([input]) => new URL(String(input), location.origin).searchParams.has("todo_id"))).toHaveLength(0);
+    expect(location.search).toContain("page=backlog");
+    expect(location.search).toContain("backlog%3Atodos%2Factive%2Fbacklog-item-two.md");
+    await user.click(screen.getByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByText("Current backlog objective")).not.toBeInTheDocument();
+    expect(location.search).toContain("backlog%3Atodos%2Factive%2Fbacklog-item-two.md");
+    expect(location.search).toContain("page=todo");
+    expect(fetchSpy.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+    await user.click(within(screen.getByRole("navigation", { name: "Project pages" })).getByRole("button", { name: "Backlog" }));
+    expect(location.search).toContain("page=backlog");
+    expect(screen.getByRole("region", { name: "Project Backlog" })).toBeInTheDocument();
+  });
+  it("does not render a Foundation-only detached TODO as current Roadmap content", async () => {
+    const saved = detail("belluga", "builder");
+    saved.roadmap.backlog.todos[0].id = "t-preserved-history";
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=t-preserved-history");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByRole("heading", { name: "Unassigned active task" })).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+  it("opens nested Backlog folders and keeps authored README guidance in the preview without Foundation TODO reads", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true, media: "(max-width: 1200px)", onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() })));
+    const saved = detail("belluga", "builder");
+    const nestedPath = "todos/active/platform/runtime/cache.md";
+    saved.roadmap.backlog.todos = [];
+    saved.roadmap.backlog.folders = [{
+      name: "Platform", path: "todos/active/platform", description: "README: platform-wide authored guidance.", todos: [], folders: [{
+        name: "Runtime", path: "todos/active/platform/runtime", description: "README: runtime-specific authored guidance.",
+        todos: [{ id: `backlog:${nestedPath}`, title: "Cache runtime task", path: nestedPath, kind: "executable" as const, record_state: "active", ...verifiedStage("Planning", "Pending") }], folders: [],
+      }],
+    }] as unknown as typeof saved.roadmap.backlog.folders;
+    const roadmapArtifact = saved.artifacts.find((artifact) => artifact.kind === "roadmap")!;
+    roadmapArtifact.files = [...(roadmapArtifact.files || []), "todos/active/platform/README.md", "todos/active/platform/runtime/README.md", nestedPath];
+    mockProjectDetail(saved, "# Cache runtime task\n\n## Objective\nAuthored nested objective.\n");
+    const user = userEvent.setup();
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog");
+    render(<Projects />);
+    await screen.findByRole("heading", { name: "Backlog", level: 1 });
+
+    const rootDetails = screen.getByText("Platform").closest("details")!;
+    const rootSummary = within(rootDetails).getByText("Platform").closest("summary")!;
+    rootSummary.focus();
+    expect(rootSummary).toHaveFocus();
+    if (!rootDetails.open) await user.keyboard("{Enter}");
+    // jsdom does not implement the browser's native summary Enter activation.
+    if (!rootDetails.open) fireEvent.click(rootSummary);
+    expect(rootDetails).toHaveAttribute("open");
+    expect(within(rootDetails).getByText("README: platform-wide authored guidance.")).toBeInTheDocument();
+    const nestedDetails = within(rootDetails).getByText("Runtime").closest("details")!;
+    const nestedSummary = within(nestedDetails).getByText("Runtime").closest("summary")!;
+    nestedSummary.focus();
+    expect(nestedSummary).toHaveFocus();
+    await user.keyboard("{Enter}");
+    if (!nestedDetails.open) fireEvent.click(nestedSummary);
+    expect(nestedDetails).toHaveAttribute("open");
+    expect(within(nestedDetails).getByText("README: runtime-specific authored guidance.")).toBeInTheDocument();
+    await user.click(within(nestedDetails).getByRole("button", { name: /Cache runtime task/ }));
+    expect(screen.queryByText("Authored nested objective.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Este item não possui uma revisão exata no Mongo Roadmap");
+    expect(screen.queryByText("Authored nested objective.")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+    expect(location.search).toContain(encodeURIComponent(`backlog:${nestedPath}`));
+  });
+  it("keeps an available empty plan separate from executable Backlog work", async () => {
+    const saved = detail("belluga", "builder");
+    saved.roadmap.epics = [];
+    saved.roadmap.focus_release_id = "";
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+
+    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
+    expect(screen.getByText("Nenhum Epic ou Release planejado.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Sem plano de releases" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Unassigned active task/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Releases for selected Epic" })).not.toHaveTextContent("Unassigned active task");
+    fireEvent.click(screen.getByRole("button", { name: "Backlog" }));
+    expect(await screen.findByRole("button", { name: /Unassigned active task/ })).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+  it("lists every admitted unclassified path for an invalid plan without assigning membership", async () => {
+    const saved = detail("belluga", "builder");
+    const admittedPaths = ["todos/active/uncategorized-one.md", "todos/active/uncategorized-two.md", "todos/active/nested/uncategorized-three.md"];
+    saved.roadmap.epics = [];
+    saved.roadmap.focus_release_id = "";
+    saved.roadmap.backlog.todos = [];
+    saved.roadmap.backlog.folders = [];
+    saved.roadmap.unclassified = admittedPaths.map((path, index) => ({ path, reason: `Invalid plan assignment ${index + 1}.` })) as unknown as typeof saved.roadmap.unclassified;
+    saved.roadmap.diagnostics = [{ code: "invalid_plan", path: "todos/active/roadmap.md", message: "Planning metadata is inconsistent." }] as unknown as typeof saved.roadmap.diagnostics;
+    const roadmapArtifact = saved.artifacts.find((artifact) => artifact.kind === "roadmap")!;
+    roadmapArtifact.state = "available";
+    roadmapArtifact.files = [...(roadmapArtifact.files || []), ...admittedPaths, "todos/active/roadmap.md"];
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+
+    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
+    const unclassified = screen.getByRole("region", { name: "TODOs sem classificação" });
+    admittedPaths.forEach((path, index) => {
+      expect(within(unclassified).getByText(path)).toBeInTheDocument();
+      expect(within(unclassified).getByText(`Invalid plan assignment ${index + 1}.`)).toBeInTheDocument();
+    });
+    expect(within(unclassified).getAllByRole("listitem")).toHaveLength(admittedPaths.length);
+    expect(screen.getByRole("region", { name: "Roadmap diagnostics" })).toHaveTextContent("Planning metadata is inconsistent.");
+    expect(screen.getByRole("group", { name: "Releases for selected Epic" })).not.toHaveTextContent("uncategorized");
+    expect(screen.queryByRole("button", { name: /uncategorized/ })).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".backlog-todo")).toHaveLength(0);
   });
   it("opens a Project-bound Release from Roadmap and returns to the same focus", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
@@ -221,6 +562,19 @@ describe("single root Project experience", () => {
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByRole("alert")).toHaveTextContent("Release indisponível");
   });
+  it("keeps superseded history visible without counting it as delivered work", async () => {
+    const saved = detail("belluga", "builder");
+    const historical = { ...saved.roadmap.epics[0].releases[0].todos[2], id: "old-plan", title: "Replaced historical plan", path: "todos/completed/old.md", ...unverifiedStage("unknown", "") };
+    Object.assign(historical, { historical_disposition: "Superseded", disposition_reason: "Replaced by a narrower task.", disposition_state: "valid" });
+    saved.roadmap.epics[0].releases[0].todos.push(historical as never);
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(screen.getByRole("region", { name: "Histórico não entregue" })).toHaveTextContent("Replaced historical plan");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Replaced historical plan");
+  });
   it("selects Company and Project before entering its dedicated page", async () => {
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Choose a company to explore its projects." })).toBeInTheDocument();
@@ -238,7 +592,7 @@ describe("single root Project experience", () => {
   it("applies Project Design System roles to the whole Project page", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
-    await waitFor(() => expect(document.querySelector(".projects-project")).toBeInTheDocument());
+    await screen.findByText("Overview for builder");
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#32bbdd");
     expect(screen.getByText("Overview for builder")).toBeInTheDocument();
   });
@@ -247,6 +601,7 @@ describe("single root Project experience", () => {
     saved.artifacts[0] = { ...saved.artifacts[0], state: "invalid" };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
       return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
@@ -291,12 +646,27 @@ describe("single root Project experience", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
-      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, overview: undefined }) }; }
+      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, artifacts: [...result.artifacts, { id: "overview", kind: "overview", name: "Project Overview", state: "pending", diagnostic: "Project Overview is not available in the published Foundation snapshot. TEACH: request targeted Overview status." }], overview: undefined }) }; }
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Project Overview not available yet" })).toBeInTheDocument();
     expect(screen.queryByText("Summary for builder")).not.toBeInTheDocument();
+    expect(screen.getByText(/TEACH: request targeted Overview status/)).toBeInTheDocument();
+    const landingLink = screen.getByRole("link", { name: /Ver landing independente/ });
+    expect(landingLink).toHaveAttribute("href", `/snapshot/belluga/builder/${fingerprint}/design/landing/index.html`);
+    expect(landingLink).toHaveAttribute("target", "_blank");
+  });
+  it("labels missing hero media against the loaded Overview, not a continuously current source", async () => {
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (url.searchParams.has("project_id")) { const result = detail("belluga", "builder"); return { ok: true, json: async () => ({ ...result, overview: { ...result.overview, media: {} } }) }; }
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    render(<Projects />);
+    expect(await screen.findByText(/loaded Overview/)).toBeInTheDocument();
   });
   it("shows one status column and derives Release status without counting ledgers", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
@@ -324,13 +694,13 @@ describe("single root Project experience", () => {
     expect(within(completedTodo!).getByText("Local record: completed")).toBeInTheDocument();
     expect(within(completedTodo!).getByText("—")).toBeInTheDocument();
     const readyTodo = screen.getByText(/Published MVP task/).closest("tr");
-    expect(within(readyTodo!).getByText("Production-Ready")).toHaveClass("done");
+    expect(within(readyTodo!).getByText("Concluído")).toHaveClass("done");
     fireEvent.click(screen.getByRole("button", { name: /Project UI and real Roadmap/ }));
     const localTodo = screen.getByText(/Project Roadmap connection/).closest("tr");
     expect(localTodo).not.toBeNull();
-    expect(within(localTodo!).getByText("Blocked · Local-Implemented")).toHaveClass("blocked");
+    expect(within(localTodo!).getByText("Bloqueado · Implementado localmente")).toHaveClass("blocked");
     const promotedTodo = screen.getByText(/Promotion pending task/).closest("tr");
-    expect(within(promotedTodo!).getByText("Lane-Promoted")).toHaveClass("validation");
+    expect(within(promotedTodo!).getByText("Em promoção")).toHaveClass("validation");
     fireEvent.click(screen.getByRole("button", { name: /builder Internal service/ }));
     await waitFor(() => expect(screen.getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Company and Project Schema Study"));
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Company and Project Schema Study")).toBeInTheDocument();
@@ -341,6 +711,42 @@ describe("single root Project experience", () => {
     expect(screen.getByText("No Releases defined yet.")).toBeInTheDocument();
     expect(document.querySelector(".roadmap-context")).toHaveTextContent("Sem Release neste épico");
   }, 15000);
+  it("uses one canonical label map and shows per-TODO TEACH from Roadmap", async () => {
+    const saved = detail("belluga", "builder");
+    const stages = [
+      ["Planning", "Planejamento", "planned"],
+      ["Implementation-Approval-Pending", "Aguardando aprovação", "approval"],
+      ["Ready-for-Implementation", "Pronto para implementar", "ready"],
+      ["In-Progress", "Em andamento", "active"],
+      ["Local-Implemented", "Implementado localmente", "implemented"],
+      ["Promotion-Lane", "Em promoção", "validation"],
+      ["Completed", "Concluído", "done"],
+    ] as const;
+    const projected: unknown[] = stages.map(([stage], index) => ({
+      id: `canonical-${index}`, title: `Canonical stage ${index}`, path: `todos/active/canonical-${index}.md`,
+      kind: "executable" as const, record_state: "active", ...verifiedStage(stage), objective_state: "absent" as const, next_step_state: "absent" as const,
+    }));
+    projected.push({
+      id: "needs-teach", title: "Unverified status TODO", path: "todos/active/unverified.md", kind: "executable", record_state: "active",
+      ...unverifiedStage("Production-Ready", "TEACH: review this stage before use."), objective_state: "absent", next_step_state: "absent",
+    });
+    (saved.roadmap.epics[0].releases[1] as unknown as { todos: unknown[] }).todos = projected;
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-04");
+    render(<Projects />);
+    await screen.findByRole("heading", { name: "Project UI and real Roadmap", level: 1 });
+    await screen.findByText("Canonical stage 0");
+    for (const [stage, label, tone] of stages) {
+      const row = screen.getByText(`Canonical stage ${stages.findIndex(([id]) => id === stage)}`).closest<HTMLElement>(".release-work-row")!;
+      expect(within(row).getByText(label)).toHaveClass(tone);
+    }
+    const unverified = screen.getByText("Unverified status TODO").closest<HTMLElement>(".release-work-row")!;
+    expect(within(unverified).getByText("Status indisponível")).toHaveClass("unknown");
+    expect(within(unverified).getByText("TEACH: review this stage before use.")).toBeInTheDocument();
+    fireEvent.click(within(unverified).getByRole("button", { name: /Unverified status TODO/ }));
+    const preview = within(await screen.findByRole("dialog", { name: "Prévia do TODO" })).getByRole("complementary", { name: "Prévia do TODO" });
+    expect(within(preview).getByText("TEACH: review this stage before use.")).toBeInTheDocument();
+  });
   it("uses the same admitted Epic and Release projection in Overview", async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
@@ -365,14 +771,25 @@ describe("single root Project experience", () => {
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("No Releases defined yet.");
   });
   it.each([
-    { name: "planned", todos: [{ kind: "executable", local_stage: "Pending" }], expected: "Planejada" },
-    { name: "mixed", todos: [{ kind: "executable", local_stage: "Production-Ready" }, { kind: "executable", local_stage: "Pending" }], expected: "Em andamento" },
-    { name: "unknown", todos: [{ kind: "executable", local_stage: "unknown" }, { kind: "executable", local_stage: "Production-Ready" }], expected: "Status indisponível" },
-    { name: "planning-only", todos: [{ kind: "planning", local_stage: "Production-Ready" }], expected: "Status indisponível" },
-    { name: "blocked ready", todos: [{ kind: "executable", local_stage: "Production-Ready", work_state: "blocked" }], expected: "Bloqueada" },
+    { name: "planned", todos: [{ kind: "executable", ...verifiedStage("Planning") }], expected: "Planejada" },
+    { name: "approval pending is not started", todos: [{ kind: "executable", ...verifiedStage("Implementation-Approval-Pending") }], expected: "Planejada" },
+    { name: "ready is not started", todos: [{ kind: "executable", ...verifiedStage("Ready-for-Implementation") }], expected: "Planejada" },
+    { name: "first work is started", todos: [{ kind: "executable", ...verifiedStage("In-Progress") }], expected: "Em andamento" },
+    { name: "mixed", todos: [{ kind: "executable", ...verifiedStage("Completed") }, { kind: "executable", ...verifiedStage("Planning") }], expected: "Em andamento" },
+    { name: "unknown", todos: [{ kind: "executable", ...unverifiedStage() }, { kind: "executable", ...verifiedStage("Completed") }], expected: "Status indisponível" },
+    { name: "invalid qualifier is not delivered", todos: [{ kind: "executable", ...verifiedStage("Completed"), qualifier_state: "unverified", qualifier_teach: "TEACH: correct the qualifier" }], expected: "Status indisponível" },
+    { name: "planning-only", todos: [{ kind: "planning", ...verifiedStage("Completed") }], expected: "Status indisponível" },
+    { name: "blocked ready", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true) }], expected: "Bloqueada" },
+    { name: "invalid blocked qualifier remains unknown", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true), qualifier_state: "unverified", qualifier_teach: "TEACH: correct the qualifier" }], expected: "Status indisponível" },
+    { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Entregue" },
   ])("derives $name Release status without a second delivery field", async ({ todos, expected }) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") {
+        const saved = detail("belluga", "builder");
+        const members = todos.map((todo, index) => ({ id: `status-${index}`, title: `Status TODO ${index}`, path: `todos/active/status-${index}.md`, record_state: "active", ...todo }));
+        return { ok: true, json: async () => ({ ...saved.roadmap, epics: saved.roadmap.epics.map((epic) => ({ ...epic, releases: epic.releases.map((release) => release.id === "r-01" ? { ...release, todos: members } : release) })) }) };
+      }
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       const saved = detail("belluga", "builder");
@@ -383,8 +800,33 @@ describe("single root Project experience", () => {
     render(<Projects />);
     const release = await screen.findByRole("button", { name: /First local viewer/ });
     expect(release).toHaveTextContent(expected);
-    expect(release).not.toHaveTextContent("Entregue");
     expect(screen.queryByRole("columnheader", { name: "ENTREGA" })).not.toBeInTheDocument();
+  });
+  it("updates the derived Release status only after a manual page reload", async () => {
+    let roadmapReads = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") {
+        const saved = detail("belluga", "builder");
+        roadmapReads++;
+        saved.roadmap.epics[0].releases[0].todos = [{ id: "work", title: "Published work", path: "todos/active/work.md", kind: "executable", record_state: "active", ...(roadmapReads > 1 ? verifiedStage("Local-Implemented") : verifiedStage("Planning", "Pending")) }];
+        return { ok: true, json: async () => saved.roadmap };
+      }
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      const saved = detail("belluga", "builder");
+      return { ok: true, json: async () => saved };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    const mounted = render(<Projects />);
+    expect(await screen.findByRole("button", { name: /First local viewer/ })).toHaveTextContent("Planejada");
+    fireEvent(document, new Event("visibilitychange"));
+    expect(roadmapReads).toBe(1);
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Planejada");
+    mounted.unmount();
+    render(<Projects />);
+    await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Em andamento"));
+    expect(roadmapReads).toBe(2);
   });
   it("focuses the first incomplete Release and shares manual Roadmap focus by URL", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
@@ -431,6 +873,7 @@ describe("single root Project experience", () => {
   it("shows an honest Roadmap state when catalog data is absent", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: false, status: 503, json: async () => ({ error: "roadmap_api_unavailable" }) };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       const saved = detail("belluga", "builder");
@@ -438,13 +881,25 @@ describe("single root Project experience", () => {
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByText(/Roadmap catalog is not available yet/)).toBeInTheDocument();
+    expect(await screen.findByText(/TEACH: Mongo Roadmap indisponível/)).toBeInTheDocument();
     expect(screen.queryByText(/Local projects/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Project UI and real Roadmap/)).not.toBeInTheDocument();
+  });
+  it("hard-cuts over v2 Roadmap and keeps the Project Overview navigable", async () => {
+    const saved = detail("belluga", "builder");
+    saved.roadmap.schema_version = "builder-roadmap-projection-v2";
+    mockProjectDetail(saved);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText("Project Roadmap data is not available in this saved snapshot.")).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Project pages" })).getByRole("button", { name: "Overview" }));
+    expect(await screen.findByText("Product direction")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Ver landing independente/ })).toBeInTheDocument();
   });
   it("keeps the Overview honest when its Roadmap catalog is absent", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: false, status: 503, json: async () => ({ error: "roadmap_api_unavailable" }) };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       const saved = detail("belluga", "builder");
@@ -452,15 +907,18 @@ describe("single root Project experience", () => {
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
-    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Roadmap catalog is not available yet"));
-    const notice = screen.getByRole("status");
-    expect(notice).toHaveClass("project-notice");
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Mongo Roadmap indisponível");
     expect(screen.queryByText(/Local projects|Project UI and real Roadmap/)).not.toBeInTheDocument();
     expect(screen.queryByText(/demo|delivered|shipped/i)).not.toBeInTheDocument();
   });
   it("resets selected Epic and Project-bound Roadmap data when the Project changes", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") {
+        const projectID = url.searchParams.get("project_id") || "builder";
+        const saved = detail("belluga", projectID);
+        return { ok: true, json: async () => projectID === "boora" ? { ...saved.roadmap, epics: [] } : saved.roadmap };
+      }
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       const projectID = url.searchParams.get("project_id")!;
@@ -475,8 +933,8 @@ describe("single root Project experience", () => {
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Company and Project Schema Study")).toBeInTheDocument();
     history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=roadmap");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByText("Roadmap catalog is not available for this Project.")).toBeInTheDocument();
-    expect(screen.queryByRole("group", { name: "Select Epic" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Nenhum Epic ou Release planejado.")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("Nenhum Epic ou Release planejado.");
     expect(screen.queryByText(/builder Local projects|builder Internal service|Company and Project Schema Study|Project UI and real Roadmap|Project Roadmap connection/)).not.toBeInTheDocument();
   });
   it("shows the honest empty Documents state without an empty index column", async () => {
@@ -503,7 +961,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Document headings" })).toHaveTextContent("Decisions");
   });
-  it("replaces an open document only after the refreshed Foundation revision is loaded", async () => {
+  it("replaces an open document only after a manual page reload reads the new Foundation revision", async () => {
     const nextFingerprint = "b".repeat(64);
     const path = "modules/project_knowledge_viewer_module.md";
     const firstURL = `/snapshot/belluga/builder/${fingerprint}/${path}`;
@@ -525,12 +983,17 @@ describe("single root Project experience", () => {
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
+    const mounted = render(<Projects />);
     fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(await screen.findByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
     fireEvent(document, new Event("visibilitychange"));
+    expect(detailReads).toBe(1);
+    expect(screen.getByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
+    mounted.unmount();
+    render(<Projects />);
     await waitFor(() => expect(detailReads).toBe(2));
     expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
     expect(screen.getByRole("status")).toHaveTextContent("Loading document");
     await act(async () => resolveNextDocument({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": nextFingerprint }), text: async () => "# New Foundation content" }));
     expect(await screen.findByRole("heading", { name: "New Foundation content" })).toBeInTheDocument();
@@ -648,6 +1111,7 @@ describe("single root Project experience", () => {
   it("uses the live reader fingerprint without comparing it to the identity catalog", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": "b".repeat(64) }), json: async () => theme };
       return { ok: true, json: async () => url.searchParams.has("project_id")
         ? { ...detail("belluga", "builder"), snapshot_fingerprint: "b".repeat(64) }

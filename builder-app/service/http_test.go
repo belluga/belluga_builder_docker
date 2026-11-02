@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,7 +162,10 @@ func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := registeredHandler(t.TempDir(), root, "builder.belluga.online")
-	for _, tc := range []struct{ path, host string; status int }{
+	for _, tc := range []struct {
+		path, host string
+		status     int
+	}{
 		{path: "/", host: "builder.belluga.online", status: http.StatusOK},
 		{path: "/local", host: "builder.belluga.online", status: http.StatusNotFound},
 		{path: "/", host: "untrusted.example", status: http.StatusForbidden},
@@ -176,6 +180,17 @@ func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
 		if tc.status == http.StatusOK && response.Body.String() != "project directory" {
 			t.Errorf("published root body = %q", response.Body.String())
 		}
+	}
+}
+
+func TestRegisteredHandlerRoutesExactTODOReadsToConsumer(t *testing.T) {
+	handler := registeredHandler(t.TempDir(), t.TempDir(), "")
+	request := httptest.NewRequest(http.MethodGet, "/api/local-todo-source", nil)
+	request.Host = "127.0.0.1"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "todo_source_request_invalid") {
+		t.Fatalf("exact TODO route did not reach the registered consumer: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 

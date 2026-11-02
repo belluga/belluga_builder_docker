@@ -12,6 +12,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -22,6 +23,7 @@ type registeredPreview struct {
 	root        string
 	readerURL   string
 	readerToken string
+	registryURL string
 	client      *http.Client
 }
 
@@ -56,9 +58,10 @@ type registrationCatalog struct {
 	Projects      []catalogProject    `json:"projects"`
 }
 type catalogProject struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	CompanyID string `json:"company_id"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	CompanyID           string `json:"company_id"`
+	SnapshotFingerprint string `json:"snapshot_fingerprint,omitempty"`
 }
 type persistedRegistration struct {
 	SchemaVersion string                         `json:"schema_version"`
@@ -96,7 +99,10 @@ type registeredSnapshot struct {
 	Files                  map[string][]byte                   `json:"files"`
 	Assets                 map[string]registeredAssetReference `json:"assets,omitempty"`
 	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Roadmap                json.RawMessage                     `json:"roadmap,omitempty"`
 	Observations           map[string]json.RawMessage          `json:"observations"`
+	todoSources            todoSourceMap
+	todoSourcesParsed      bool
 }
 
 type registeredAssetReference struct {
@@ -132,10 +138,37 @@ type roadmapCatalogTODO struct {
 }
 
 type roadmapProjection struct {
-	SchemaVersion string        `json:"schema_version"`
-	ProjectID     string        `json:"project_id"`
-	FocusRelease  string        `json:"focus_release_id"`
-	Epics         []roadmapEpic `json:"epics"`
+	SchemaVersion string                `json:"schema_version"`
+	ProjectID     string                `json:"project_id"`
+	FocusRelease  string                `json:"focus_release_id"`
+	Epics         []roadmapEpic         `json:"epics"`
+	Backlog       roadmapBacklog        `json:"backlog"`
+	Unclassified  []roadmapUnclassified `json:"unclassified"`
+	Diagnostics   []roadmapDiagnostic   `json:"diagnostics"`
+}
+
+type roadmapBacklog struct {
+	TODOs   []roadmapTODO          `json:"todos"`
+	Folders []roadmapBacklogFolder `json:"folders"`
+}
+
+type roadmapBacklogFolder struct {
+	Name        string                 `json:"name"`
+	Path        string                 `json:"path"`
+	Description string                 `json:"description,omitempty"`
+	Folders     []roadmapBacklogFolder `json:"folders"`
+	TODOs       []roadmapTODO          `json:"todos"`
+}
+
+type roadmapUnclassified struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason"`
+}
+
+type roadmapDiagnostic struct {
+	Code    string `json:"code"`
+	Path    string `json:"path,omitempty"`
+	Message string `json:"message"`
 }
 
 type roadmapEpic struct {
@@ -153,25 +186,42 @@ type roadmapRelease struct {
 }
 
 type roadmapTODO struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Path        string `json:"path"`
-	Kind        string `json:"kind"`
-	RecordState string `json:"record_state"`
-	LocalStage  string `json:"local_stage"`
-	WorkState   string `json:"work_state"`
+	ID                    string `json:"id"`
+	TODORevision          *int64 `json:"todo_revision,omitempty"`
+	Title                 string `json:"title"`
+	Path                  string `json:"path"`
+	Kind                  string `json:"kind"`
+	Missing               bool   `json:"missing,omitempty"`
+	Objective             string `json:"objective,omitempty"`
+	ObjectiveState        string `json:"objective_state"`
+	NextStep              string `json:"next_step,omitempty"`
+	NextStepState         string `json:"next_step_state"`
+	RecordState           string `json:"record_state"`
+	DeliveryStage         string `json:"delivery_stage,omitempty"`
+	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
+	DeliveryStageState    string `json:"delivery_stage_state"`
+	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
+	HistoricalDisposition string `json:"historical_disposition,omitempty"`
+	DispositionReason     string `json:"disposition_reason,omitempty"`
+	SuccessorTODO         string `json:"successor_todo,omitempty"`
+	DispositionState      string `json:"disposition_state,omitempty"`
+	Blocked               bool   `json:"blocked"`
+	QualifierState        string `json:"qualifier_state"`
+	QualifierTeach        string `json:"qualifier_teach,omitempty"`
+	WorkState             string `json:"work_state"`
+	InvalidQualifiers     bool   `json:"invalid_qualifiers,omitempty"`
+	ExplicitNoCode        bool   `json:"explicit_no_code,omitempty"`
+	Executable            bool   `json:"executable,omitempty"`
 }
 
-type roadmapStatusProjection struct {
-	SchemaVersion string              `json:"schema_version"`
-	CatalogSHA256 string              `json:"catalog_sha256"`
-	TODOs         []roadmapLocalStage `json:"todos"`
+type todoSourceMap struct {
+	SchemaVersion string                `json:"schema_version"`
+	Sources       map[string]todoSource `json:"sources"`
+	byPath        map[string]string
 }
-
-type roadmapLocalStage struct {
-	ID        string `json:"id"`
-	Stage     string `json:"local_stage"`
-	WorkState string `json:"work_state"`
+type todoSource struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256"`
 }
 
 type portfolioSummary struct {
@@ -197,6 +247,9 @@ type overviewSource struct {
 }
 
 func (p *registeredPreview) catalog() (registrationCatalog, error) {
+	if registryCutoverEnabled() {
+		return p.readerCatalog()
+	}
 	if !filepath.IsAbs(p.root) || filepath.Clean(p.root) == string(filepath.Separator) {
 		return registrationCatalog{}, errors.New("state root must be absolute")
 	}
@@ -238,6 +291,18 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 }
 
 func (p *registeredPreview) currentFingerprint(projectID, companyID string) (string, error) {
+	if registryCutoverEnabled() {
+		catalog, err := p.readerCatalog()
+		if err != nil {
+			return "", err
+		}
+		for _, project := range catalog.Projects {
+			if project.ID == projectID && project.CompanyID == companyID && validSHA256(project.SnapshotFingerprint) {
+				return project.SnapshotFingerprint, nil
+			}
+		}
+		return "", errors.New("current Project pointer unavailable")
+	}
 	if _, err := p.catalog(); err != nil {
 		return "", err
 	}
@@ -254,6 +319,66 @@ func (p *registeredPreview) currentFingerprint(projectID, companyID string) (str
 		return "", errors.New("current Project pointer unavailable")
 	}
 	return project.registeredProject.SnapshotFingerprint, nil
+}
+
+func registryCutoverEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(os.Getenv("DELPHI_BUILDER_REGISTRY_CUTOVER")), "true")
+}
+
+func (p *registeredPreview) readerCatalog() (registrationCatalog, error) {
+	base := strings.TrimRight(strings.TrimSpace(p.readerURL), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), "/")
+	}
+	token := p.readerToken
+	if token == "" {
+		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
+	}
+	if base == "" || token == "" || len(token) < 32 {
+		return registrationCatalog{}, errors.New("private Project reader is not configured")
+	}
+	u, err := url.Parse(base + "/internal/v1/catalog")
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
+		return registrationCatalog{}, errors.New("private Project reader endpoint is invalid")
+	}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	request, err := http.NewRequest(http.MethodGet, u.String(), nil)
+	if err != nil {
+		return registrationCatalog{}, err
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		return registrationCatalog{}, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return registrationCatalog{}, errors.New("private Project reader catalog is unavailable")
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
+	var catalog registrationCatalog
+	if err != nil || len(data) > 1<<20 || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &catalog) != nil || catalog.SchemaVersion != "1" || catalog.Companies == nil || catalog.Projects == nil {
+		return registrationCatalog{}, errors.New("private Project reader catalog is invalid")
+	}
+	companies := make(map[string]bool, len(catalog.Companies))
+	for _, company := range catalog.Companies {
+		if !validRegistrationID(company.ID) || !validRegistrationName(company.Name) || companies[company.ID] {
+			return registrationCatalog{}, errors.New("private Project reader catalog Company identity is invalid")
+		}
+		companies[company.ID] = true
+	}
+	projects := make(map[string]bool, len(catalog.Projects))
+	for _, project := range catalog.Projects {
+		identity := project.CompanyID + "/" + project.ID
+		if !validRegistrationID(project.ID) || !validRegistrationName(project.Name) || !companies[project.CompanyID] || projects[identity] || (project.SnapshotFingerprint != "" && !validSHA256(project.SnapshotFingerprint)) {
+			return registrationCatalog{}, errors.New("private Project reader catalog Project identity is invalid")
+		}
+		projects[identity] = true
+	}
+	return catalog, nil
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -377,6 +502,14 @@ func readRegisteredFile(name string, limit int64) ([]byte, error) {
 }
 
 func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/roadmap" {
+		p.roadmapAPIHandler(w, r)
+		return
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/api/local-todo-source" {
+		p.todoSourceHandler(w, r)
+		return
+	}
 	if r.Method != http.MethodGet || r.URL.Path != "/api/local-preview" {
 		writeError(w, 404, "not_found")
 		return
@@ -414,6 +547,310 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 	writeError(w, 404, "project_not_found")
 }
 
+func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	companyID, companyOK := oneQueryValue(q, "company_id")
+	projectID, projectOK := oneQueryValue(q, "project_id")
+	todoID, todoOK := oneQueryValue(q, "todo_id")
+	todoRevision, revisionOK := oneQueryValue(q, "todo_revision")
+	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 2048 || !companyOK || !projectOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || len(q) != 2 && len(q) != 4 {
+		writeError(w, http.StatusBadRequest, "roadmap_request_invalid")
+		return
+	}
+	endpointPath := "/internal/v1/companies/" + url.PathEscape(companyID) + "/projects/" + url.PathEscape(projectID) + "/roadmap"
+	if len(q) == 4 {
+		revision, err := strconv.ParseInt(todoRevision, 10, 64)
+		if !todoOK || todoID == "" || !revisionOK || err != nil || revision < 0 || !validRegistrationID(todoID) {
+			writeError(w, http.StatusBadRequest, "roadmap_todo_request_invalid")
+			return
+		}
+		// The Go API's exact read route is a sibling of /roadmap.
+		endpointPath = "/internal/v1/companies/" + url.PathEscape(companyID) + "/projects/" + url.PathEscape(projectID) + "/todos/" + url.PathEscape(todoID)
+		endpointPath += "?todo_revision=" + strconv.FormatInt(revision, 10)
+	}
+	base := strings.TrimRight(strings.TrimSpace(p.registryURL), "/")
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_BUILDER_REGISTRY_URL")), "/")
+	}
+	if base == "" {
+		base = "http://builder-registry:8080"
+	}
+	registered, err := p.registryProjectRegistered(r, base, companyID, projectID)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_registry_unavailable")
+		return
+	}
+	if !registered {
+		writeError(w, http.StatusNotFound, "project_not_found")
+		return
+	}
+	u, err := url.Parse(base + endpointPath)
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_api_unavailable")
+		return
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_api_unavailable")
+		return
+	}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_api_unavailable")
+		return
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 4<<20+1))
+	if err != nil || len(body) > 4<<20 || rejectDuplicateJSONKeys(body) != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
+		return
+	}
+	if response.StatusCode != http.StatusOK {
+		if response.StatusCode >= 400 && response.StatusCode < 500 {
+			writeJSON(w, response.StatusCode, json.RawMessage(body))
+		} else {
+			writeError(w, http.StatusServiceUnavailable, "roadmap_api_unavailable")
+		}
+		return
+	}
+	if len(q) == 2 {
+		if !validRegistryRoadmap(body, projectID) {
+			writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	var result struct {
+		CompanyID           string `json:"company_id"`
+		ProjectID           string `json:"project_id"`
+		SnapshotFingerprint string `json:"snapshot_fingerprint"`
+		ContentRevision     *int64 `json:"content_revision"`
+		ContentDigest       string `json:"content_digest"`
+		TODO                struct {
+			ID            string `json:"id"`
+			ProjectID     string `json:"project_id"`
+			Revision      int64  `json:"revision"`
+			Title         string `json:"title"`
+			Objective     string `json:"objective"`
+			NextExactStep string `json:"next_exact_step"`
+			Sections      []struct {
+				Key          string `json:"key"`
+				Title        string `json:"title"`
+				BodyMarkdown string `json:"body_markdown"`
+			} `json:"sections"`
+		} `json:"todo"`
+		TODORevision int64 `json:"todo_revision"`
+	}
+	requestedRevision, _ := strconv.ParseInt(todoRevision, 10, 64)
+	if json.Unmarshal(body, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.TODO.ID != todoID || result.TODO.ProjectID != projectID || result.TODO.Revision != requestedRevision || result.TODORevision != requestedRevision || strings.TrimSpace(result.TODO.Title) == "" || result.TODO.Sections == nil || result.ContentRevision != nil && (*result.ContentRevision < 0 || !strings.HasPrefix(result.ContentDigest, "sha256:") || !validSHA256(strings.TrimPrefix(result.ContentDigest, "sha256:"))) || result.ContentRevision == nil && result.ContentDigest != "" {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func (p *registeredPreview) registryProjectRegistered(r *http.Request, base, companyID, projectID string) (bool, error) {
+	u, err := url.Parse(strings.TrimRight(base, "/") + "/internal/v1/catalog")
+	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return false, errors.New("Registry catalog URL is invalid")
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false, err
+	}
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return false, err
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20+1))
+	if err != nil || len(data) > 1<<20 || response.StatusCode != http.StatusOK || rejectDuplicateJSONKeys(data) != nil {
+		return false, errors.New("Registry catalog is unavailable or invalid")
+	}
+	var catalog struct {
+		SchemaVersion string `json:"schema_version"`
+		Companies     []struct {
+			ID string `json:"id"`
+		} `json:"companies"`
+		Projects []struct {
+			ID        string `json:"id"`
+			CompanyID string `json:"company_id"`
+		} `json:"projects"`
+	}
+	if json.Unmarshal(data, &catalog) != nil || catalog.SchemaVersion != "1" || catalog.Companies == nil || catalog.Projects == nil {
+		return false, errors.New("Registry catalog contract is invalid")
+	}
+	companies := make(map[string]bool, len(catalog.Companies))
+	for _, company := range catalog.Companies {
+		if !validRegistrationID(company.ID) || companies[company.ID] {
+			return false, errors.New("Registry Company identity is invalid")
+		}
+		companies[company.ID] = true
+	}
+	projects := make(map[string]bool, len(catalog.Projects))
+	registered := false
+	for _, project := range catalog.Projects {
+		key := project.CompanyID + "/" + project.ID
+		if !validRegistrationID(project.ID) || !companies[project.CompanyID] || projects[key] {
+			return false, errors.New("Registry Project identity is invalid")
+		}
+		projects[key] = true
+		if project.CompanyID == companyID && project.ID == projectID {
+			registered = true
+		}
+	}
+	return registered, nil
+}
+
+func (p *registeredPreview) todoSourceHandler(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	companyID, companyOK := oneQueryValue(q, "company_id")
+	projectID, projectOK := oneQueryValue(q, "project_id")
+	todoID, todoOK := oneQueryValue(q, "todo_id")
+	fingerprintArg, fingerprintOK := oneQueryValue(q, "fingerprint")
+	revision, revisionFound := oneQueryValue(q, "todo_revision")
+	revisionPresent := len(q["todo_revision"]) > 0
+	revisionOK := !revisionPresent || revisionFound
+	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 8192 || (len(q) != 4 && len(q) != 5) || !companyOK || !projectOK || !todoOK || !fingerprintOK || !revisionOK || (!revisionPresent && len(q) != 4) || (revisionPresent && len(q) != 5) || !validRegistrationID(companyID) || !validRegistrationID(projectID) || todoID == "" || len(todoID) > 1200 || !utf8.ValidString(todoID) || !validSHA256(fingerprintArg) {
+		writeError(w, http.StatusBadRequest, "todo_source_request_invalid")
+		return
+	}
+	migrated := revisionPresent
+	var expectedRevision int64
+	if revisionPresent {
+		parsed, err := strconv.ParseInt(revision, 10, 64)
+		if err != nil || parsed < 0 {
+			writeError(w, http.StatusBadRequest, "todo_source_request_invalid")
+			return
+		}
+		expectedRevision = parsed
+	}
+	base, token := strings.TrimRight(strings.TrimSpace(p.readerURL), "/"), p.readerToken
+	if base == "" {
+		base = strings.TrimRight(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), "/")
+	}
+	if token == "" {
+		token = os.Getenv("DELPHI_PROJECT_READER_TOKEN")
+	}
+	query := url.Values{"company_id": {companyID}, "fingerprint": {fingerprintArg}, "todo_id": {todoID}}
+	if revisionPresent {
+		query.Set("todo_revision", revision)
+	}
+	endpoint, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
+	if err != nil || endpoint.Scheme != "http" || endpoint.Host == "" || len(token) < 32 {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	endpoint.RawQuery = query.Encode()
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 100 * time.Second}
+	}
+	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := client.Do(request)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		writeError(w, http.StatusNotFound, "todo_source_not_found")
+		return
+	}
+	if response.StatusCode == http.StatusConflict {
+		var stale struct {
+			Teach        string `json:"teach"`
+			TODORevision *int64 `json:"todo_revision"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&stale)
+		body := map[string]any{"error": "todo_source_stale_reload_project"}
+		if stale.Teach != "" {
+			body["teach"] = stale.Teach
+		}
+		if stale.TODORevision != nil {
+			body["todo_revision"] = *stale.TODORevision
+		}
+		writeJSON(w, http.StatusConflict, body)
+		return
+	}
+	if response.StatusCode != http.StatusOK {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, (512<<10)+2048))
+	var result struct {
+		TODOID       string          `json:"todo_id"`
+		Fingerprint  string          `json:"fingerprint"`
+		Markdown     string          `json:"markdown"`
+		TODORevision *int64          `json:"todo_revision"`
+		TODO         json.RawMessage `json:"todo"`
+	}
+	if err != nil || len(body) > (512<<10)+2048 || rejectDuplicateJSONKeys(body) != nil || json.Unmarshal(body, &result) != nil || result.TODOID != todoID || result.Fingerprint != fingerprintArg || len([]byte(result.Markdown)) > 512<<10 || !utf8.ValidString(result.Markdown) || (migrated && (result.TODORevision == nil || *result.TODORevision != expectedRevision || len(result.TODO) == 0 || !json.Valid(result.TODO))) || (!migrated && (result.TODORevision != nil || len(result.TODO) != 0)) {
+		writeError(w, http.StatusServiceUnavailable, "todo_source_unavailable")
+		return
+	}
+	public := map[string]any{"todo_id": result.TODOID, "fingerprint": result.Fingerprint, "markdown": result.Markdown}
+	if migrated {
+		public["todo_revision"] = *result.TODORevision
+		public["todo"] = result.TODO
+	}
+	writeJSON(w, http.StatusOK, public)
+}
+
+func canonicalTODOStage(stage string) bool {
+	switch stage {
+	case "Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func oneQueryValue(q url.Values, key string) (string, bool) {
+	values, ok := q[key]
+	if !ok || len(values) != 1 {
+		return "", false
+	}
+	return values[0], true
+}
+
+func validTodoSourceEntry(id string, item todoSource) bool {
+	ext := strings.ToLower(filepath.Ext(item.Path))
+	if id == "" || len(id) > 1200 || !utf8.ValidString(id) || len(item.Path) > 1024 || !strings.HasPrefix(item.Path, "todos/") || !safeSnapshotPath(item.Path) || (ext != ".md" && ext != ".markdown") || len(item.SHA256) != 64 {
+		return false
+	}
+	decoded, err := hex.DecodeString(item.SHA256)
+	return err == nil && hex.EncodeToString(decoded) == item.SHA256
+}
+
+func validSHA256(value string) bool {
+	if len(value) != 64 || strings.ToLower(value) != value {
+		return false
+	}
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == 32
+}
+
 type privateReaderResponse struct {
 	ProjectID              string                              `json:"project_id"`
 	ProjectName            string                              `json:"project_name"`
@@ -422,6 +859,7 @@ type privateReaderResponse struct {
 	ObservedAt             string                              `json:"observed_at"`
 	Fingerprint            string                              `json:"snapshot_fingerprint"`
 	Artifacts              []registeredArtifact                `json:"artifacts"`
+	Roadmap                json.RawMessage                     `json:"roadmap,omitempty"`
 	Files                  map[string][]byte                   `json:"files"`
 	Assets                 map[string]registeredAssetReference `json:"assets"`
 	Observations           map[string]json.RawMessage          `json:"observations"`
@@ -444,6 +882,9 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	u, err := url.Parse(base + "/internal/v1/projects/" + url.PathEscape(projectID))
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.RawQuery != "" || u.Fragment != "" {
 		return registeredSnapshot{}, "", errors.New("private Project reader endpoint is invalid")
+	}
+	if registryCutoverEnabled() {
+		u.RawQuery = url.Values{"company_id": {companyID}}.Encode()
 	}
 	client := p.client
 	if client == nil {
@@ -482,7 +923,92 @@ func (p *registeredPreview) readCurrent(projectID, companyID string) (registered
 	if _, err := hex.DecodeString(source.Fingerprint); err != nil || strings.ToLower(source.Fingerprint) != source.Fingerprint {
 		return registeredSnapshot{}, "", errors.New("private Project fingerprint is invalid")
 	}
-	return registeredSnapshot{SchemaVersion: "builder-project-snapshot-v2", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Observations: source.Observations}, source.Fingerprint, nil
+	if registryCutoverEnabled() && !validRegistryRoadmap(source.Roadmap, projectID) {
+		return registeredSnapshot{}, "", errors.New("private Mongo Roadmap is unavailable or invalid")
+	}
+	snapshot := registeredSnapshot{SchemaVersion: "builder-project-snapshot-v3", ProjectID: source.ProjectID, CompanyID: source.CompanyID, ObservedAt: source.ObservedAt, ProjectSHA: source.ProjectSHA, ExternalSourceID: source.ExternalSourceID, ExternalSourceRevision: source.ExternalSourceRevision, Files: source.Files, Assets: source.Assets, Artifacts: source.Artifacts, Roadmap: source.Roadmap, Observations: source.Observations}
+	snapshot.todoSources = parseTodoSourceMap(snapshot)
+	snapshot.todoSourcesParsed = true
+	return snapshot, source.Fingerprint, nil
+}
+
+func validMongoPublicRoadmap(data json.RawMessage, companyID, projectID string) bool {
+	_ = companyID // Retained for callers/tests while all registered Companies share the Mongo authority.
+	return validRegistryRoadmap(data, projectID)
+}
+
+func validRegistryRoadmap(data json.RawMessage, projectID string) bool {
+	var roadmap roadmapProjection
+	if len(data) == 0 || rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &roadmap) != nil || roadmap.SchemaVersion != "builder-roadmap-projection-v3" || roadmap.ProjectID != projectID || roadmap.Epics == nil || roadmap.Backlog.TODOs == nil || roadmap.Backlog.Folders == nil || roadmap.Unclassified == nil || roadmap.Diagnostics == nil || roadmap.FocusRelease != "" || len(roadmap.Unclassified) != 0 || len(roadmap.Diagnostics) != 0 {
+		return false
+	}
+	seen := make(map[string]bool)
+	validTODO := func(todo roadmapTODO) bool {
+		if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || todo.Path != "" && !validMongoTODOPath(todo.Path) || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.DeliveryStageState != "verified" && todo.DeliveryStageState != "unverified" || todo.DeliveryStageState == "verified" && (!canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage) || todo.DeliveryStageState == "unverified" && (todo.DeliveryStage != "" || todo.DeliveryStageTeach == "") || todo.QualifierState == "" {
+			return false
+		}
+		seen[todo.ID] = true
+		return true
+	}
+	folderPaths := make(map[string]bool)
+	var validFolders func([]roadmapBacklogFolder, string) bool
+	validFolders = func(folders []roadmapBacklogFolder, parent string) bool {
+		for _, folder := range folders {
+			if strings.TrimSpace(folder.Name) == "" || !validMongoTODOPath(folder.Path) || folder.Folders == nil || folder.TODOs == nil || folderPaths[folder.Path] || parent != "" && !strings.HasPrefix(folder.Path, strings.TrimSuffix(parent, "/")+"/") {
+				return false
+			}
+			folderPaths[folder.Path] = true
+			for _, todo := range folder.TODOs {
+				if !validTODO(todo) {
+					return false
+				}
+			}
+			if !validFolders(folder.Folders, folder.Path) {
+				return false
+			}
+		}
+		return true
+	}
+	for _, epic := range roadmap.Epics {
+		if !validRegistrationID(epic.ID) || !validRegistrationName(epic.Name) || epic.Releases == nil || seen[epic.ID] {
+			return false
+		}
+		seen[epic.ID] = true
+		for _, release := range epic.Releases {
+			if !validRegistrationID(release.ID) || !validRegistrationName(release.Name) || release.TODOs == nil || seen[release.ID] {
+				return false
+			}
+			seen[release.ID] = true
+			for _, todo := range release.TODOs {
+				if !validTODO(todo) {
+					return false
+				}
+			}
+		}
+	}
+	for _, todo := range roadmap.Backlog.TODOs {
+		if !validTODO(todo) {
+			return false
+		}
+	}
+	return validFolders(roadmap.Backlog.Folders, "")
+}
+
+func validMongoTODOPath(value string) bool {
+	if !strings.HasPrefix(value, "todos/") || !safeSnapshotPath(value) {
+		return false
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	for _, segment := range strings.Split(value, "/") {
+		if segment == "" || segment == "." || segment == ".." || segment == ".git" {
+			return false
+		}
+	}
+	return true
 }
 
 func validProjectSHA(value string) bool {
@@ -500,6 +1026,41 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		"snapshot_observed_at": snapshot.ObservedAt, "snapshot_observations": snapshot.Observations, "artifacts": snapshot.Artifacts,
 		"project_sha": snapshot.ProjectSHA,
 	}
+	todoSources := snapshot.todoSources
+	if !snapshot.todoSourcesParsed {
+		todoSources = parseTodoSourceMap(snapshot)
+		snapshot.todoSourcesParsed = true
+	}
+	snapshot.todoSources = todoSources
+	prototypeTODOs := []map[string]string{}
+	for _, artifact := range snapshot.Artifacts {
+		if artifact.Kind != "prototype" || artifact.State != "available" {
+			continue
+		}
+		parts := strings.Split(artifact.Entry, "/")
+		if len(parts) < 3 {
+			continue
+		}
+		manifest := snapshot.Files[path.Join("prototypes", parts[1], "prototype.json")]
+		var evidence struct {
+			Related []struct {
+				Kind string `json:"kind"`
+				Path string `json:"path"`
+			} `json:"related"`
+		}
+		if json.Unmarshal(manifest, &evidence) != nil {
+			continue
+		}
+		for _, related := range evidence.Related {
+			if !strings.HasPrefix(related.Path, "todos/") {
+				continue
+			}
+			if id := todoSources.byPath[related.Path]; id != "" {
+				prototypeTODOs = append(prototypeTODOs, map[string]string{"prototype_id": artifact.ID, "todo_id": id, "label": path.Base(related.Path), "path": related.Path})
+			}
+		}
+	}
+	result["prototype_todo_sources"] = prototypeTODOs
 	if snapshot.ExternalSourceID != "" {
 		result["external_source_id"] = snapshot.ExternalSourceID
 	}
@@ -528,15 +1089,6 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 				}
 			}
 		}
-		if artifact.Kind == "roadmap" && artifact.State == "available" {
-			for _, name := range artifact.Files {
-				if name == "roadmap/catalog.json" {
-					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files["roadmap/todo-status.json"], snapshot.Files, artifact.Files); ok && containsRoadmapFile(artifact.Files, "roadmap/todo-status.json") {
-						result["roadmap"] = projection
-					}
-				}
-			}
-		}
 		if artifact.Kind == "portfolio" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "project_portfolio.json" {
@@ -558,70 +1110,154 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 			result["documents"] = files
 		}
 	}
+	if registryCutoverEnabled() {
+		var authoritative roadmapProjection
+		if len(snapshot.Roadmap) > 0 && rejectDuplicateJSONKeys(snapshot.Roadmap) == nil && json.Unmarshal(snapshot.Roadmap, &authoritative) == nil && authoritative.SchemaVersion == "builder-roadmap-projection-v3" && authoritative.ProjectID == snapshot.ProjectID && authoritative.Epics != nil {
+			result["roadmap"] = authoritative
+		}
+	}
+	if !registryCutoverEnabled() {
+		for _, artifact := range snapshot.Artifacts {
+			if artifact.Kind != "roadmap" || artifact.State != "available" {
+				continue
+			}
+			for _, name := range artifact.Files {
+				if name == "roadmap/projection.json" {
+					if projection, ok := admittedRoadmapProjection(snapshot.ProjectID, snapshot.Files[name], snapshot.Files, artifact.Files, snapshot.todoSources); ok {
+						result["roadmap"] = projection
+					}
+				}
+			}
+		}
+	}
 	return result
 }
 
-func admittedRoadmapProjection(projectID string, data, statusData []byte, files map[string][]byte, admitted []string) (roadmapProjection, bool) {
-	var catalog roadmapCatalog
+func admittedRoadmapProjection(projectID string, data []byte, files map[string][]byte, admitted []string, sources todoSourceMap) (roadmapProjection, bool) {
+	admittedFiles := make(map[string]struct{}, len(admitted))
+	for _, name := range admitted {
+		admittedFiles[name] = struct{}{}
+	}
+	isAdmitted := func(target string) bool {
+		_, ok := admittedFiles[target]
+		return ok
+	}
+
+	var projection roadmapProjection
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
-	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&catalog) != nil || decoder.Decode(new(any)) != io.EOF || catalog.SchemaVersion != "builder-roadmap-v1" || catalog.ProjectID != projectID || len(catalog.Epics) == 0 {
+	if rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&projection) != nil || decoder.Decode(new(any)) != io.EOF ||
+		projection.SchemaVersion != "builder-roadmap-projection-v3" || projection.ProjectID != projectID || projection.Epics == nil ||
+		projection.Backlog.TODOs == nil || projection.Backlog.Folders == nil || projection.Unclassified == nil ||
+		projection.Diagnostics == nil || len(projection.Diagnostics) > 64 || len(projection.Unclassified) > 4096 || len(projection.Epics) > 32 {
 		return roadmapProjection{}, false
 	}
-	var status roadmapStatusProjection
-	statusDecoder := json.NewDecoder(strings.NewReader(string(statusData)))
-	statusDecoder.DisallowUnknownFields()
-	digest := sha256.Sum256(data)
-	if len(statusData) == 0 || rejectDuplicateJSONKeys(statusData) != nil || statusDecoder.Decode(&status) != nil || statusDecoder.Decode(new(any)) != io.EOF || status.SchemaVersion != "builder-roadmap-status-v1" || status.CatalogSHA256 != hex.EncodeToString(digest[:]) {
+	if sources.SchemaVersion != "builder-todo-sources-v2" || sources.Sources == nil || len(sources.byPath) != len(sources.Sources) {
 		return roadmapProjection{}, false
 	}
-	stages := make(map[string]roadmapLocalStage, len(status.TODOs))
-	for _, row := range status.TODOs {
-		if row.ID == "" || stages[row.ID].ID != "" || !validRoadmapLocalStage(row.Stage) || (row.WorkState != "" && row.WorkState != "unknown" && row.WorkState != "blocked") {
+	seenTODOIDs := make(map[string]bool)
+	validateTODO := func(sourceTODO *roadmapTODO, allowMissing bool) bool {
+		if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] || sourceTODO.Path == "" || len(sourceTODO.Path) > 1024 ||
+			!strings.HasPrefix(sourceTODO.Path, "todos/") || !safeSnapshotPath(sourceTODO.Path) ||
+			(sourceTODO.Kind != "executable" && sourceTODO.Kind != "planning") {
+			return false
+		}
+		if sourceTODO.Missing {
+			if !allowMissing || isAdmitted(sourceTODO.Path) || files[sourceTODO.Path] != nil {
+				return false
+			}
+			sourceTODO.Title = sourceTODO.ID
+			sourceTODO.RecordState = "missing"
+		} else {
+			mapped, ok := sources.Sources[sourceTODO.ID]
+			if !ok || mapped.Path != sourceTODO.Path {
+				return false
+			}
+			if sourceTODO.Title == "" || utf8.RuneCountInString(sourceTODO.Title) > 160 || !validRoadmapField(sourceTODO.Objective, sourceTODO.ObjectiveState, 1024) || !validRoadmapField(sourceTODO.NextStep, sourceTODO.NextStepState, 512) || !validRoadmapRecordState(sourceTODO.RecordState) || !validRoadmapLifecycleTODO(*sourceTODO) {
+				return false
+			}
+		}
+		if sourceTODO.Missing && (!validRoadmapLifecycleTODO(*sourceTODO) || sourceTODO.WorkState != "unknown") {
+			return false
+		}
+		seenTODOIDs[sourceTODO.ID] = true
+		return true
+	}
+	for e := range projection.Epics {
+		if projection.Epics[e].ID == "" || projection.Epics[e].Releases == nil || len(projection.Epics[e].Releases) > 64 {
 			return roadmapProjection{}, false
 		}
-		stages[row.ID] = row
-	}
-	epics := make([]roadmapEpic, 0, len(catalog.Epics))
-	seenTODOIDs := make(map[string]bool)
-	for _, sourceEpic := range catalog.Epics {
-		epic := roadmapEpic{ID: sourceEpic.ID, Name: sourceEpic.Name, Description: sourceEpic.Description, Releases: []roadmapRelease{}}
-		for _, sourceRelease := range sourceEpic.Releases {
-			release := roadmapRelease{ID: sourceRelease.ID, Name: sourceRelease.Name, Description: sourceRelease.Description, TODOs: []roadmapTODO{}}
-			for _, sourceTODO := range sourceRelease.TODOs {
-				if sourceTODO.ID == "" || seenTODOIDs[sourceTODO.ID] || !strings.HasPrefix(sourceTODO.Path, "todos/") || !safeSnapshotPath(sourceTODO.Path) || !containsRoadmapFile(admitted, sourceTODO.Path) {
-					return roadmapProjection{}, false
-				}
-				body, admittedBody := files[sourceTODO.Path]
-				title := roadmapTODOHeading(body)
-				if !admittedBody || title == "" {
-					return roadmapProjection{}, false
-				}
-				stage, exists := stages[sourceTODO.ID]
-				if !exists {
-					return roadmapProjection{}, false
-				}
-				seenTODOIDs[sourceTODO.ID] = true
-				recordState := "other"
-				if strings.HasPrefix(sourceTODO.Path, "todos/completed/") {
-					recordState = "completed"
-				} else if strings.HasPrefix(sourceTODO.Path, "todos/active/") {
-					recordState = "active"
-				}
-				workState := stage.WorkState
-				if workState == "" {
-					workState = "unknown"
-				}
-				release.TODOs = append(release.TODOs, roadmapTODO{ID: sourceTODO.ID, Title: title, Path: sourceTODO.Path, Kind: sourceTODO.Kind, RecordState: recordState, LocalStage: stage.Stage, WorkState: workState})
+		for r := range projection.Epics[e].Releases {
+			if projection.Epics[e].Releases[r].ID == "" || projection.Epics[e].Releases[r].TODOs == nil {
+				return roadmapProjection{}, false
 			}
-			epic.Releases = append(epic.Releases, release)
+			for t := range projection.Epics[e].Releases[r].TODOs {
+				if !validateTODO(&projection.Epics[e].Releases[r].TODOs[t], true) {
+					return roadmapProjection{}, false
+				}
+			}
 		}
-		epics = append(epics, epic)
 	}
-	if len(seenTODOIDs) != len(stages) {
-		return roadmapProjection{}, false
+	var validateFolder func(*roadmapBacklogFolder, string) bool
+	validateFolder = func(folder *roadmapBacklogFolder, parent string) bool {
+		if folder.Name == "" || folder.Path != parent+"/"+folder.Name || !safeSnapshotPath(folder.Path) ||
+			folder.Folders == nil || folder.TODOs == nil {
+			return false
+		}
+		for i := range folder.TODOs {
+			if folder.TODOs[i].Kind != "executable" || folder.TODOs[i].ID != "backlog:"+folder.TODOs[i].Path ||
+				!strings.HasPrefix(folder.TODOs[i].Path, folder.Path+"/") || !validateTODO(&folder.TODOs[i], false) {
+				return false
+			}
+		}
+		for i := range folder.Folders {
+			if !validateFolder(&folder.Folders[i], folder.Path) {
+				return false
+			}
+		}
+		return true
 	}
-	return roadmapProjection{SchemaVersion: catalog.SchemaVersion, ProjectID: catalog.ProjectID, FocusRelease: catalog.FocusRelease, Epics: epics}, true
+	for i := range projection.Backlog.TODOs {
+		todo := &projection.Backlog.TODOs[i]
+		if todo.Kind != "executable" || todo.ID != "backlog:"+todo.Path || !strings.HasPrefix(todo.Path, "todos/active/") ||
+			strings.Contains(strings.TrimPrefix(todo.Path, "todos/active/"), "/") || !validateTODO(todo, false) {
+			return roadmapProjection{}, false
+		}
+	}
+	for i := range projection.Backlog.Folders {
+		if !validateFolder(&projection.Backlog.Folders[i], "todos/active") {
+			return roadmapProjection{}, false
+		}
+	}
+	seenUnclassified := make(map[string]bool, len(projection.Unclassified))
+	for _, item := range projection.Unclassified {
+		if item.Path == "" || len(item.Path) > 1024 || item.Reason == "" || len(item.Reason) > 512 ||
+			!strings.HasPrefix(item.Path, "todos/") || !safeSnapshotPath(item.Path) || seenUnclassified[item.Path] {
+			return roadmapProjection{}, false
+		}
+		seenUnclassified[item.Path] = true
+	}
+	for _, diagnostic := range projection.Diagnostics {
+		if diagnostic.Code == "" || len(diagnostic.Code) > 64 || diagnostic.Message == "" || len(diagnostic.Message) > 512 ||
+			(diagnostic.Path != "" && (len(diagnostic.Path) > 1024 || !safeSnapshotPath(diagnostic.Path))) {
+			return roadmapProjection{}, false
+		}
+	}
+	return projection, true
+}
+
+func validRoadmapField(value, state string, max int) bool {
+	switch state {
+	case "absent", "too_long":
+		return value == ""
+	case "complete":
+		return value != "" && utf8.ValidString(value) && len([]byte(value)) <= max
+	default:
+		return false
+	}
+}
+func validRoadmapRecordState(value string) bool {
+	return value == "active" || value == "completed" || value == "promotion_lane" || value == "other"
 }
 
 func roadmapTODOHeading(content []byte) string {
@@ -633,13 +1269,61 @@ func roadmapTODOHeading(content []byte) string {
 	return ""
 }
 
-func validRoadmapLocalStage(value string) bool {
+func validRoadmapDeliveryStage(value string) bool {
 	switch value {
-	case "Pending", "Local-Implemented", "Lane-Promoted", "Production-Ready", "unknown":
+	case "Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed":
 		return true
 	default:
 		return false
 	}
+}
+
+func validRoadmapLifecycleTODO(todo roadmapTODO) bool {
+	if len(todo.AuthoredDeliveryStage) > 256 || !utf8.ValidString(todo.AuthoredDeliveryStage) || (todo.WorkState != "unknown" && todo.WorkState != "blocked") {
+		return false
+	}
+	if len(todo.DispositionReason) > 512 || len(todo.SuccessorTODO) > 1200 || !utf8.ValidString(todo.DispositionReason) || !utf8.ValidString(todo.SuccessorTODO) {
+		return false
+	}
+	switch todo.DispositionState {
+	case "":
+		if todo.HistoricalDisposition != "" || todo.DispositionReason != "" || todo.SuccessorTODO != "" {
+			return false
+		}
+	case "valid":
+		if (todo.HistoricalDisposition != "Superseded" && todo.HistoricalDisposition != "Discarded") || todo.DispositionReason == "" {
+			return false
+		}
+	case "invalid":
+		// Keep one invalid TODO visible with its TEACH instead of dropping the Roadmap.
+	default:
+		return false
+	}
+	switch todo.DeliveryStageState {
+	case "verified":
+		if !validRoadmapDeliveryStage(todo.DeliveryStage) || todo.DeliveryStageTeach != "" {
+			return false
+		}
+	case "unverified":
+		if todo.DeliveryStage != "" || !strings.HasPrefix(todo.DeliveryStageTeach, "TEACH:") || !utf8.ValidString(todo.DeliveryStageTeach) {
+			return false
+		}
+	default:
+		return false
+	}
+	switch todo.QualifierState {
+	case "verified":
+		if todo.QualifierTeach != "" {
+			return false
+		}
+	case "unverified":
+		if todo.Blocked || !strings.HasPrefix(todo.QualifierTeach, "TEACH:") || len(todo.QualifierTeach) > 1024 {
+			return false
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func containsRoadmapFile(files []string, target string) bool {
@@ -680,26 +1364,27 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		return registeredSnapshot{}, "", errors.New("snapshot fingerprint mismatch")
 	}
 	var snapshot registeredSnapshot
-	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || (snapshot.SchemaVersion != "builder-project-snapshot-v1" && snapshot.SchemaVersion != "builder-project-snapshot-v2") || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
+	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || snapshot.SchemaVersion != "builder-project-snapshot-v3" || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
 		return registeredSnapshot{}, "", errors.New("snapshot identity invalid")
 	}
-	v2 := snapshot.SchemaVersion == "builder-project-snapshot-v2"
-	if (!v2 && len(data) > 64<<20) || (v2 && len(data) > 4<<20) || (!v2 && len(snapshot.Assets) != 0) {
+	if len(data) > 4<<20 {
 		return registeredSnapshot{}, "", errors.New("snapshot storage bound or version invalid")
 	}
+	snapshot.todoSources = parseTodoSourceMap(snapshot)
+	snapshot.todoSourcesParsed = true
 	var total int64
 	for name, content := range snapshot.Files {
 		if !safeSnapshotPath(name) || len(content) > 2<<20 {
 			return registeredSnapshot{}, "", errors.New("snapshot file is unsafe or too large")
 		}
 		total += int64(len(content))
-		if total > 48<<20 || (v2 && strings.EqualFold(filepath.Ext(name), ".png")) {
+		if total > 48<<20 || strings.EqualFold(filepath.Ext(name), ".png") {
 			return registeredSnapshot{}, "", errors.New("snapshot decoded content limit exceeded")
 		}
 	}
 	var assetTotal int64
 	for name, ref := range snapshot.Assets {
-		if !v2 || !safeSnapshotPath(name) || !strings.EqualFold(filepath.Ext(name), ".png") || len(ref.SHA256) != 64 || strings.ToLower(ref.SHA256) != ref.SHA256 || ref.Size <= 0 || ref.Size > 2<<20 {
+		if !safeSnapshotPath(name) || !strings.EqualFold(filepath.Ext(name), ".png") || len(ref.SHA256) != 64 || strings.ToLower(ref.SHA256) != ref.SHA256 || ref.Size <= 0 || ref.Size > 2<<20 {
 			return registeredSnapshot{}, "", errors.New("snapshot asset reference invalid")
 		}
 		if _, err := hex.DecodeString(ref.SHA256); err != nil {
@@ -734,7 +1419,7 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		if artifact.State == "available" && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact) {
+		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
 			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
 		}
 	}
@@ -926,7 +1611,7 @@ func snapshotHasFile(snapshot registeredSnapshot, name string) bool {
 	return ok
 }
 
-func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact) bool {
+func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact, todoSources todoSourceMap) bool {
 	files := snapshot.Files
 	entryParts := strings.Split(artifact.Entry, "/")
 	if len(entryParts) < 3 || entryParts[0] != "prototypes" {
@@ -953,10 +1638,14 @@ func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registered
 	}
 	relatedPaths := make(map[string]bool, len(manifest.Related))
 	for _, related := range manifest.Related {
-		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] || !listed[related.Path] {
+		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] {
 			return false
 		}
-		if !snapshotHasFile(snapshot, related.Path) {
+		if strings.HasPrefix(related.Path, "todos/") {
+			if _, ok := todoSources.byPath[related.Path]; !ok {
+				return false
+			}
+		} else if !listed[related.Path] || !snapshotHasFile(snapshot, related.Path) {
 			return false
 		}
 		relatedPaths[related.Path] = true
@@ -967,6 +1656,27 @@ func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registered
 		}
 	}
 	return true
+}
+
+func parseTodoSourceMap(snapshot registeredSnapshot) todoSourceMap {
+	data := snapshot.Files["roadmap/todo-sources.json"]
+	var mapping todoSourceMap
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if len(data) == 0 || len(data) > 2<<20 || rejectDuplicateJSONKeys(data) != nil || decoder.Decode(&mapping) != nil || decoder.Decode(new(any)) != io.EOF || mapping.SchemaVersion != "builder-todo-sources-v2" || mapping.Sources == nil {
+		return todoSourceMap{}
+	}
+	mapping.byPath = make(map[string]string, len(mapping.Sources))
+	for id, item := range mapping.Sources {
+		if !validTodoSourceEntry(id, item) {
+			return todoSourceMap{}
+		}
+		if _, exists := mapping.byPath[item.Path]; exists {
+			return todoSourceMap{}
+		}
+		mapping.byPath[item.Path] = id
+	}
+	return mapping
 }
 
 func approvedPrototypeRelatedPath(kind, value string) bool {
@@ -1009,6 +1719,10 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/snapshot/"), "/", 4)
 	if len(parts) != 4 || !safeSnapshotPath(parts[3]) {
 		writeError(w, 404, "not_found")
+		return
+	}
+	if registryCutoverEnabled() && parts[3] == "roadmap/projection.json" {
+		writeError(w, 404, "artifact_not_admitted")
 		return
 	}
 	currentFingerprint, err := p.currentFingerprint(parts[1], parts[0])

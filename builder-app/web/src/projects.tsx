@@ -14,19 +14,60 @@ type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
 type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
-type RoadmapTodo = { id: string; title: string; path: string; kind: "executable" | "planning"; record_state: string; local_stage: "Pending" | "Local-Implemented" | "Lane-Promoted" | "Production-Ready" | "unknown"; work_state?: "blocked" | "unknown" };
+type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
+type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
-type RoadmapProjection = { schema_version: string; project_id: string; focus_release_id: string; epics: RoadmapEpic[] };
+type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
+type RoadmapDiagnostic = { code: string; path?: string; message: string };
+type RoadmapProjection = { schema_version: string; project_id: string; focus_release_id: string; epics: RoadmapEpic[]; backlog: { todos: RoadmapTodo[]; folders: BacklogFolder[] }; unclassified: { path: string; reason: string }[]; diagnostics: RoadmapDiagnostic[] };
+type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
 type ReleaseStatus = "delivered" | "blocked" | "in-progress" | "planned" | "unknown";
 const releaseStatusLabel: Record<ReleaseStatus, string> = { delivered: "Entregue", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
+const deliveryStageLabels: Record<DeliveryStage, string> = {
+  Planning: "Planejamento",
+  "Implementation-Approval-Pending": "Aguardando aprovação",
+  "Ready-for-Implementation": "Pronto para implementar",
+  "In-Progress": "Em andamento",
+  "Local-Implemented": "Implementado localmente",
+  "Promotion-Lane": "Em promoção",
+  Completed: "Concluído",
+};
+const deliveryStageTone: Record<DeliveryStage, string> = {
+  Planning: "planned",
+  "Implementation-Approval-Pending": "approval",
+  "Ready-for-Implementation": "ready",
+  "In-Progress": "active",
+  "Local-Implemented": "implemented",
+  "Promotion-Lane": "validation",
+  Completed: "done",
+};
+function deliveryStageLabel(todo: RoadmapTodo) {
+  if (todo.disposition_state === "valid") return todo.historical_disposition === "Superseded" ? "Substituído" : "Descartado";
+  return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageLabels[todo.delivery_stage] : "Status indisponível";
+}
+function deliveryStageClass(todo: RoadmapTodo) {
+  if (todo.disposition_state === "valid") return "historical";
+  return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageTone[todo.delivery_stage] : "unknown";
+}
+function todoStatusTeach(todo: RoadmapTodo) {
+  return [todo.delivery_stage_state === "unverified" ? todo.delivery_stage_teach : "", todo.qualifier_state === "unverified" ? todo.qualifier_teach : ""].filter(Boolean).join(" ");
+}
+function isTODOReadable(todo: RoadmapTodo) {
+  return todo.kind === "executable" || todo.todo_revision !== undefined;
+}
+function TodoStageStatus({ todo, className = "roadmap-todo-stage" }: { todo: RoadmapTodo; className?: string }) {
+  const label = deliveryStageLabel(todo);
+  const teach = todoStatusTeach(todo);
+  return <><span className={`${className} ${deliveryStageClass(todo)}${todo.blocked ? " blocked" : ""}`}><i aria-hidden="true" />{todo.blocked ? `Bloqueado · ${label}` : label}</span>{teach && <small className="todo-stage-teach" role="note">{teach}</small>}</>;
+}
 function releaseStatus(release: RoadmapRelease): ReleaseStatus {
-  const todos = release.todos.filter((todo) => todo.kind === "executable");
+  const todos = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
   if (todos.length === 0) return "unknown";
-  if (todos.some((todo) => todo.work_state === "blocked")) return "blocked";
-  if (todos.some((todo) => todo.local_stage === "unknown")) return "unknown";
-  if (todos.every((todo) => todo.local_stage === "Production-Ready")) return "delivered";
-  if (todos.some((todo) => todo.local_stage !== "Pending")) return "in-progress";
+  if (todos.some((todo) => todo.delivery_stage_state !== "verified" || !todo.delivery_stage || todo.qualifier_state !== "verified")) return "unknown";
+  if (todos.some((todo) => todo.blocked)) return "blocked";
+  if (todos.every((todo) => todo.delivery_stage === "Completed")) return "delivered";
+  if (todos.some((todo) => ["In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"].includes(todo.delivery_stage!))) return "in-progress";
   return "planned";
 }
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
@@ -39,15 +80,15 @@ type KnowledgeObservation = { landing?: TargetObservation; roadmap?: TargetObser
 type VisualOriginObservation = { state?: unknown; knowledge_source_state?: unknown; roadmap_source_state?: unknown; design_system_state?: unknown };
 type SnapshotObservations = { knowledge_status?: KnowledgeObservation; visual_origin?: VisualOriginObservation };
 type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; project_sha?: string; external_source_id?: string; external_source_revision?: string; snapshot_observed_at?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: SnapshotObservations; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
-type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap" | "release" | "todo";
+type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap" | "backlog" | "release" | "todo";
 type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; epicID: string; releaseID: string; todoID: string; prototype: PrototypeSelection };
 type ProjectView = { key: string; detail: Detail; theme?: ProjectTheme; themeDiagnostic?: string };
 
 const pages: { id: Exclude<Page, "release" | "todo">; label: string }[] = [
-  { id: "overview", label: "Overview" }, { id: "roadmap", label: "Roadmap" }, { id: "documents", label: "Documents / decisions" },
+  { id: "overview", label: "Overview" }, { id: "roadmap", label: "Roadmap" }, { id: "backlog", label: "Backlog" }, { id: "documents", label: "Documents / decisions" },
   { id: "design-system", label: "Design System" }, { id: "prototypes", label: "Prototype" },
 ];
-const pageDisplayNames: Record<Page, string> = { overview: "Overview", roadmap: "Roadmap", release: "Release", todo: "TODO", documents: "Documents", "design-system": "Design System", prototypes: "Prototypes" };
+const pageDisplayNames: Record<Page, string> = { overview: "Overview", roadmap: "Roadmap", backlog: "Backlog", release: "Release", todo: "TODO", documents: "Documents", "design-system": "Design System", prototypes: "Prototypes" };
 const prototypeKeys = ["artifact", "prototype_id", "screen_id", "state_id", "scenario_id", "scenario_step", "fingerprint", "device", "scale", "mode"];
 const roadmapKeys = ["epic_id", "release_id", "todo_id"];
 
@@ -96,16 +137,105 @@ function documentLabel(path: string) {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function ReleaseDetailView({ roadmap, projectID, epicID, releaseID }: { roadmap?: RoadmapProjection; projectID: string; epicID: string; releaseID: string }) {
-  const epic = roadmap?.project_id === projectID && roadmap.schema_version === "builder-roadmap-v1"
+function todoStatusText(todo: RoadmapTodo) {
+  if (todo.missing) return "TODO indisponível na revisão publicada";
+  return todo.blocked ? `Bloqueado · ${deliveryStageLabel(todo)}` : deliveryStageLabel(todo);
+}
+
+function TodoPreview({ todo, context, epicID = "", releaseID = "", onClose, focusOnMobile = false }: { todo: RoadmapTodo; context: string; epicID?: string; releaseID?: string; onClose: () => void; focusOnMobile?: boolean }) {
+  const previewRef = useRef<HTMLElement | null>(null);
+  const error = Boolean(todo.missing);
+  const objective = todo.objective_state === "complete" ? todo.objective || "" : "";
+  const nextStep = todo.next_step_state === "complete" ? todo.next_step || "" : "";
+  const openFullTODO = () => navigate({ page: "todo", epic_id: epicID || null, release_id: releaseID || null, todo_id: todo.id });
+  useLayoutEffect(() => {
+    if (!focusOnMobile || !window.matchMedia("(max-width: 1200px)").matches) return;
+    const preview = previewRef.current;
+    if (!preview) return;
+    preview.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    preview.focus();
+  }, [focusOnMobile, todo.id]);
+  return <aside ref={previewRef} tabIndex={-1} className="todo-preview roadmap-todo-preview" aria-label="Prévia do TODO">
+    <div className="todo-preview-top"><span>{todo.todo_revision === undefined ? "TODO · LEITURA DA FOUNDATION" : `TODO · REGISTRO MONGO · revisão ${todo.todo_revision}`}</span><button type="button" aria-label="Fechar prévia" onClick={onClose}>×</button></div>
+    <p className="todo-preview-context">{context}</p><h2>{todo.title}</h2><p className={`todo-preview-status ${todo.blocked ? "blocked" : deliveryStageClass(todo)}`}>{todoStatusText(todo)}</p>{todoStatusTeach(todo) && <small className="todo-stage-teach" role="note">{todoStatusTeach(todo)}</small>}
+    {error && <p className="project-notice" role="alert">Este TODO não está disponível na revisão publicada do projeto.</p>}
+    <div className="todo-preview-body">{objective && <section><h3>Objetivo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{objective}</ReactMarkdown></div></section>}{todo.objective_state === "too_long" && <p>O objetivo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}{nextStep && <section><h3>Próximo passo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{nextStep}</ReactMarkdown></div></section>}{todo.next_step_state === "too_long" && <p>O próximo passo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}</div>
+    <button className="todo-preview-open" type="button" disabled={error} onClick={openFullTODO}>Abrir TODO completo <span aria-hidden="true">↗</span></button>
+  </aside>;
+}
+
+function BacklogFolderTree({ folders, onSelect, selectedID = "", root = false }: { folders: BacklogFolder[]; onSelect: (todo: RoadmapTodo) => void; selectedID?: string; root?: boolean }) {
+  return <>{folders.map((folder, index) => <details className="backlog-folder" key={folder.path} ref={(element) => {
+    if (element && root && index === 0 && !element.dataset.initialOpen) {
+      element.open = true;
+      element.dataset.initialOpen = "true";
+    }
+  }}>
+    <summary><span aria-hidden="true">▸</span><strong>{folder.name}</strong><small>{backlogFolderTodoCount(folder)} TODOs</small></summary>
+    {folder.description && <p className="folder-description">{folder.description}</p>}
+    {folder.todos.map((todo) => <button className={`backlog-todo${todo.id === selectedID ? " selected" : ""}`} type="button" key={todo.id} aria-pressed={todo.id === selectedID} onClick={() => onSelect(todo)}>▤ <span><strong>{todo.title}</strong><small>{todoStatusText(todo)} · {folder.name}</small>{todoStatusTeach(todo) && <small className="todo-stage-teach">{todoStatusTeach(todo)}</small>}</span><span aria-hidden="true">›</span></button>)}
+    <BacklogFolderTree folders={folder.folders} onSelect={onSelect} selectedID={selectedID} />
+  </details>)}</>;
+}
+
+function flattenBacklogTodos(folder: BacklogFolder): RoadmapTodo[] {
+  return [...folder.todos, ...folder.folders.flatMap(flattenBacklogTodos)];
+}
+
+function backlogFolderTodoCount(folder: BacklogFolder): number {
+  return folder.todos.length + folder.folders.reduce((total, child) => total + backlogFolderTodoCount(child), 0);
+}
+
+function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { roadmap?: RoadmapProjection; projectID: string; epicID: string; releaseID: string; todoID: string }) {
+  const previewOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const releaseBackRef = useRef<HTMLButtonElement | null>(null);
+  const previewDialogRef = useRef<HTMLDivElement | null>(null);
+  const epic = roadmap?.project_id === projectID && roadmap.schema_version === "builder-roadmap-projection-v3"
     ? roadmap.epics.find((item) => item.id === epicID && item.releases.some((release) => release.id === releaseID)) : undefined;
   const release = epic?.releases.find((item) => item.id === releaseID);
+  const selectedTodo = release?.todos.find((todo) => todo.id === todoID && isTODOReadable(todo));
+  useLayoutEffect(() => {
+    if (!selectedTodo) return;
+    const dialog = previewDialogRef.current;
+    dialog?.querySelector<HTMLButtonElement>('button[aria-label="Fechar prévia"]')?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        navigate({ todo_id: null });
+      } else if (event.key === "Tab" && dialog) {
+        const focusable = Array.from(dialog.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], [tabindex]:not([tabindex="-1"])'));
+        if (!focusable.length) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && (document.activeElement === first || !dialog.contains(document.activeElement))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && (document.activeElement === last || !dialog.contains(document.activeElement))) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    const handleFocusIn = (event: FocusEvent) => {
+      if (dialog && event.target instanceof Node && !dialog.contains(event.target)) {
+        dialog.querySelector<HTMLButtonElement>('button[aria-label="Fechar prévia"]')?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    document.addEventListener("focusin", handleFocusIn);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      document.removeEventListener("focusin", handleFocusIn);
+      (previewOpenerRef.current || releaseBackRef.current)?.focus();
+    };
+  }, [selectedTodo?.id]);
   if (!epic || !release) return <section className="project-notice" role="alert"><h1>Release indisponível</h1><p>Esta Release não existe no Roadmap salvo deste projeto.</p><button onClick={() => navigate({ page: "roadmap", epic_id: null, release_id: null })}>Voltar ao Roadmap</button></section>;
-  const executable = release.todos.filter((todo) => todo.kind === "executable");
+  const executable = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
+  const historical = release.todos.filter((todo) => todo.disposition_state === "valid");
   const status = releaseStatus(release);
   const back = () => navigate({ page: "roadmap", epic_id: epic.id, release_id: release.id });
   return <article className="release-page" aria-label="Detalhe da Release">
-    <button className="release-back" onClick={back}><span aria-hidden="true">←</span> Voltar ao Roadmap</button>
+    <button ref={releaseBackRef} className="release-back" onClick={back}><span aria-hidden="true">←</span> Voltar ao Roadmap</button>
     <nav className="release-breadcrumb" aria-label="Localização"><button onClick={back}>Roadmap</button><span aria-hidden="true">›</span><span>{epic.name}</span><span aria-hidden="true">›</span><span aria-current="page">{release.name}</span></nav>
     <header className="release-hero"><div><span className="release-kicker">RELEASE · {release.id}</span><h1>{release.name}</h1>{release.description && <p>{release.description}</p>}</div><span className={`release-badge ${status}`}><span aria-hidden="true">◉</span> {releaseStatusLabel[status]}</span></header>
     <section className="release-context-strip without-investigation" aria-label="Contexto da release">
@@ -113,25 +243,12 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID }: { roadmap?
     </section>
     <section className="release-work" aria-labelledby="release-work-title"><div className="release-work-heading"><div><h2 id="release-work-title">TODOs executáveis</h2><p>Trabalho agrupado nesta release.</p></div></div>
       {executable.length ? <div className="release-work-list" role="list">{executable.map((todo) => {
-        const stage = todo.work_state === "blocked" ? "blocked" : todo.local_stage === "Production-Ready" ? "delivered" : todo.local_stage === "Lane-Promoted" ? "review" : todo.local_stage === "Local-Implemented" ? "active" : todo.local_stage === "Pending" ? "planned" : "unknown";
-        const label = todo.work_state === "blocked" ? "Bloqueado" : todo.local_stage === "Production-Ready" ? "Entregue" : todo.local_stage === "Lane-Promoted" ? "Em promoção" : todo.local_stage === "Local-Implemented" ? "Implementado localmente" : todo.local_stage === "Pending" ? "Pendente" : "Status indisponível";
-        return <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={() => navigate({ page: "todo", epic_id: epic.id, release_id: release.id, todo_id: todo.id })}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.id}</span><span className={`release-work-status ${stage}`}><i aria-hidden="true" />{label}</span></article>;
+        return <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={(event) => { previewOpenerRef.current = event.currentTarget; navigate({ todo_id: todo.id }); }}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.id}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>;
       })}</div> : <p className="project-notice">Nenhum TODO executável nesta Release.</p>}
     </section>
+    {historical.length > 0 && <section className="release-work" aria-label="Histórico não entregue"><div className="release-work-heading"><div><h2>Histórico não entregue</h2><p>Itens substituídos ou descartados não contam como entrega.</p></div></div><div className="release-work-list" role="list">{historical.map((todo) => <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={() => navigate({ todo_id: todo.id })}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.disposition_reason}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>)}</div></section>}
+    {selectedTodo && <div ref={previewDialogRef} className="release-todo-overlay" role="dialog" aria-modal="true" aria-label="Prévia do TODO"><TodoPreview todo={selectedTodo} context={`${epic.name} / ${release.name}`} epicID={epic.id} releaseID={release.id} onClose={() => navigate({ todo_id: null })} /></div>}
   </article>;
-}
-
-function authoredSection(source: string, heading: string) {
-  const start = source.search(new RegExp(`^## ${heading}\\s*$`, "m"));
-  if (start < 0) return "";
-  const body = source.slice(start).replace(/^## [^\n]*\n?/, "");
-  const end = body.search(/^## /m);
-  return (end < 0 ? body : body.slice(0, end)).trim();
-}
-
-function authoredField(source: string, label: string) {
-  const match = source.match(new RegExp(`^- \\*\\*${label}:\\*\\*\\s*(.+)$`, "m"));
-  return match?.[1]?.trim() || "";
 }
 
 function savedObservationStatus(value: unknown, known: Record<string, string>) {
@@ -161,7 +278,7 @@ function SnapshotStatus({ detail }: { detail: Detail }) {
   const needsAttention = landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
   const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
   return <section className="overview-status" aria-labelledby="snapshot-status-title">
-    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · current read</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
+    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · loaded revision</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
     <dl className="overview-status-grid">
       <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
       <div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div>
@@ -172,67 +289,51 @@ function SnapshotStatus({ detail }: { detail: Detail }) {
   </section>;
 }
 
-function TodoDetailView({ detail, projectID, epicID, releaseID, todoID }: { detail: Detail; projectID: string; epicID: string; releaseID: string; todoID: string }) {
-  const matches: { epic: RoadmapEpic; release: RoadmapRelease; todo: RoadmapTodo }[] = [];
-  if (detail.roadmap?.project_id === projectID && detail.roadmap.schema_version === "builder-roadmap-v1") {
-    for (const epic of detail.roadmap.epics) for (const release of epic.releases) for (const todo of release.todos) {
-      if (todo.id === todoID && todo.kind === "executable") matches.push({ epic, release, todo });
-    }
-  }
-  const selected = matches.length === 1 && (!epicID || matches[0].epic.id === epicID) && (!releaseID || matches[0].release.id === releaseID) ? matches[0] : null;
-  const admitted = detail.artifacts.find((item) => item.kind === "roadmap" && item.state === "available")?.files?.includes(selected?.todo.path || "") || false;
-  const [source, setSource] = useState("");
-  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: RoadmapProjection; companyID: string; projectID: string; todoID: string }) {
+  const [mongoRead, setMongoRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: MongoTODORead; message?: string }>({ key: "", state: "loading" });
+  const mongoSummary = [...(roadmap?.epics.flatMap((epic) => epic.releases.flatMap((release) => release.todos)) || []), ...(roadmap?.backlog.todos || []), ...(roadmap?.backlog.folders.flatMap(flattenBacklogTodos) || [])].find((todo) => todo.id === todoID && todo.todo_revision !== undefined);
+  const mongoInBacklog = Boolean(mongoSummary && roadmap?.backlog.todos.concat(roadmap.backlog.folders.flatMap(flattenBacklogTodos)).some((todo) => todo.id === mongoSummary.id));
+  const mongoKey = mongoSummary ? `${companyID}/${projectID}/${mongoSummary.id}/${mongoSummary.todo_revision}` : "";
   useEffect(() => {
-    setSource(""); setState("loading");
-    if (!selected || !admitted || !detail.snapshot_fingerprint) { setState("error"); return; }
+    if (!mongoKey || !mongoSummary) { setMongoRead({ key: mongoKey, state: "error" }); return; }
     const controller = new AbortController();
-    fetch(snapshotFileURL(detail, selected.todo.path), { signal: controller.signal }).then(async (response) => {
-      if (!response.ok || response.headers.get("X-Builder-Snapshot-Fingerprint") !== detail.snapshot_fingerprint) throw new Error("TODO snapshot mismatch");
-      return response.text();
-    }).then((value) => {
-      const heading = value.match(/^# (.+)$/m)?.[1]?.trim();
-      if (heading !== selected.todo.title) throw new Error("TODO title mismatch");
-      if (!controller.signal.aborted) { setSource(value); setState("ready"); }
-    }).catch(() => { if (!controller.signal.aborted) setState("error"); });
+    setMongoRead({ key: mongoKey, state: "loading" });
+    const query = new URLSearchParams({ company_id: companyID, project_id: projectID, todo_id: mongoSummary.id, todo_revision: String(mongoSummary.todo_revision) });
+    fetch(`/api/roadmap?${query}`, { signal: controller.signal }).then(async (response) => {
+      const value = await response.json() as MongoTODORead & { error?: string; teach?: string };
+      if (!response.ok) throw new Error(value.teach || "TEACH: The current Mongo TODO revision is unavailable.");
+      if (value.company_id !== companyID || value.project_id !== projectID || value.todo?.id !== mongoSummary.id || value.todo_revision !== mongoSummary.todo_revision || value.todo.revision !== mongoSummary.todo_revision) throw new Error("TEACH: Mongo TODO identity or revision changed. Reload Roadmap.");
+      return value;
+    }).then((value) => { if (!controller.signal.aborted) setMongoRead({ key: mongoKey, state: "ready", value }); })
+      .catch((error: unknown) => { if (!controller.signal.aborted) setMongoRead({ key: mongoKey, state: "error", message: error instanceof Error ? error.message : "TEACH: Mongo TODO unavailable." }); });
     return () => controller.abort();
-  }, [detail, selected?.todo.path, selected?.todo.title, admitted]);
-  if (!selected) return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>Este TODO não pertence à Release executável deste projeto.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
-  const back = () => navigate({ page: "release", epic_id: selected.epic.id, release_id: selected.release.id });
-  const objective = authoredSection(source, "Objective");
-  const scope = authoredSection(source, "Scope");
-  const completion = authoredSection(source, "Definition of Done");
-  const nextStep = authoredField(source, "Next exact step");
-  const primaryModule = authoredField(source, "Primary module");
-  return <article className="todo-page" aria-label="Detalhe do TODO">
-    <nav className="todo-breadcrumb" aria-label="Localização"><button onClick={() => navigate({ page: "roadmap", epic_id: selected.epic.id, release_id: selected.release.id })}>Roadmap</button><span aria-hidden="true">›</span><span>{selected.epic.name}</span><span aria-hidden="true">›</span><button onClick={back}>{selected.release.name}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav>
-    <header className="todo-hero"><h1>{selected.todo.title}</h1><div className="todo-hero-meta"><span className={`todo-stage ${selected.todo.work_state === "blocked" ? "blocked" : selected.todo.local_stage === "Production-Ready" ? "delivered" : ""}`}><i aria-hidden="true" />{selected.todo.work_state === "blocked" ? "Blocked · " : ""}{selected.todo.local_stage}</span><span className="todo-source-label">Fonte: TODO Markdown</span></div></header>
-    {state === "loading" && <p className="project-notice" role="status">Carregando TODO da Foundation…</p>}
-    {state === "error" && <p className="project-notice" role="alert">O Markdown admitido deste TODO não está disponível ou não corresponde ao snapshot do projeto.</p>}
-    {state === "ready" && <>
-      {objective && <section className="todo-objective" aria-labelledby="todo-objective-title"><span className="todo-icon" aria-hidden="true">◎</span><div><h2 id="todo-objective-title">Objective</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{objective}</ReactMarkdown></div></div></section>}
-      <section className="todo-facts" aria-label="Contexto do TODO"><div><span className="todo-icon" aria-hidden="true">⌁</span><span><small>Current delivery stage</small><strong>{selected.todo.local_stage}</strong></span></div>{nextStep && <div><span className="todo-icon" aria-hidden="true">➜</span><span><small>Next exact step</small><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{nextStep}</ReactMarkdown></div></span></div>}<div><span className="todo-icon" aria-hidden="true">◇</span><span><small>Release</small><strong>{selected.release.name}</strong></span></div></section>
-      {(scope || completion || primaryModule) && <div className="todo-columns"><section className="todo-panel todo-work" aria-label="Contrato de trabalho">{scope && <><h2><span className="todo-icon" aria-hidden="true">☷</span>Scope</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{scope}</ReactMarkdown></div></>}{scope && completion && <hr />}{completion && <><h2><span className="todo-icon" aria-hidden="true">✓</span>Definition of Done</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{completion}</ReactMarkdown></div></>}</section><aside className="todo-panel todo-relations" aria-label="Fonte e relações"><h2><span className="todo-icon" aria-hidden="true">▤</span>Source</h2><p><code>{selected.todo.path}</code></p>{primaryModule && <><h2><span className="todo-icon" aria-hidden="true">◇</span>Primary module</h2><p><code>{primaryModule.replace(/^`|`$/g, "")}</code></p></>}</aside></div>}
-      <details className="todo-source"><summary><span className="todo-icon" aria-hidden="true">▤</span>Contrato completo · abrir Markdown original <span aria-hidden="true">⌄</span></summary><pre>{source}</pre></details>
-    </>}
-  </article>;
+  }, [mongoKey, companyID, projectID, mongoSummary?.todo_revision]);
+  if (mongoSummary) {
+    const loadedMongo = mongoRead.key === mongoKey ? mongoRead : { key: mongoKey, state: "loading" as const };
+    const item = loadedMongo.value?.todo;
+    return <article className="todo-page" aria-label="Mongo TODO detail"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: mongoInBacklog ? "backlog" : "roadmap" })}>{mongoInBacklog ? "Backlog" : "Roadmap"}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav><header className="todo-hero"><h1>{mongoSummary.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={mongoSummary} className="todo-stage"/><span className="todo-source-label">Fonte: Mongo · revisão {mongoSummary.todo_revision}</span></div></header>{loadedMongo.state === "loading" && <p role="status">Carregando contrato Mongo…</p>}{loadedMongo.state === "error" && <p className="project-notice" role="alert">{loadedMongo.message || "TEACH: Mongo TODO readback failed. Reload Roadmap and retry."}</p>}{item && <><section className="todo-objective"><div><h2>Objective</h2><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.objective}</ReactMarkdown></div></section><section className="todo-facts"><div><span><small>Next exact step</small><strong>{item.next_exact_step}</strong></span></div><div><span><small>Stage</small><strong>{item.stage}</strong></span></div></section>{item.sections.map((section) => <section className="todo-panel" key={`${section.position}:${section.key}`}><h2>{section.title}</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</>}</article>;
+  }
+  return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>TEACH: Este item não possui uma revisão exata no Mongo Roadmap. Markdown Foundation é proveniência de migração e não será usado como conteúdo atual.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
 }
 
 function OverviewEditorial({ detail, projectName }: { detail: Detail; projectName: string }) {
   const overview = detail.overview;
+  const landing = detail.artifacts.find((item) => item.kind === "landing" && item.state === "available");
+  const landingHref = landing ? artifactURL(detail, landing) : "";
+  const landingLink = landingHref ? <a className="overview-landing-link" href={landingHref} target="_blank" rel="noreferrer">Ver landing independente <span aria-hidden="true">→</span></a> : null;
   if (!overview || overview.schema_version !== "1") return <section className="project-notice" role="status">
-    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>
+    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>{landingLink}
   </section>;
   const sections = ["problem", "proposal", "impact", "audience"] as const;
   const labels = { problem: "Problema", proposal: "Proposta", impact: "Impacto", audience: "Para quem" };
   return <>
     <section className="project-hero overview-hero" aria-label="Project introduction">
-      <div className="project-hero-copy"><span className="overview-eyebrow">VISÃO DO PROJETO</span><h1>{projectName}</h1><h2 className="overview-hero-tagline">{overview.tagline}</h2><p className="overview-hero-summary">{overview.summary}</p>{(() => { const landing = detail.artifacts.find((item) => item.kind === "landing" && item.state === "available"); const href = landing ? artifactURL(detail, landing) : ""; return href ? <a className="overview-landing-link" href={href} target="_blank" rel="noreferrer">Ver landing independente <span aria-hidden="true">→</span></a> : null; })()}</div>
+      <div className="project-hero-copy"><span className="overview-eyebrow">VISÃO DO PROJETO</span><h1>{projectName}</h1><h2 className="overview-hero-tagline">{overview.tagline}</h2><p className="overview-hero-summary">{overview.summary}</p>{landingLink}</div>
       {(overview.media?.desktop && overview.media?.mobile) ? <div className="overview-device-pair" aria-label="Project preview images">
         <span className="overview-visual-note">CONCEITO · DADOS ILUSTRATIVOS</span>
         {overview.media.desktop && <img className="overview-desktop" src={overview.media.desktop} alt={overview.desktop_alt || ""} />}
         {overview.media.mobile && <img className="overview-mobile" src={overview.media.mobile} alt={overview.mobile_alt || ""} />}
-      </div> : <p className="project-notice" role="alert">Hero images are missing from the current published Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
+      </div> : <p className="project-notice" role="alert">Hero images are missing from the loaded Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
     </section>
     <div className="overview-editorial" aria-label="Project at a glance">{sections.map((key) => {
       const section = overview.sections[key];
@@ -271,8 +372,8 @@ function useDraggableRail() {
   };
 }
 
-function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = false }: { roadmap?: RoadmapProjection; detail: Detail; projectID: string; epicID: string; releaseID: string; compact?: boolean }) {
-  const roadmapArtifact = detail.artifacts.find((item) => item.kind === "roadmap");
+function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = false }: { roadmap?: RoadmapProjection; detail?: Detail | null; projectID: string; epicID: string; releaseID: string; compact?: boolean }) {
+  const roadmapArtifact = detail?.artifacts.find((item) => item.kind === "roadmap");
   const epics = roadmap?.epics || [];
   const requestedReleaseEpic = releaseID ? epics.find((epic) => epic.releases.some((release) => release.id === releaseID)) : undefined;
   const invalidFocus = (releaseID && !requestedReleaseEpic) || (epicID && !epics.some((epic) => epic.id === epicID)) || (epicID && requestedReleaseEpic && epicID !== requestedReleaseEpic.id);
@@ -312,7 +413,7 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
       rail.style.scrollBehavior = "";
     }
   }, [compact, selectedEpicID, focusedRelease]);
-  if (!roadmap || roadmap.project_id !== projectID || roadmap.schema_version !== "builder-roadmap-v1") {
+  if (!roadmap || roadmap.project_id !== projectID || roadmap.schema_version !== "builder-roadmap-projection-v3") {
     return <p className="project-notice roadmap-unavailable" role={roadmapArtifact?.state === "invalid" ? "alert" : "status"}>
       {roadmapArtifact?.diagnostic || "Project Roadmap data is not available in this saved snapshot."}
     </p>;
@@ -321,8 +422,11 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
   const selectedEpicIndex = Math.max(0, epics.findIndex((epic) => epic.id === selectedEpic?.id));
   const releases = selectedEpic?.releases || [];
   const focusName = selectedEpic?.releases.find((release) => release.id === focusedRelease)?.name;
-  const selectEpic = (epic?: RoadmapEpic) => { if (epic) navigate({ epic_id: epic.id, release_id: initialRelease(epic)?.id || null }); };
-  const selectRelease = (release: RoadmapRelease) => navigate({ epic_id: selectedEpicID, release_id: release.id });
+  const selectEpic = (epic?: RoadmapEpic) => { if (epic) navigate({ epic_id: epic.id, release_id: initialRelease(epic)?.id || null, todo_id: null }); };
+  const selectRelease = (release: RoadmapRelease) => navigate({ epic_id: selectedEpicID, release_id: release.id, todo_id: null });
+  const visibleRelease = selectedEpic?.releases.find((release) => release.id === focusedRelease);
+  const selectedReleaseTodo = visibleRelease?.todos.find((todo) => todo.id === route().todoID);
+  const previewContext = selectedEpic && visibleRelease ? `${selectedEpic.name} / ${visibleRelease.name}` : "";
   return <section className={`roadmap-view${compact ? " roadmap-view-compact" : " roadmap-screen"}`} aria-label={compact ? "Project Roadmap overview" : "Project Roadmap"}>
     {!compact && <header className="roadmap-heading"><div><p className="roadmap-eyebrow">PLANEJAMENTO DO PROJETO</p><h1>Roadmap</h1><p className="roadmap-subtitle">Visão estratégica do projeto em releases.</p></div><div className="roadmap-heading-aside"><span>Da ideia ao impacto, um plano.</span><div className="roadmap-progress-track"><i /></div><div className="roadmap-heading-controls"><button type="button" aria-label="Previous Epic" disabled={selectedEpicIndex === 0} onClick={() => selectEpic(epics[selectedEpicIndex - 1])}>‹</button><button type="button" aria-label="Next Epic" disabled={selectedEpicIndex >= epics.length - 1} onClick={() => selectEpic(epics[selectedEpicIndex + 1])}>›</button></div></div></header>}
     {compact && <header className="roadmap-journey-heading"><div><span>JORNADA ESTRATÉGICA DO PROJETO</span><p>Do plano aos próximos marcos do projeto.</p></div><small>Arraste para explorar ↔</small></header>}
@@ -333,12 +437,13 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
         {epics.map((epic) => <button key={epic.id} className={`${compact ? "" : "epic-card "}${epic.id === selectedEpic?.id ? "selected" : ""}`} aria-pressed={epic.id === selectedEpic?.id} onClick={() => selectEpic(epic)}>
           {compact ? <><i className={`roadmap-journey-status${epic.id === selectedEpic?.id ? " active" : ""}`} aria-hidden="true" /><span>Épico</span><strong>{epic.name}</strong><small>{epic.releases.some((release) => release.id === focusedRelease) ? "Foco atual" : "No plano"}</small></> : <><span className="epic-top"><span className="epic-symbol" aria-hidden="true">{epic.releases.some((release) => release.id === focusedRelease) ? "◉" : "◷"}</span><span><span className="epic-title">{epic.name}</span><span className="epic-status">{epic.releases.some((release) => release.id === focusedRelease) ? "Foco atual" : "No plano"}</span></span></span><span className="epic-description">{epic.description}</span><span className="release-count">{epic.releases.length} {epic.releases.length === 1 ? "release" : "releases"}</span></>}
         </button>)}
+        {epics.length === 0 && <p className="roadmap-no-releases">Nenhum Epic ou Release planejado.</p>}
         </div>
         {compact && <button className="roadmap-rail-arrow" type="button" aria-label="Next Epic" disabled={selectedEpicIndex >= epics.length - 1} onClick={() => selectEpic(epics[selectedEpicIndex + 1])}>›</button>}
       </div>
     </div>
     {compact && <div className="roadmap-rail-group roadmap-releases-rail">
-      <h3>RELEASES DO ÉPICO {selectedEpic?.name.toLocaleUpperCase("pt-BR")}</h3><p>Marcos deste épico.</p>
+      <h3>{selectedEpic ? `RELEASES DO ÉPICO ${selectedEpic.name.toLocaleUpperCase("pt-BR")}` : "PLANO DE RELEASES"}</h3><p>{selectedEpic ? "Marcos deste épico." : "Nenhum Epic ou Release planejado."}</p>
       <div className="roadmap-rail-frame">
       <button className="roadmap-rail-arrow" type="button" aria-label="Previous Release" onClick={(event) => { const rail = event.currentTarget.nextElementSibling as HTMLDivElement; rail.scrollLeft -= Math.max(rail.clientWidth * .7, 180); }}>‹</button>
       <div className="roadmap-rail" ref={releaseRail} role="group" aria-label="Releases for selected Epic" {...releaseDrag}>
@@ -350,7 +455,7 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
       <button className="roadmap-rail-arrow" type="button" aria-label="Next Release" onClick={(event) => { const rail = event.currentTarget.previousElementSibling as HTMLDivElement; rail.scrollLeft += Math.max(rail.clientWidth * .7, 180); }}>›</button>
       </div>
     </div>}
-    {!compact && <div className="roadmap-full-body"><div className="roadmap-release-panel release-panel"><header className="roadmap-release-panel-heading release-heading"><div><span>RELEASES DO ÉPICO</span><h2>Releases de {selectedEpic?.name}</h2><p>{selectedEpic?.description}</p></div></header><div className="roadmap-release-list release-list" role="group" aria-label="Releases for selected Epic">
+    {!compact && <div className="roadmap-full-body"><div className="roadmap-release-panel release-panel"><header className="roadmap-release-panel-heading release-heading"><div><span>{selectedEpic ? "RELEASES DO ÉPICO" : "PLANEJAMENTO"}</span><h2>{selectedEpic ? `Releases de ${selectedEpic.name}` : "Sem plano de releases"}</h2><p>{selectedEpic?.description || (!selectedEpic ? "TODOs ativos identificados pela Foundation aparecem no Backlog; nenhum agrupamento foi inferido." : "")}</p></div></header><div className="roadmap-release-list release-list" role="group" aria-label="Releases for selected Epic">
       {releases.map((release) => <section className={`roadmap-release release-card${release.id === focusedRelease ? " focused" : ""}${expandedReleaseIDs.includes(release.id) ? " open" : ""}`} key={release.id}>
         <button className="roadmap-release-toggle release-toggle" aria-expanded={expandedReleaseIDs.includes(release.id)} onClick={() => { if (release.id !== focusedRelease) selectRelease(release); else setExpandedReleaseIDs((current) => current.includes(release.id) ? current.filter((id) => id !== release.id) : [...current, release.id]); }}>
           <span className="roadmap-release-chevron chevron" aria-hidden="true">›</span><span className="roadmap-release-name release-name">{release.name}<span className="release-description">{release.description}</span></span>
@@ -358,16 +463,61 @@ function RoadmapView({ roadmap, detail, projectID, epicID, releaseID, compact = 
         </button>
         <button className="roadmap-release-open" type="button" aria-label="Abrir Release" title={`Abrir ${release.name}`} onClick={() => navigate({ page: "release", epic_id: selectedEpicID, release_id: release.id })}><span aria-hidden="true">›</span></button>
         {expandedReleaseIDs.includes(release.id) && <div className="roadmap-release-details release-details"><div className="roadmap-table-scroll"><table className="roadmap-todo-table todo-table"><thead><tr><th>#</th><th>TODO</th><th>TIPO · REGISTRO</th><th>STATUS</th></tr></thead><tbody>{release.todos.map((todo, index) => <tr key={todo.id}>
-          <td>{String(index + 1).padStart(2, "0")}</td><td className="todo-name" title={todo.path}>{todo.kind === "executable" ? <button className="roadmap-todo-link" onClick={() => navigate({ page: "todo", epic_id: selectedEpicID, release_id: release.id, todo_id: todo.id })}>▤ &nbsp;{todo.title}</button> : <>▤ &nbsp;{todo.title}</>}</td><td><span className="roadmap-todo-meta">{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}<small>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</small></span></td><td>{todo.kind === "planning" ? <span className="roadmap-todo-stage">—</span> : <span className={`roadmap-todo-stage todo-status${todo.work_state === "blocked" ? " blocked" : todo.local_stage === "Local-Implemented" ? " doing" : todo.local_stage === "Lane-Promoted" ? " validation" : todo.local_stage === "Production-Ready" ? " done" : ""}`}>{todo.work_state === "blocked" ? "Blocked · " : ""}{todo.local_stage || "unknown"}</span>}</td>
+          <td>{String(index + 1).padStart(2, "0")}</td><td className="todo-name" title={todo.path}>{isTODOReadable(todo) ? <button className="roadmap-todo-link" onClick={() => navigate({ todo_id: todo.id })}>▤ &nbsp;{todo.title}</button> : <>▤ &nbsp;{todo.title}</>}</td><td><span className="roadmap-todo-meta">{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}<small>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</small></span></td><td>{todo.kind === "planning" ? <span className="roadmap-todo-stage">—</span> : <TodoStageStatus todo={todo} className="roadmap-todo-stage todo-status" />}</td>
         </tr>)}</tbody></table></div></div>}
       </section>)}
       {releases.length === 0 && <p className="project-notice">No Releases defined yet.</p>}
-    </div></div><aside className="roadmap-context"><h2>Contexto do projeto</h2><div><span>▤</span><p><small>Release em foco</small><strong>{focusName || "Sem Release neste épico"}</strong>Seleção de navegação, não conclusão.</p></div><nav className="roadmap-context-links" aria-label="Roadmap useful links"><h3>Links úteis</h3><button type="button" onClick={() => navigate({ page: "overview" })}>◉ <span>Visão do produto</span><b aria-hidden="true">↗</b></button><button type="button" onClick={() => navigate({ page: "documents" })}>▤ <span>Documentação</span><b aria-hidden="true">↗</b></button></nav></aside></div>}
+    </div></div>
+    {!compact && (roadmap.unclassified.length > 0 || roadmap.diagnostics.length > 0) && <section className="roadmap-planning-diagnostics">
+      {roadmap.unclassified.length > 0 && <section className="roadmap-unclassified" aria-label="TODOs sem classificação"><h3>Planejamento inválido · documentos admitidos sem agrupamento</h3><ul>{roadmap.unclassified.map((item) => <li key={item.path}><span>{item.path}</span><small>{item.reason}</small></li>)}</ul></section>}
+      {roadmap.diagnostics.length > 0 && <section className="roadmap-diagnostics" aria-label="Roadmap diagnostics"><h3>Avisos do Roadmap</h3><ul>{roadmap.diagnostics.map((item, index) => <li key={`${item.code}:${item.path || index}`}><strong>{item.path || item.code}</strong><span>{item.message}</span></li>)}</ul></section>}
+    </section>}
+    </div>}
+    {!compact && selectedReleaseTodo ? <TodoPreview todo={selectedReleaseTodo} context={previewContext} epicID={selectedEpicID} releaseID={focusedRelease} onClose={() => navigate({ todo_id: null })} focusOnMobile /> : !compact && <aside className="roadmap-context"><h2>Contexto do projeto</h2><div><span>▤</span><p><small>Release em foco</small><strong>{focusName || (selectedEpic ? "Sem Release neste épico" : "Sem Release planejada")}</strong>Seleção de navegação, não conclusão.</p></div><nav className="roadmap-context-links" aria-label="Roadmap useful links"><h3>Links úteis</h3><button type="button" onClick={() => navigate({ page: "overview" })}>◉ <span>Visão do produto</span><b aria-hidden="true">↗</b></button><button type="button" onClick={() => navigate({ page: "documents" })}>▤ <span>Documentação</span><b aria-hidden="true">↗</b></button></nav></aside>}
+  </section>;
+}
+
+function BacklogView({ roadmap, detail, projectID, todoID }: { roadmap?: RoadmapProjection; detail?: Detail | null; projectID: string; todoID: string }) {
+  const roadmapArtifact = detail?.artifacts.find((item) => item.kind === "roadmap");
+  if (!roadmap || roadmap.project_id !== projectID || roadmap.schema_version !== "builder-roadmap-projection-v3") {
+    return <p className="project-notice" role={roadmapArtifact?.state === "invalid" ? "alert" : "status"}>{roadmapArtifact?.diagnostic || "Project Backlog data is not available in this snapshot."}</p>;
+  }
+  const selectedTodo = roadmap.backlog.todos.concat(roadmap.backlog.folders.flatMap(flattenBacklogTodos)).find((todo) => todo.id === todoID);
+  const selectTodo = (todo: RoadmapTodo) => navigate({ todo_id: todo.id });
+  const folderPath = selectedTodo?.path?.replace("todos/active/", "").split("/").slice(0, -1).join(" / ") || "Raiz";
+  return <section className="backlog-view" aria-label="Project Backlog">
+    <div className="backlog-main">
+      <header className="backlog-page-heading"><p className="roadmap-eyebrow">TRABALHO AINDA NÃO PLANEJADO</p><h1>Backlog</h1><p className="subtitle">TODOs ativos ainda não atribuídos a uma Release. As pastas preservam a organização da Foundation.</p></header>
+      <section className="backlog-panel" aria-labelledby="backlog-heading"><div className="backlog-heading"><div><p className="roadmap-eyebrow">EXPLORAR POR PASTA</p><h2 id="backlog-heading">O que está em aberto</h2><p className="subtitle">Expanda uma pasta para ver seus TODOs; selecione um item para ler a prévia.</p></div></div>
+        {roadmap.backlog.folders.length > 0 && <div className="backlog-tree" role="group" aria-label="Pastas do Backlog"><BacklogFolderTree folders={roadmap.backlog.folders} root selectedID={selectedTodo?.id} onSelect={selectTodo} /></div>}
+        {roadmap.backlog.todos.length > 0 && <div className="backlog-ungrouped"><h3>Sem pasta</h3>{roadmap.backlog.todos.map((todo) => <button className={`backlog-todo${todo.id === selectedTodo?.id ? " selected" : ""}`} type="button" key={todo.id} aria-pressed={todo.id === selectedTodo?.id} onClick={() => selectTodo(todo)}>▤ <span><strong>{todo.title}</strong><small>{todoStatusText(todo)} · Raiz do Backlog</small>{todoStatusTeach(todo) && <small className="todo-stage-teach">{todoStatusTeach(todo)}</small>}</span><span aria-hidden="true">›</span></button>)}</div>}
+        {roadmap.backlog.folders.length === 0 && roadmap.backlog.todos.length === 0 && <p className="project-notice">Nenhum TODO ativo sem Release.</p>}
+      </section>
+    </div>
+    {selectedTodo ? <TodoPreview todo={selectedTodo} context={`Backlog · ${folderPath}`} onClose={() => navigate({ todo_id: null })} focusOnMobile /> : <aside className="backlog-context" aria-label="Contexto do Backlog"><section className="backlog-context-card"><h2>Backlog</h2><p>Este trabalho ainda não pertence a um épico ou a uma Release. A organização por pastas pode ser aninhada e descrita por README.</p><div className="backlog-context-notice"><span aria-hidden="true">ⓘ</span><p>Selecionar um TODO abre a prévia sem perder a posição na árvore.</p></div><button type="button" onClick={() => navigate({ page: "roadmap" })}>Ver Roadmap <span aria-hidden="true">→</span></button></section></aside>}
   </section>;
 }
 
 function PortalHeader({ children }: { children: ReactNode }) {
   return <header className="projects-mast"><a href="/">Builder <span>Project directory</span></a>{children}</header>;
+}
+
+function ProjectLoadingShell({ company, project, error, stage, onRetry }: { company: Company; project: Project; error: string; stage: "foundation" | "design" | "error"; onRetry: () => void }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => { const started = Date.now(); const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000); return () => window.clearInterval(timer); }, []);
+  const foundationDone = stage === "design" || stage === "error";
+  const context = `${company.name} / ${project.name}`;
+  return <main className="projects-page projects-project project-loading-shell">
+    <header className="project-topbar"><a className="project-topbar-brand" href="/"><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project Builder</span></a><div className="project-topbar-meta"><span>Modo do projeto: <strong>MVP</strong></span><span>Exploração visual</span></div></header>
+    <div className="project-layout"><nav className="project-nav" aria-label="Navegação do projeto"><div className="project-nav-links">{pages.map((item) => <button key={item.id} disabled aria-label={item.label}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div><span className="nav-footer">Exploração visual</span></nav>
+      <section className="project-content project-loading-page" aria-label="Abrindo projeto"><p className="roadmap-eyebrow">BELLUGA SOLUTIONS / BUILDER</p><h1>Abrindo o projeto</h1><p className="subtitle">O painel está conferindo a revisão publicada antes de mostrar os dados.</p>
+        <section className="loading-card" aria-labelledby="loading-title" role={error ? "alert" : "status"} aria-live="polite"><div className="loading-card-head"><span className="loading-symbol" aria-hidden="true">◌</span><div><p className="roadmap-eyebrow">LEITURA DO PROJETO</p><h2 id="loading-title">Extraindo dados dos seus TODOs</h2></div></div>
+          <p id="loading-explanation">{error || "Empresa e projeto encontrados. A leitura da Foundation publicada está em andamento."}</p>
+          <ol className="loading-steps"><li className="confirmed"><span aria-hidden="true">✓</span><span>Contexto encontrado<strong>{context}</strong></span></li><li className={error ? "failed" : foundationDone ? "confirmed" : "running"}><span aria-hidden="true">{error ? "!" : foundationDone ? "✓" : "◌"}</span><span>Foundation publicada<strong>{error ? "A leitura precisa ser tentada novamente" : foundationDone ? "Revisão lida" : "Aguardando resposta da API"}</strong></span></li><li className={stage === "design" ? "running" : "pending"}><span aria-hidden="true">{stage === "design" ? "◌" : "·"}</span><span>Design System<strong>{stage === "design" ? "Aplicação após a leitura" : "Aplicação após a leitura"}</strong></span></li></ol>
+          <p className="loading-elapsed">Aguardando há {elapsed} s</p><div className="loading-actions">{error && <button id="retry-link" type="button" onClick={onRetry}>Tentar novamente</button>}<a href="/">Trocar de projeto</a></div>
+        </section><p className="loading-note">O produto só mostrará contagens e etapas confirmadas pela API.</p>
+      </section></div>
+  </main>;
 }
 
 function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void }) {
@@ -420,8 +570,11 @@ export function Projects() {
   const [catalog, setCatalog] = useState<Catalog>({ companies: [], projects: [] });
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<ProjectView | null>(null);
+  const [roadmapRead, setRoadmapRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: RoadmapProjection }>({ key: "", state: "loading" });
   const [viewState, setViewState] = useState<"loading" | "ready" | "error">("loading");
   const [viewError, setViewError] = useState<"unavailable" | "registration">("unavailable");
+  const [loadStage, setLoadStage] = useState<"foundation" | "design" | "error">("foundation");
+  const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
   const [selectedDoc, setSelectedDoc] = useState("");
   const [markdown, setMarkdown] = useState("");
@@ -446,13 +599,24 @@ export function Projects() {
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
   const viewKey = project ? `${project.company_id}/${project.id}` : "";
   useEffect(() => {
-    setView(null); setViewState("loading"); setViewError("unavailable"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
+    if (!project || !["overview", "roadmap", "backlog", "release", "todo"].includes(selection.page)) { setRoadmapRead({ key: "", state: "loading" }); return; }
+    const controller = new AbortController();
+    const key = `${project.company_id}/${project.id}`;
+    setRoadmapRead({ key, state: "loading" });
+    const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
+    fetch(`/api/roadmap?${query}`, { signal: controller.signal }).then(async (response) => {
+      const value = await response.json() as RoadmapProjection;
+      if (!response.ok || value.project_id !== project.id || value.schema_version !== "builder-roadmap-projection-v3") throw new Error("Roadmap unavailable");
+      return value;
+    }).then((value) => { if (!controller.signal.aborted) setRoadmapRead({ key, state: "ready", value }); })
+      .catch(() => { if (!controller.signal.aborted) setRoadmapRead({ key, state: "error" }); });
+    return () => controller.abort();
+  }, [viewKey, reloadCounter, selection.page]);
+  useEffect(() => {
+    setView(null); setViewState("loading"); setViewError("unavailable"); setLoadStage("foundation"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
     if (!project) return;
     const controller = new AbortController();
-    let inFlight = false;
     async function load() {
-      if (inFlight) return;
-      inFlight = true;
       try {
         const response = await fetch(`/api/local-preview?company_id=${encodeURIComponent(project!.company_id)}&project_id=${encodeURIComponent(project!.id)}`, { signal: controller.signal });
         if (!response.ok) {
@@ -464,11 +628,12 @@ export function Projects() {
         }
         const detail = await response.json() as Detail;
         if (detail.company_id !== project!.company_id || detail.project_id !== project!.id || detail.consumer_readiness !== "ready" || !detail.snapshot_fingerprint) throw new Error("Published Project is unavailable");
+        if (!controller.signal.aborted) setLoadStage("design");
         let theme: ProjectTheme | undefined;
         let themeDiagnostic: string | undefined;
         if (detail.consumer_readiness === "ready") {
           const design = detail.artifacts.find((item) => item.kind === "design_system" && item.state === "available" && item.files?.includes("design/system/design-system.json"));
-          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The current published Design System definition is unavailable.";
+          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The loaded Design System definition is unavailable.";
           else {
             try {
               const definition = await fetch(snapshotFileURL(detail, "design/system/design-system.json"), { signal: controller.signal });
@@ -476,26 +641,24 @@ export function Projects() {
               const resolved = resolveProjectTheme(await definition.json());
               theme = resolved.style; themeDiagnostic = resolved.diagnostic;
             } catch {
-              themeDiagnostic = "The current published Design System definition could not be read.";
+              themeDiagnostic = "The loaded Design System definition could not be read.";
             }
           }
         }
         if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
       } catch (error) {
-        if (!controller.signal.aborted) { setViewError(error instanceof Error && error.message === "registration" ? "registration" : "unavailable"); setViewState("error"); }
-      } finally {
-        inFlight = false;
+        if (!controller.signal.aborted) { setViewError(error instanceof Error && error.message === "registration" ? "registration" : "unavailable"); setLoadStage("error"); setViewState("error"); }
       }
     }
     void load();
-    let timer: number | undefined;
-    const refresh = () => { if (document.visibilityState === "visible" && !inFlight) { setView(null); setViewState("loading"); void load(); } };
-    timer = window.setInterval(refresh, 30_000);
-    document.addEventListener("visibilitychange", refresh);
-    return () => { controller.abort(); if (timer !== undefined) window.clearInterval(timer); document.removeEventListener("visibilitychange", refresh); };
-  }, [viewKey]);
+    return () => controller.abort();
+  }, [viewKey, reloadCounter]);
   const activeView = view?.key === viewKey ? view : null;
-  const detail = activeView?.detail || null;
+  const roadFamilyPage = ["roadmap", "backlog", "release", "todo"].includes(selection.page);
+  const roadmapPage = roadFamilyPage || selection.page === "overview";
+  const roadData = roadmapRead.key === viewKey && roadmapRead.state === "ready" ? roadmapRead.value : undefined;
+  const readerIndependentRoadPage = roadFamilyPage && (!activeView || viewState !== "ready");
+  const detail = activeView?.detail || (readerIndependentRoadPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
   const documents = detail?.documents || [];
   const selectedDocument = documents.find((item) => item.path === selectedDoc);
   const documentFingerprint = detail?.snapshot_fingerprint || "";
@@ -522,41 +685,46 @@ export function Projects() {
   if (catalogState === "error") return <main className="projects-page"><p role="alert">The local Project catalog is unavailable.</p></main>;
   if (selection.projectID && (!company || !project)) return <main className="projects-page"><p role="alert">This Company and Project selection is unavailable.</p><a href="/">Back to Companies</a></main>;
   if (selection.companyID && !company) return <main className="projects-page"><p role="alert">This Company is unavailable.</p><a href="/">Back to Companies</a></main>;
-  if (selection.projectID && !page) return <main className="projects-page"><p role="alert">This Project page is unavailable.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}`}>Back to Overview</a></main>;
-  if (selection.projectID && selection.prototype.artifact && !selection.pageExplicit && !selection.prototype.mode) return <main className="projects-page"><p role="alert">This artifact-only link is incomplete. Open the Prototype page.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=prototypes`}>Open Prototype</a></main>;
+  if (selection.projectID && !page) return <main className="projects-page"><p role="alert">This Project page is unavailable.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}>Back to Overview</a></main>;
+  if (selection.projectID && selection.prototype.artifact && !selection.pageExplicit && !selection.prototype.mode) return <main className="projects-page"><p role="alert">This artifact-only link is incomplete. Open the Prototype page.</p><a href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=prototypes`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "prototypes" }); } }}>Open Prototype</a></main>;
   if (selection.prototype.mode && (selection.prototype.mode !== "presentation" || page !== "prototypes" || !selection.projectID)) return <main className="projects-page"><p role="alert">This presentation link is invalid.</p><a href="/">Back to Companies</a></main>;
 
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
 
-  if (!activeView && viewState !== "error") return <main className="projects-page"><p role="status">Extraindo dados dos seus TODOs…</p></main>;
-  if (viewState === "error" || !detail || !activeView) return <main className="projects-page"><p role="alert">{viewError === "registration" ? "TEACH: Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "TEACH: Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual."}</p><a href="/">Back to Companies</a></main>;
+  if ((!readerIndependentRoadPage && (viewState !== "ready" || !detail || !activeView)) || !detail) return <ProjectLoadingShell key={`${viewKey}/${reloadCounter}`} company={company!} project={project!} stage={loadStage} error={viewState === "error" ? (viewError === "registration" ? "Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.") : ""} onRetry={() => setReloadCounter((value) => value + 1)} />;
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };
-  if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeView.theme}><LocalArtifactPreview {...previewProps} /></div>;
+  if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeView?.theme}><LocalArtifactPreview {...previewProps} /></div>;
   const tentativeProjects = catalog.projects.filter((item) => item.company_id === (pendingCompanyID || selection.companyID));
-  return <main className="projects-page projects-project" style={activeView.theme}>
+  const selectedTODOInBacklog = (roadData?.backlog?.todos || []).concat((roadData?.backlog?.folders || []).flatMap(flattenBacklogTodos)).some((todo) => todo.id === selection.todoID);
+  const roadmapPending = roadmapPage && (roadmapRead.key !== viewKey || roadmapRead.state === "loading");
+  return <main className="projects-page projects-project" style={activeView?.theme}>
     <div className="project-bar"><span className="project-bar-context">CONTEXTO</span>
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
     </div>
-    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
-    <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || ((page === "release" || page === "todo") && item.id === "roadmap") ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{activeView.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "release" && page !== "todo" && <header className="project-page-heading"><span className="project-page-tag">{page === "documents" ? "FOUNDATION DOCUMENTATION · SAVED SNAPSHOT" : page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{page === "documents" ? "Documents & decisions" : pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
+    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
+    <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
+      <section className="project-content">{activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && <header className="project-page-heading"><span className="project-page-tag">{page === "documents" ? "FOUNDATION DOCUMENTATION · SAVED SNAPSHOT" : page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{page === "documents" ? "Documents & decisions" : pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
           <SnapshotStatus detail={detail} />
-          <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />
+          {roadData && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
-        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's current published Foundation revision.</p>
+        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's loaded Foundation revision.</p>
           {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.path} onClick={() => setSelectedDoc(item.path)}>{selectedDoc === item.path ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
           {selectedDocument && <article className="project-markdown document-reader">{(docState === "loading" || loadedDocRevision !== documentRevision) && <p role="status">Loading document…</p>}{docState === "error" && loadedDocRevision === documentRevision && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && loadedDocRevision === documentRevision && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
-          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the currently published Foundation revision. Availability does not indicate human approval.</p></section>
+          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the loaded Foundation revision. Availability does not indicate human approval.</p></section>
         </div>}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
-        {page === "roadmap" && <RoadmapView key={viewKey} roadmap={detail.roadmap} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} />}
-        {page === "release" && <ReleaseDetailView roadmap={detail.roadmap} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} />}
-        {page === "todo" && <TodoDetailView key={`${viewKey}/${selection.todoID}`} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
+        {roadFamilyPage && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. Verifique a Registry API e recarregue; não é usado snapshot Foundation como fallback.</p>}
+        {roadmapPending && <p className="project-notice" role="status">Carregando Roadmap atual da Registry…</p>}
+        {page === "overview" && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. O Overview permanece disponível, sem fallback para dados Foundation.</p>}
+        {!roadmapPending && page === "roadmap" && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} />}
+        {!roadmapPending && page === "backlog" && <BacklogView roadmap={roadData} detail={detail} projectID={project!.id} todoID={selection.todoID} />}
+        {!roadmapPending && page === "release" && <ReleaseDetailView roadmap={roadData} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
+        {!roadmapPending && page === "todo" && <TodoDetailView key={`${viewKey}/${selection.todoID}`} roadmap={roadData} companyID={selection.companyID} projectID={project!.id} todoID={selection.todoID} />}
       </section></div>
   </main>;
 }

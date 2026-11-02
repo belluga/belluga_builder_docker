@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import "./prototype-viewer.css";
 
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; diagnostic?: string };
@@ -15,6 +16,7 @@ type Prototype = {
 };
 export type PrototypeDetail = {
   consumer_readiness: string; snapshot_fingerprint?: string; artifacts: Artifact[];
+  prototype_todo_sources?: { prototype_id: string; todo_id: string; label: string; path: string }[];
   snapshot_observations?: Record<string, unknown>; diagnostic?: string;
 };
 export type PrototypeSelection = {
@@ -87,9 +89,14 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
   const factor = selection.scale === "fit" ? Math.max(.1, Math.min(1, size.width / dimensions.width, size.height / dimensions.height)) : 1;
   const inspector = new URLSearchParams({ company_id: companyID, project_id: projectID, page: "prototypes", artifact: selection.artifact, screen_id: selection.screenID, state_id: selection.stateID });
   const choose = (changes: Record<string, string | null>) => onNavigate(changes, true);
+  const exitPresentation = (event: ReactMouseEvent<HTMLAnchorElement>) => {
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    onNavigate({ page: "prototypes", mode: null, prototype_id: null, scenario_id: null, scenario_step: null, fingerprint: null, device: null, scale: null });
+  };
   return <main className="prototype-presentation">
     <header className="prototype-presentation-bar">
-      <a className="prototype-presentation-exit" href={`/?${inspector}`}>← Sair</a>
+      <a className="prototype-presentation-exit" href={`/?${inspector}`} onClick={exitPresentation}>← Sair</a>
       <span className="prototype-presentation-context">{props.companyName} / {props.projectName}</span>
       <label>Protótipo<select aria-label="Protótipo" value={prototype?.id || ""} onChange={(event) => {
         const next = prototypes.find((item) => item.id === event.target.value);
@@ -115,7 +122,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
     </header>
     <section ref={canvasRef} className="prototype-presentation-canvas" aria-label={`${props.companyName} / ${props.projectName} · apresentação`}>
       {!detail ? <p role="status">Carregando snapshot…</p>
-        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`}>inspetor</a>.</p>
+        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
             : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando entrada do snapshot…</p>
               : check.state === "error" ? <p role="alert">{check.message}</p>
@@ -142,7 +149,13 @@ export function LocalArtifactPreview(props: Props) {
     (selection.screenID && !screen) || (selection.stateID && !state));
   const fingerprint = detail?.snapshot_fingerprint || "";
   const file = (path: string) => snapshotURL(companyID, projectID, fingerprint, path);
+  const todoSource = (prototypeID: string, sourcePath: string) => (detail?.prototype_todo_sources || []).find((item) => item.prototype_id === prototypeID && item.path === sourcePath);
+  const todoHref = (todoID: string) => `/?company_id=${encodeURIComponent(companyID)}&project_id=${encodeURIComponent(projectID)}&page=todo&todo_id=${encodeURIComponent(todoID)}`;
+  const navigateToTodo = (event: ReactMouseEvent<HTMLAnchorElement>, todoID: string) => {
+    if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); onNavigate({ page: "todo", todo_id: todoID }); }
+  };
   const selectedImage = prototype && state ? file(`${prototype.root}/${state.identifier_image}`) : "";
+  const evidenceTODOPaths = new Set((state?.approved_references || []).filter((reference) => reference.approval_evidence.startsWith("todos/")).map((reference) => reference.approval_evidence));
   useEffect(() => { setImageError(false); }, [selectedImage]);
   if (selection.mode === "presentation") return <PrototypePresentation props={props} prototypes={prototypes} />;
   if (!detail) return <p role="status">Loading the saved Project snapshot…</p>;
@@ -173,7 +186,12 @@ export function LocalArtifactPreview(props: Props) {
           <section className="prototype-review-evidence" aria-label="State evidence"><div className="prototype-review-evidence-heading"><div><small>TELA · {screen.id}</small><h3>{screen.name} / {state.name}</h3></div><span>Estado padrão: {screen.default_state_id === state.id ? "sim" : "não"}</span></div>
             <figure><img key={selectedImage} src={selectedImage} alt={`Imagem identificadora · ${screen.name} · ${state.name}`} onError={() => setImageError(true)} /><figcaption>Imagem identificadora deste estado</figcaption></figure>
             {imageError && <p role="alert">Não foi possível carregar a imagem identificadora deste estado.</p>}
-            {state.approved_references.map((reference) => <figure key={reference.id}><img src={file(`${prototype.root}/${reference.image}`)} alt={`Referência visual aprovada · ${reference.id}`} /><figcaption>{reference.id} · <a href={file(reference.approval_evidence)} target="_blank" rel="noopener noreferrer">Abrir evidência ↗</a></figcaption></figure>)}
+            {state.approved_references.map((reference) => {
+              const source = todoSource(prototype.id, reference.approval_evidence);
+              const isTODOPath = reference.approval_evidence.startsWith("todos/");
+              return <figure key={reference.id}><img src={file(`${prototype.root}/${reference.image}`)} alt={`Referência visual aprovada · ${reference.id}`} /><figcaption>{reference.id} · {source ? <a href={todoHref(source.todo_id)} onClick={(event) => navigateToTodo(event, source.todo_id)}>Abrir evidência TODO: {source.label} ↗</a> : isTODOPath ? <span aria-disabled="true">Evidência TODO indisponível</span> : <a href={file(reference.approval_evidence)} target="_blank" rel="noopener noreferrer">Abrir evidência ↗</a>}</figcaption></figure>;
+            })}
+            {(detail?.prototype_todo_sources || []).filter((item) => item.prototype_id === prototype.id && !evidenceTODOPaths.has(item.path)).map((item) => <p key={item.todo_id}><a href={todoHref(item.todo_id)} onClick={(event) => navigateToTodo(event, item.todo_id)}>Abrir TODO relacionado: {item.label} ↗</a></p>)}
             {!state.approved_references.length && <p>Nenhuma referência visual aprovada foi registrada para este estado.</p>}
             <h4>Transições deste estado</h4><ul>{prototype.transitions.filter((item) => item.from_screen_id === screen.id && item.from_state_id === state.id).map((item) => <li key={`${item.action}/${item.to_screen_id}/${item.to_state_id}`}>{item.action} → {item.to_screen_id} / {item.to_state_id}</li>)}</ul>
           </section></div>
