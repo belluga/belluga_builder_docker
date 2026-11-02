@@ -6,10 +6,41 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRestoredLocalProofRequiresExactDeliveredContract(t *testing.T) {
+	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "verified"}
+	commits := []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: strings.Repeat("a", 40), SourceDigest: proof.SourceDigest, VerificationState: "verified"}}
+	position := 4
+	content := TODOAuthoredContent{Title: "Delivered slice", Objective: "Create TODOs", Sections: []TODOSection{{Key: "intent", Title: "Intent", BodyMarkdown: "Approved", Position: 0, Ownership: "contract"}}, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: 53, Stage: "Local-Implemented", StageVerification: "unverified", ReleaseID: "r-08", Position: &position, ImplementationCommits: commits}
+	prior := TODOAsOfResponse{ProjectID: "builder", TODOID: "todo-a", Revision: 39, Content: content, State: TODOAsOfState{Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &proof, ReleaseID: "r-08", Position: position, PlacementAssigned: true, ImplementationCommits: commits}}
+	got, err := restoredLocalProof(record, content, prior)
+	if err != nil || got != proof {
+		t.Fatalf("exact restored proof = %+v, %v", got, err)
+	}
+	changed := content
+	changed.Title = "Future scope"
+	if _, err := restoredLocalProof(record, changed, prior); err == nil {
+		t.Fatal("future contract reused old local delivery proof")
+	}
+	prior.State.ImplementationCommits = []TODOCommitReference{}
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("changed implementation attribution reused old proof")
+	}
+	prior.State.ImplementationCommits = commits
+	record.StageVerification = "verified"
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("already verified stage accepted recovery")
+	}
+	if !reflect.DeepEqual(commits, prior.State.ImplementationCommits) {
+		t.Fatal("test fixture changed")
+	}
+}
 
 func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -580,14 +581,49 @@ func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID strin
 		if err != nil {
 			return TODOActionResponse{}, err
 		}
+	} else if record.Stage == "Local-Implemented" && record.StageVerification == "unverified" && usesImportedTODOContentStageProof(record) {
+		if len(request.ProofReferences) != 0 {
+			return TODOActionResponse{}, todoTeach("proof_refs", "recover the original verified local proof from immutable TODO history; do not submit a new claim", ErrConflict)
+		}
+		company, companyErr := m.company(ctx, companyID)
+		if companyErr != nil {
+			return TODOActionResponse{}, companyErr
+		}
+		database := m.client.Database(company.DatabaseName)
+		var delivered TODOHistoryEvent
+		filter := bson.D{{Key: "project_id", Value: request.ProjectID}, {Key: "todo_id", Value: request.TODOID},
+			{Key: "kind", Value: "state_changed"}, {Key: "changes.stage", Value: "Local-Implemented"}, {Key: "changes.stage_verification", Value: "verified"}}
+		if findErr := database.Collection(todoEventsCollection).FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&delivered); findErr != nil {
+			return TODOActionResponse{}, todoTeach("history", "restore the exact content of a previously verified Local-Implemented event before recovery", ErrConflict)
+		}
+		prior, historyErr := m.ReadTODOAsOf(ctx, companyID, request.ProjectID, request.TODOID, delivered.Revision)
+		if historyErr != nil {
+			return TODOActionResponse{}, historyErr
+		}
+		proof, err = restoredLocalProof(record, contentFromTODO(record), prior)
+		if err != nil {
+			return TODOActionResponse{}, err
+		}
 	} else {
-		return TODOActionResponse{}, todoTeach("verify-current-stage", "verify only the existing governed production Completed proof or an unverified In-Progress TODO with current immutable approved content", ErrConflict)
+		return TODOActionResponse{}, todoTeach("verify-current-stage", "verify an existing production Completed proof, current approved In-Progress content, or exact restored Local-Implemented history", ErrConflict)
 	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
 		return TODOActionResponse{}, err
 	}
 	return writeVerifiedTODO(ctx, m.client.Database(company.DatabaseName), collection, companyID, record, record.Stage, proof, request.OperationID, "verify-current-stage", digest)
+}
+
+func restoredLocalProof(record TODORecord, current TODOAuthoredContent, prior TODOAsOfResponse) (TODOProofReference, error) {
+	if record.Stage != "Local-Implemented" || record.StageVerification != "unverified" || record.VerifiedTransitionRef != nil ||
+		prior.ProjectID != record.ProjectID || prior.TODOID != record.ID || prior.Revision >= record.Revision ||
+		prior.State.Stage != "Local-Implemented" || prior.State.StageVerification != "verified" || prior.State.VerifiedTransitionRef == nil ||
+		prior.State.VerifiedTransitionRef.Kind != "remote-local-delivery" || prior.State.VerifiedTransitionRef.VerificationState != "verified" ||
+		record.Position == nil || !prior.State.PlacementAssigned || prior.State.ReleaseID != record.ReleaseID || prior.State.Position != *record.Position ||
+		!reflect.DeepEqual(current, prior.Content) || !reflect.DeepEqual(record.ImplementationCommits, prior.State.ImplementationCommits) {
+		return TODOProofReference{}, todoTeach("local_delivery_recovery", "restore the exact previously verified content, Release placement and implementation commits before reusing its immutable local proof", ErrConflict)
+	}
+	return *prior.State.VerifiedTransitionRef, nil
 }
 
 func todoRequestDigest(value any) (string, error) {
