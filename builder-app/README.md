@@ -14,12 +14,14 @@ DELPHI_PROJECT_READER_TOKEN="$(openssl rand -hex 32)" \
 DELPHI_GITHUB_READ_TOKEN="$(gh auth token)" \
 DELPHI_BUILDER_STATE_ROOT=/home/elton/Dev/builder-local-state \
 BUILDER_UID=$(id -u) BUILDER_GID=$(id -g) \
+BUILDER_SOURCE_SHA=$(git rev-parse HEAD) \
+PACED_SOURCE_SHA=$(git -C delphi-ai rev-parse HEAD) \
 docker compose -p builder-mvp -f compose.builder.yaml up --build -d
 ```
 
 The `go-test` stage installs Git for its Git-backed integration test fixtures; Git is not included in the final Builder runtime image. The private Delphi reader image contains Git for its published-source reads.
 
-Run that Compose command from the dedicated `mvp` worktree after fetching and fast-forwarding it to the promoted remote `mvp` revision. A `git fetch` alone does not advance the checked-out worktree. The public UI is at `https://builder.belluga.online/` (or `http://127.0.0.1:8088/` on the host). The Builder runtime mounts shared derived state read-only; it does not mount a Foundation checkout or `.git`. On Project load, the private reader resolves the published Foundation head and refreshes the derived snapshot if needed, without another registration. A code change still requires `mvp` promotion and worktree fast-forward.
+Run that Compose command from a clean dedicated `mvp` checkout after confirming its HEAD equals remote `mvp`, and with the PACED checkout at a committed, pushed `builder` revision. A `git fetch` alone does not advance the checked-out worktree. The public `GET /api/build` returns the Builder source SHA embedded during the build; MVP completion proof rejects an absent or mismatched SHA. The private Reader likewise embeds its PACED source SHA and verifies claimed PACED commits. The public UI is at `https://builder.belluga.online/` (or `http://127.0.0.1:8088/` on the host). The Builder runtime mounts shared derived state read-only; it does not mount a Foundation checkout or `.git`. On Project load, the private reader resolves the published Foundation head and refreshes the derived snapshot if needed, without another registration. A code change still requires `mvp` promotion and worktree fast-forward.
 
 For the shared tunnel, use the existing external Docker network `builder-preview-ingress` and keep its connector attached while preserving its default network. In Cloudflare's tunnel hostname configuration, point **only** `builder.belluga.online` to `http://builder-preview:8080`. Do not point a public route at the host-loopback port or expose `8088` on a non-loopback address.
 

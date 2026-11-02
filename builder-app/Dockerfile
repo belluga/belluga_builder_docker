@@ -5,7 +5,8 @@ COPY service/ ./
 RUN go vet ./... && go test ./...
 
 FROM go-test AS go-build
-RUN CGO_ENABLED=0 go build -trimpath -o /out/viewer .
+ARG BUILDER_SOURCE_SHA=unknown
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.buildSourceSHA=${BUILDER_SOURCE_SHA}" -o /out/viewer .
 
 FROM node:24-alpine AS web-test
 WORKDIR /web

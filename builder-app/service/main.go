@@ -1,14 +1,19 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"log"
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var buildSourceSHA = "unknown"
+var buildSHAFormat = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 func main() {
 	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_BUILDER_STATE_ROOT")); stateRoot != "" {
@@ -66,6 +71,15 @@ func localHostOnly(next http.Handler) http.Handler {
 func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	consumer := &registeredPreview{root: stateRoot}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/build", func(w http.ResponseWriter, _ *http.Request) {
+		if !buildSHAFormat.MatchString(buildSourceSHA) {
+			writeError(w, http.StatusServiceUnavailable, "build_revision_unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(struct { SourceSHA string `json:"source_sha"` }{SourceSHA: buildSourceSHA})
+	})
 	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
 	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
 	mux.HandleFunc("/api/roadmap", consumer.apiHandler)

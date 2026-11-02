@@ -156,6 +156,26 @@ func TestPublishedViewerAcceptsOnlyConfiguredHost(t *testing.T) {
 	}
 }
 
+func TestPublishedBuildRevisionIsEmbeddedAndFailClosed(t *testing.T) {
+	previous := buildSourceSHA
+	t.Cleanup(func() { buildSourceSHA = previous })
+	handler := registeredHandler(t.TempDir(), t.TempDir(), "builder.belluga.online")
+	request := httptest.NewRequest(http.MethodGet, "/api/build", nil)
+	request.Host = "builder.belluga.online"
+	buildSourceSHA = "unknown"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unbound build revision status = %d", response.Code)
+	}
+	buildSourceSHA = strings.Repeat("a", 40)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" || !strings.Contains(response.Body.String(), buildSourceSHA) {
+		t.Fatalf("embedded build revision response = %d %s", response.Code, response.Body.String())
+	}
+}
+
 func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "index.html"), []byte("project directory"), 0o444); err != nil {

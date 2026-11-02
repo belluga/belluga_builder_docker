@@ -137,6 +137,17 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOActionResponse{}, err
 	}
+	if record.Stage == "Local-Implemented" && request.RequestedStage == "Completed" && record.StageVerification == "verified" && record.VerifiedTransitionRef != nil && !containsTODOString(record.Qualifiers, "Blocked") {
+		proof, err := m.verifyMVPProduction(ctx, companyID, record, request)
+		if err != nil {
+			return TODOActionResponse{}, err
+		}
+		company, err := m.company(ctx, companyID)
+		if err != nil {
+			return TODOActionResponse{}, err
+		}
+		return writeVerifiedTODO(ctx, m.client.Database(company.DatabaseName), collection, companyID, record, "Completed", proof, request.OperationID, "transition", digest)
+	}
 	var proof TODOProofReference
 	if record.Source.Kind == "mongo-content-revision" {
 		proof, err = m.mongoBornTransitionProof(ctx, companyID, project, record, request)

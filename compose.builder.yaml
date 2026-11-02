@@ -5,6 +5,8 @@ services:
       context: ./builder-app
       dockerfile: Dockerfile
       target: runtime
+      args:
+        BUILDER_SOURCE_SHA: ${BUILDER_SOURCE_SHA:-unknown}
     user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
     environment:
       LISTEN_ADDR: 0.0.0.0:8080
@@ -37,6 +39,8 @@ services:
     build:
       context: ./delphi-ai/local-api
       dockerfile: Dockerfile
+      args:
+        PACED_SOURCE_SHA: ${PACED_SOURCE_SHA:-unknown}
     user: "${BUILDER_UID:-1000}:${BUILDER_GID:-1000}"
     environment:
       DELPHI_PROJECT_READER_LISTEN: :8099

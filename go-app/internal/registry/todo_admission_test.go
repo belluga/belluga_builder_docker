@@ -308,6 +308,24 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	if err != nil || recovered.Stage != "Local-Implemented" || recovered.StageVerification != "verified" || recovered.TODORevision != 12 {
 		t.Fatalf("restored local proof = %+v, %v", recovered, err)
 	}
+	ready, err := store.ReadTODO(ctx, "company-a", "builder", admission.TODO.ID, nil)
+	if err != nil || ready.ContentDigest == "" {
+		t.Fatalf("completion content identity = %+v, %v", ready, err)
+	}
+	deployed := strings.Repeat("d", 40)
+	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("project_mode") != "mvp" || r.URL.Query().Get("root_sha") != deployed {
+			t.Errorf("completion request did not use exact MVP publication: %s", r.URL.String())
+		}
+		_, _ = fmt.Fprintf(w, `{"company_id":"company-a","project_id":"builder","todo_id":%q,"deployment_id":17,"environment":"production","root_sha":%q,"module_path":"project","commit_sha":%q,"project_commits":[%q],"outcome":"verified","project_mode":"mvp","reader_sha":%q}`, admission.TODO.ID, deployed, deployed, commit.Commit, strings.Repeat("e", 40))
+	}))
+	defer reader.Close()
+	store.proofReaderURL, store.proofReaderToken, store.proofHTTPClient = reader.URL, "secret", reader.Client()
+	claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + deployed, SourceDigest: ready.ContentDigest, VerificationState: "unverified"}
+	completed, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(12), OperationID: "complete-mvp-deployment", RequestedStage: "Completed", ProofReferences: []TODOProofReference{claim}})
+	if err != nil || completed.Stage != "Completed" || completed.StageVerification != "verified" || completed.TODORevision != 13 {
+		t.Fatalf("MVP completion after exact local recovery = %+v, %v", completed, err)
+	}
 }
 
 func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
