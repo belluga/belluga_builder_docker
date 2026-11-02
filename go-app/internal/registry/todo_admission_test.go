@@ -698,13 +698,11 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	wrongProof := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/" + mongoBorn.ID + "/content/0", SourceDigest: "sha256:" + strings.Repeat("0", 64), VerificationState: "unverified"}
 	wrongStart := TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &threeMongoRevision, OperationID: "mongo-start-wrong-digest", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{wrongProof}, WaiverReferences: []TODOProofReference{}}
 	if _, err := store.TransitionTODO(ctx, "company-a", wrongStart); !errors.Is(err, ErrConflict) {
-		t.Fatalf("wrong content digest approved: %v", err)
+		t.Fatalf("pre-approval edge accepted owner approval: %v", err)
 	}
-	correctProof := wrongProof
-	correctProof.SourceDigest = mongoAdmission.ContentDigest
 	correctStart := wrongStart
 	correctStart.OperationID = "mongo-start-001"
-	correctStart.ProofReferences = []TODOProofReference{correctProof}
+	correctStart.ProofReferences = []TODOProofReference{}
 	startedMongo, err := store.TransitionTODO(ctx, "company-a", correctStart)
 	if err != nil || startedMongo.Stage != "Implementation-Approval-Pending" || startedMongo.TODORevision != 4 {
 		t.Fatalf("governed Mongo-born first lifecycle edge = %+v, %v", startedMongo, err)
@@ -1046,5 +1044,34 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	if _, err := store.ReadTODOAsOf(ctx, "company-a", "builder", request.TODO.ID, 6); err != nil {
 		t.Fatalf("prior as-of state changed after local transition: %v", err)
+	}
+	// Planning is a lifecycle fact, not approval of a specific content revision.
+	planning := mongoBornTODOFixture()
+	planning.ID, planning.ReleaseID, planning.Position = "planning-edit-regression", "r-09", intPointer(1)
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: planning}); err != nil {
+		t.Fatalf("create Planning regression TODO: %v", err)
+	}
+	planningContent := contentFromTODO(planning)
+	planningContent.Objective = "Refined while still in Planning"
+	zeroPlanning := int64(0)
+	if _, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &zeroPlanning, OperationID: "planning-edit-001", Content: planningContent, Reason: "Refine before approval"}); err != nil {
+		t.Fatalf("refine Planning TODO: %v", err)
+	}
+	planningRead, err := store.ReadTODO(ctx, "company-a", "builder", planning.ID, nil)
+	if err != nil || planningRead.TODO.Stage != "Planning" || planningRead.TODO.StageVerification != "verified" || planningRead.ContentRevision == nil || *planningRead.ContentRevision != 1 {
+		t.Fatalf("Planning content edit lost stage proof: %+v, %v", planningRead, err)
+	}
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: planning.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "stage_verification", Value: "unverified"}}}, {Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}}}); err != nil {
+		t.Fatalf("prepare prior-regression fixture: %v", err)
+	}
+	onePlanning := int64(1)
+	recovered, err := store.VerifyCurrentTODOStage(ctx, "company-a", VerifyCurrentTODOStageRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &onePlanning, OperationID: "recover-planning-001", ProofReferences: []TODOProofReference{}})
+	if err != nil || recovered.Stage != "Planning" || recovered.StageVerification != "verified" {
+		t.Fatalf("recover already affected Planning TODO: %+v, %v", recovered, err)
+	}
+	twoPlanning := int64(2)
+	pending, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &twoPlanning, OperationID: "review-planning-001", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}})
+	if err != nil || pending.Stage != "Implementation-Approval-Pending" || pending.StageVerification != "verified" {
+		t.Fatalf("pre-approval transition: %+v, %v", pending, err)
 	}
 }

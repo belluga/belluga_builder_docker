@@ -171,7 +171,7 @@ type TODOHistoryPreflightReport struct {
 func contentFromTODO(record TODORecord) TODOAuthoredContent {
 	sections := make([]TODOSection, 0, len(record.Sections))
 	for _, section := range record.Sections {
-		if sectionOwnership(section) == "contract" && !historyRenderOnlySection(section.Key, section.Title) {
+		if sectionOwnership(section) == "contract" && !historyRecordSection(section.Key, section.Title) && !historyRenderOnlySection(section.Key, section.Title) {
 			section.Ownership = "contract"
 			section.Position = len(sections)
 			sections = append(sections, section)
@@ -1072,6 +1072,9 @@ func validateNewAuthoredContent(content TODOAuthoredContent) error {
 	for i, section := range content.Sections {
 		if section.Ownership != "contract" {
 			return todoTeach(fmt.Sprintf("content.sections[%d].ownership", i), "explicitly classify every authored edit section as contract", ErrInvalid)
+		}
+		if historyRecordSection(section.Key, section.Title) || historyRenderOnlySection(section.Key, section.Title) {
+			return todoTeach(fmt.Sprintf("content.sections[%d]", i), "omit record-owned sections from authored content; they are retained separately", ErrInvalid)
 		}
 	}
 	return nil

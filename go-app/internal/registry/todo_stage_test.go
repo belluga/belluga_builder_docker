@@ -98,12 +98,26 @@ func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	ref := "builder/todo-a/content/1"
 	approval := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: ref, SourceDigest: digest, VerificationState: "verified"}
-	record := TODORecord{ID: "todo-a", Stage: "Implementation-Approval-Pending", StageVerification: "verified", VerifiedTransitionRef: &approval, Revision: 2}
-	request := TODOActionRequest{RequestedStage: "Ready-for-Implementation", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}
+	record := TODORecord{ID: "todo-a", Stage: "Planning", StageVerification: "verified", VerifiedTransitionRef: &TODOProofReference{Kind: "created", SourceDigest: digest, VerificationState: "verified"}, Revision: 1}
+	request := TODOActionRequest{RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}
 	proof, err := mongoBornStageProof(record, request, digest, ref)
-	if err != nil || proof != approval {
+	if err != nil || proof.Kind != "planning-reviewed" || proof.SourceDigest != digest {
+		t.Fatalf("pre-approval edge = %+v, %v", proof, err)
+	}
+	record.Stage = "Implementation-Approval-Pending"
+	record.VerifiedTransitionRef = &proof
+	record.Revision++
+	request.RequestedStage = "Ready-for-Implementation"
+	if _, err := mongoBornStageProof(record, request, digest, ref); err == nil {
+		t.Fatal("Ready accepted without owner approval")
+	}
+	request.ProofReferences = []TODOProofReference{{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: digest, VerificationState: "unverified"}}
+	proof, err = mongoBornStageProof(record, request, digest, ref)
+	if err != nil || proof.Kind != "owner-approval" || proof.VerificationState != "verified" {
 		t.Fatalf("approved Ready edge = %+v, %v", proof, err)
 	}
+	record.VerifiedTransitionRef = &proof
+	request.ProofReferences = nil
 	record.Stage = "Ready-for-Implementation"
 	record.Revision++
 	request.RequestedStage = "In-Progress"
@@ -112,16 +126,27 @@ func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 		t.Fatalf("governed start edge = %+v, %v", proof, err)
 	}
 	record.Stage = "Implementation-Approval-Pending"
-	record.VerifiedTransitionRef = nil
-	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Ready-for-Implementation"}, digest, ref); err == nil {
-		t.Fatal("Ready accepted without owner approval")
-	}
 	record.VerifiedTransitionRef = &approval
 	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Ready-for-Implementation"}, digest+"changed", ref); err == nil {
 		t.Fatal("Ready accepted stale content approval")
 	}
 	if _, err := mongoBornStageProof(record, TODOActionRequest{RequestedStage: "Completed"}, digest, ref); err == nil {
 		t.Fatal("Mongo-born TODO skipped adjacent lifecycle stages")
+	}
+}
+
+func TestPlanningRefinementPreservesOnlyMongoBornStageProof(t *testing.T) {
+	mongo := TODORecord{Stage: "Planning", Source: TODOSource{Kind: "mongo-content-revision"}}
+	if invalidatesContentApproval(mongo) {
+		t.Fatal("Planning text refinement invalidated Mongo lifecycle position")
+	}
+	mongo.Stage = "Implementation-Approval-Pending"
+	if !invalidatesContentApproval(mongo) {
+		t.Fatal("edited approval-pending content retained its review proof")
+	}
+	imported := TODORecord{Stage: "Planning", Source: TODOSource{Foundation: "builder"}}
+	if !invalidatesContentApproval(imported) {
+		t.Fatal("Foundation import unexpectedly changed its content proof behavior")
 	}
 }
 
@@ -435,5 +460,25 @@ func TestCoordinatorCountsAsExecutableAndOnlyVerifiedStageIsEffective(t *testing
 	view = roadmapTODOViewFromRecord(record)
 	if view.Kind != "executable" || view.DeliveryStage != "Completed" || view.DeliveryStageState != "verified" {
 		t.Fatalf("verified coordinator view = %+v", view)
+	}
+}
+
+func TestAuthoredContentDoesNotDuplicateRecordOwnedApproval(t *testing.T) {
+	record := TODORecord{Title: "Planning", Objective: "Refine a plan", Sections: []TODOSection{
+		{Key: "intent", Title: "Intent", BodyMarkdown: "Scope", Position: 0, Ownership: "contract"},
+		{Key: "approval", Title: "Approval", BodyMarkdown: "APROVADO", Position: 1, Ownership: "contract"},
+	}}
+	content := contentFromTODO(record)
+	content.DiffExpectation = []TODORepositoryScope{}
+	content.AffectedFiles = []string{}
+	if len(content.Sections) != 1 || content.Sections[0].Key != "intent" {
+		t.Fatalf("record-owned approval leaked into authored content: %+v", content.Sections)
+	}
+	if err := validateNewAuthoredContent(content); err != nil {
+		t.Fatalf("contract-only content was rejected: %v", err)
+	}
+	content.Sections = append(content.Sections, record.Sections[1])
+	if err := validateNewAuthoredContent(content); err == nil {
+		t.Fatal("record-owned approval was accepted in an authored content edit")
 	}
 }

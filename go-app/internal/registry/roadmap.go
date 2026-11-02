@@ -152,7 +152,11 @@ func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 		view.DeliveryStage = record.Stage
 		view.DeliveryStageState = "verified"
 	} else {
-		view.DeliveryStageTeach = fmt.Sprintf("TEACH: authored stage %s has no verified current-stage proof; have the private verifier validate the current stage before treating it as effective.", record.Stage)
+		if record.Source.Kind == "mongo-content-revision" && record.Stage == "Planning" {
+			view.DeliveryStageTeach = fmt.Sprintf("TEACH: Planning needs current-stage verification. Run builder-project status --company-id <company-id> --project-id %s --todo-id %s to obtain the exact recovery command; no Foundation path is involved.", record.ProjectID, record.ID)
+		} else {
+			view.DeliveryStageTeach = fmt.Sprintf("TEACH: authored stage %s has no verified current-stage proof; have the private verifier validate the current stage before treating it as effective.", record.Stage)
+		}
 	}
 	return view
 }
