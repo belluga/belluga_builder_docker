@@ -759,6 +759,10 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || len(editHistory.Events) != 1 || editHistory.Events[0].Kind != "content_changed" || editHistory.Events[0].Changes.Stage == nil || *editHistory.Events[0].Changes.Stage != "Planning" || editHistory.Events[0].Changes.VerifiedTransitionRef == nil || editHistory.Events[0].Changes.VerifiedTransitionRef.SourceDigest != contentEdit.ContentDigest {
 		t.Fatalf("content edit did not record its Planning transition: %+v, %v", editHistory, err)
 	}
+	reviewComparison, err := store.CompareTODOHistory(ctx, "company-a", "builder", mongoBorn.ID, 4, 5)
+	if err != nil || !reflect.DeepEqual(reviewComparison.Changed, []string{"stage", "title", "verified_transition_ref"}) {
+		t.Fatalf("reviewed-to-revised comparison = %+v, %v", reviewComparison, err)
+	}
 	var editedMongoVersion TODOContentVersion
 	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: mongoBorn.ID}, {Key: "revision", Value: int64(5)}}).Decode(&editedMongoVersion); err != nil {
 		t.Fatalf("read edited immutable content version: %v", err)
