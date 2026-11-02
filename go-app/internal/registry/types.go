@@ -58,6 +58,7 @@ type Project struct {
 	ID                    string   `json:"id" bson:"id"`
 	Name                  string   `json:"name" bson:"name"`
 	CompanyID             string   `json:"company_id" bson:"company_id"`
+	RoadmapRevision       int64    `json:"roadmap_revision" bson:"roadmap_revision"`
 	Binding               *Binding `json:"binding,omitempty" bson:"binding,omitempty"`
 	RegisteredAt          string   `json:"registered_at" bson:"registered_at"`
 	PreparationState      string   `json:"preparation_state" bson:"preparation_state"`

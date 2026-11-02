@@ -670,13 +670,19 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &zeroMongoRevision, OperationID: "backlog-transition-001", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("unassigned Mongo-born TODO advanced from Planning: %v", err)
 	}
-	attach := TODOPlacementEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &zeroMongoRevision, OperationID: "mongo-attach-001", Action: "attach", ReleaseID: "r-08", Position: 4, Reason: "Attach the TODO to a user-selected same-Project Release"}
+	projectBeforePlacement, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roadmapRevision := projectBeforePlacement.RoadmapRevision
+	attach := TODOPlacementEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &zeroMongoRevision, ExpectedRoadmapRevision: &roadmapRevision, OperationID: "mongo-attach-001", Action: "attach", ReleaseID: "r-08", Position: 4, Reason: "Attach the TODO to a user-selected same-Project Release"}
 	attached, err := store.EditTODOPlacement(ctx, "company-a", attach)
 	if err != nil || attached.Revision != 1 {
 		t.Fatalf("attach Mongo-born TODO = %+v, %v", attached, err)
 	}
 	oneMongoRevision := int64(1)
-	detached, err := store.EditTODOPlacement(ctx, "company-a", TODOPlacementEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &oneMongoRevision, OperationID: "mongo-detach-001", Action: "detach", Reason: "Return the TODO to Backlog"})
+	roadmapRevision++
+	detached, err := store.EditTODOPlacement(ctx, "company-a", TODOPlacementEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &oneMongoRevision, ExpectedRoadmapRevision: &roadmapRevision, OperationID: "mongo-detach-001", Action: "detach", Reason: "Return the TODO to Backlog"})
 	if err != nil || detached.Revision != 2 {
 		t.Fatalf("detach Mongo-born TODO = %+v, %v", detached, err)
 	}
@@ -691,6 +697,8 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	twoMongoRevision := int64(2)
 	attach.ExpectedRevision, attach.OperationID = &twoMongoRevision, "mongo-attach-002"
+	roadmapRevision++
+	attach.ExpectedRoadmapRevision = &roadmapRevision
 	if _, err := store.EditTODOPlacement(ctx, "company-a", attach); err != nil {
 		t.Fatalf("reattach Mongo-born TODO: %v", err)
 	}
@@ -968,7 +976,12 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	t.Logf("isolated Mongo sample: content_version_bson_bytes=%d content_write_latency=%s event_only_bson_bytes=%d event_only_write_latency=%s large_section_bytes=47482", len(measuredVersionBSON), contentWriteLatency, len(measuredEventBSON), evidenceWriteLatency)
 	five := int64(4)
-	placementRequest := TODOPlacementEditRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &five, OperationID: "placement-edit-001", ReleaseID: "r-09", Position: 4, Reason: "Move TODO to another Release in the same Project"}
+	projectBeforePlacement, err = store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	roadmapRevision = projectBeforePlacement.RoadmapRevision
+	placementRequest := TODOPlacementEditRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &five, ExpectedRoadmapRevision: &roadmapRevision, OperationID: "placement-edit-001", ReleaseID: "r-09", Position: 4, Reason: "Move TODO to another Release in the same Project"}
 	placement, err := store.EditTODOPlacement(ctx, "company-a", placementRequest)
 	if err != nil || placement.Revision != 5 || placement.NoOp {
 		t.Fatalf("placement-only edit = %+v, %v", placement, err)
@@ -977,6 +990,8 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	placementNoOp := placementRequest
 	placementNoOp.ExpectedRevision = &six
 	placementNoOp.OperationID = "placement-noop-001"
+	roadmapRevision++
+	placementNoOp.ExpectedRoadmapRevision = &roadmapRevision
 	if result, err := store.EditTODOPlacement(ctx, "company-a", placementNoOp); err != nil || !result.NoOp || result.Revision != 5 {
 		t.Fatalf("same-placement no-op = %+v, %v", result, err)
 	}
@@ -996,7 +1011,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || currentAfterMove.TODO.Source.Path != request.TODO.Source.Path || currentAfterMove.TODO.Source.Digest != request.TODO.Source.Digest {
 		t.Fatalf("Release move changed immutable source provenance: %+v, %v", currentAfterMove, err)
 	}
-	badMove := TODOPlacementEditRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &six, OperationID: "placement-foreign-001", ReleaseID: "foreign-r-01", Position: 0, Reason: "Reject cross-Project Release"}
+	badMove := TODOPlacementEditRequest{ProjectID: "builder", TODOID: request.TODO.ID, ExpectedRevision: &six, ExpectedRoadmapRevision: &roadmapRevision, OperationID: "placement-foreign-001", ReleaseID: "foreign-r-01", Position: 0, Reason: "Reject cross-Project Release"}
 	if _, err := store.EditTODOPlacement(ctx, "company-a", badMove); err == nil || !errors.Is(err, ErrNotFound) {
 		t.Fatalf("foreign/unknown Release placement = %v; want not-found TEACH", err)
 	}

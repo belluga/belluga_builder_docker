@@ -27,15 +27,16 @@ type TODOEvidenceEditRequest struct {
 }
 
 type TODOPlacementEditRequest struct {
-	ProjectID        string `json:"project_id"`
-	TODOID           string `json:"todo_id"`
-	ExpectedRevision *int64 `json:"expected_revision"`
-	OperationID      string `json:"operation_id"`
-	Action           string `json:"action,omitempty"`
-	Detach           bool   `json:"detach,omitempty"`
-	ReleaseID        string `json:"release_id"`
-	Position         int    `json:"position"`
-	Reason           string `json:"reason"`
+	ProjectID               string `json:"project_id"`
+	TODOID                  string `json:"todo_id"`
+	ExpectedRevision        *int64 `json:"expected_revision"`
+	ExpectedRoadmapRevision *int64 `json:"expected_roadmap_revision"`
+	OperationID             string `json:"operation_id"`
+	Action                  string `json:"action,omitempty"`
+	Detach                  bool   `json:"detach,omitempty"`
+	ReleaseID               string `json:"release_id"`
+	Position                int    `json:"position"`
+	Reason                  string `json:"reason"`
 }
 
 type TODOSectionOwnershipRequest struct {
@@ -256,17 +257,8 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 
 func (m *MongoStore) EditTODOPlacement(ctx context.Context, companyID string, request TODOPlacementEditRequest) (TODOContentEditResponse, error) {
 	detach := request.Detach || request.Action == "detach"
-	if request.Action != "" && request.Action != "attach" && request.Action != "detach" || !validRecordMutationIdentity(request.ProjectID, request.TODOID, request.ExpectedRevision, request.OperationID, request.Reason) || (!detach && (!validID(request.ReleaseID) || request.Position < 0)) || (detach && request.ReleaseID != "") {
+	if request.Action != "" && request.Action != "attach" && request.Action != "detach" || !validRecordMutationIdentity(request.ProjectID, request.TODOID, request.ExpectedRevision, request.OperationID, request.Reason) || request.ExpectedRoadmapRevision == nil || *request.ExpectedRoadmapRevision < 0 || *request.ExpectedRoadmapRevision == math.MaxInt64 || (!detach && (!validID(request.ReleaseID) || request.Position < 0)) || (detach && request.ReleaseID != "") {
 		return TODOContentEditResponse{}, todoTeach("placement.action/release_id/position", "attach with a same-Project Release and nonnegative position, or detach with no Release ID", ErrInvalid)
-	}
-	database, err := m.todoTenantDatabase(ctx, companyID)
-	if err != nil {
-		return TODOContentEditResponse{}, err
-	}
-	if !detach {
-		if err := validateTODOReleaseMembership(ctx, database, companyID, request.ProjectID, request.ReleaseID); err != nil {
-			return TODOContentEditResponse{}, err
-		}
 	}
 	return m.writeTODORecordMutation(ctx, companyID, request.ProjectID, request.TODOID, *request.ExpectedRevision, request.OperationID, "placement-edit", request, request.Reason,
 		bson.D{}, func(record TODORecord) (TODOHistoryChanges, error) {
@@ -319,6 +311,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	if record.Revision != expected {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
+	if kind == "placement-edit" && project.RoadmapRevision != *request.(TODOPlacementEditRequest).ExpectedRoadmapRevision {
+		return TODOContentEditResponse{}, todoTeach("expected_roadmap_revision", "reload the current Project Roadmap before changing TODO placement", ErrConflict)
+	}
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOContentEditResponse{}, err
 	}
@@ -359,6 +354,17 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) {
+		if kind == "placement-edit" {
+			placement := request.(TODOPlacementEditRequest)
+			if err := bumpRoadmapRevision(txCtx, database, companyID, projectID, *placement.ExpectedRoadmapRevision); err != nil {
+				return nil, err
+			}
+			if !placement.Detach && placement.Action != "detach" {
+				if err := validateTODOReleaseMembership(txCtx, database, companyID, projectID, placement.ReleaseID); err != nil {
+					return nil, err
+				}
+			}
+		}
 		result, err := collection.UpdateOne(txCtx, bson.D{{Key: "_id", Value: record.ObjectID}, {Key: "project_id", Value: projectID}, {Key: "id", Value: todoID}, {Key: "revision", Value: record.Revision}}, update)
 		if err != nil {
 			return nil, normalizeMongoError(err)

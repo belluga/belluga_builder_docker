@@ -65,7 +65,7 @@ type roadmapEpicView struct {
 	Releases    []roadmapReleaseView `json:"releases"`
 }
 
-func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRelease, todos []roadmapTODOView) (json.RawMessage, error) {
+func projectRoadmap(projectID string, revision int64, epics []roadmapEpic, releases []roadmapRelease, todos []roadmapTODOView) (json.RawMessage, error) {
 	views := make([]roadmapEpicView, 0, len(epics))
 	byID := make(map[string]int, len(epics))
 	for _, epic := range epics {
@@ -112,14 +112,15 @@ func projectRoadmap(projectID string, epics []roadmapEpic, releases []roadmapRel
 		Folders []any             `json:"folders"`
 	}{TODOs: backlogTODOs, Folders: []any{}}
 	result := struct {
-		SchemaVersion string            `json:"schema_version"`
-		ProjectID     string            `json:"project_id"`
-		FocusRelease  string            `json:"focus_release_id"`
-		Epics         []roadmapEpicView `json:"epics"`
-		Backlog       any               `json:"backlog"`
-		Unclassified  []any             `json:"unclassified"`
-		Diagnostics   []any             `json:"diagnostics"`
-	}{"builder-roadmap-projection-v3", projectID, "", views, backlog, []any{}, []any{}}
+		SchemaVersion   string            `json:"schema_version"`
+		ProjectID       string            `json:"project_id"`
+		RoadmapRevision int64             `json:"roadmap_revision"`
+		FocusRelease    string            `json:"focus_release_id"`
+		Epics           []roadmapEpicView `json:"epics"`
+		Backlog         any               `json:"backlog"`
+		Unclassified    []any             `json:"unclassified"`
+		Diagnostics     []any             `json:"diagnostics"`
+	}{"builder-roadmap-projection-v3", projectID, revision, "", views, backlog, []any{}, []any{}}
 	data, err := json.Marshal(result)
 	if err != nil {
 		return nil, ErrUnavailable
