@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -227,6 +228,10 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		if _, err := database.Collection(todoContentVersionsCollection).InsertOne(ctx, version); err != nil {
 			t.Fatalf("insert legacy digestless content version %d: %v", revision, err)
 		}
+		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: admission.TODO.ID, Revision: revision, Kind: "content_changed", OccurredAt: time.Now().UTC(), OperationID: fmt.Sprintf("fixture-legacy-content-%d", revision), RequestDigest: sourceHash([]byte(fmt.Sprintf("fixture-%d", revision))), ContentRevision: &revision}
+		if _, err := database.Collection(todoEventsCollection).InsertOne(ctx, event); err != nil {
+			t.Fatalf("insert legacy content event %d: %v", revision, err)
+		}
 	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: admission.TODO.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "revision", Value: int64(4)}}}}); err != nil {
 		t.Fatalf("set observed imported TODO revision: %v", err)
@@ -274,6 +279,52 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	read, err = store.ReadTODO(ctx, "company-a", "builder", admission.TODO.ID, nil)
 	if err != nil || read.ContentRevision == nil || *read.ContentRevision != 5 || read.ContentDigest != edit.ContentDigest || read.TODO.Stage != "In-Progress" || read.TODO.Source.Digest != admission.TODO.Source.Digest || read.TODO.VerifiedTransitionRef == nil || read.TODO.VerifiedTransitionRef.SourceDigest != edit.ContentDigest {
 		t.Fatalf("final imported authored stage readback = %+v, %v", read, err)
+	}
+	// Seed a previously verified local-delivery event without contacting the
+	// external Reader; recovery must still validate the immutable event chain.
+	localProof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=fixture", SourceDigest: sourceHash([]byte("local-run")), VerificationState: "verified"}
+	commit := TODOCommitReference{Repository: "belluga_builder_docker", Commit: strings.Repeat("a", 40), SourceDigest: edit.ContentDigest, VerificationState: "unverified"}
+	localStage, verified := "Local-Implemented", "verified"
+	commits := []TODOCommitReference{commit}
+	localEvent := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: admission.TODO.ID, Revision: 9, Kind: "state_changed", OccurredAt: time.Now().UTC(), OperationID: "fixture-local-delivery", RequestDigest: sourceHash([]byte("fixture-local-delivery")), Changes: TODOHistoryChanges{Stage: &localStage, StageVerification: &verified, VerifiedTransitionRef: &localProof, ImplementationCommits: &commits}}
+	if _, err := database.Collection(todoEventsCollection).InsertOne(ctx, localEvent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: admission.TODO.ID}, {Key: "revision", Value: int64(8)}}, bson.D{{Key: "$set", Value: bson.D{{Key: "revision", Value: int64(9)}, {Key: "stage", Value: localStage}, {Key: "stage_verification", Value: verified}, {Key: "verified_transition_ref", Value: localProof}, {Key: "implementation_commits", Value: commits}}}}); err != nil {
+		t.Fatal(err)
+	}
+	future := contentFromTODO(read.TODO)
+	future.Title = "Unapproved future scope"
+	if _, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(9), OperationID: "future-content", Content: future, Reason: "Preserve future work separately"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.VerifyCurrentTODOStage(ctx, "company-a", VerifyCurrentTODOStageRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(10), OperationID: "reject-future-local"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("future content reused prior local proof: %v", err)
+	}
+	if _, err := store.RestoreTODOContent(ctx, "company-a", TODOContentRestoreRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(10), OperationID: "restore-delivered-content", ContentRevision: 5, Reason: "Separate future scope into its own TODO"}); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.VerifyCurrentTODOStage(ctx, "company-a", VerifyCurrentTODOStageRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(11), OperationID: "recover-exact-local"})
+	if err != nil || recovered.Stage != "Local-Implemented" || recovered.StageVerification != "verified" || recovered.TODORevision != 12 {
+		t.Fatalf("restored local proof = %+v, %v", recovered, err)
+	}
+	ready, err := store.ReadTODO(ctx, "company-a", "builder", admission.TODO.ID, nil)
+	if err != nil || ready.ContentDigest == "" {
+		t.Fatalf("completion content identity = %+v, %v", ready, err)
+	}
+	deployed := strings.Repeat("d", 40)
+	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("project_mode") != "mvp" || r.URL.Query().Get("root_sha") != deployed {
+			t.Errorf("completion request did not use exact MVP publication: %s", r.URL.String())
+		}
+		_, _ = fmt.Fprintf(w, `{"company_id":"company-a","project_id":"builder","todo_id":%q,"deployment_id":17,"environment":"production","root_sha":%q,"module_path":"project","commit_sha":%q,"project_commits":[%q],"outcome":"verified","project_mode":"mvp","reader_sha":%q}`, admission.TODO.ID, deployed, deployed, commit.Commit, strings.Repeat("e", 40))
+	}))
+	defer reader.Close()
+	store.proofReaderURL, store.proofReaderToken, store.proofHTTPClient = reader.URL, "secret", reader.Client()
+	claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + deployed, SourceDigest: ready.ContentDigest, VerificationState: "unverified"}
+	completed, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: admission.TODO.ID, ExpectedRevision: int64Pointer(12), OperationID: "complete-mvp-deployment", RequestedStage: "Completed", ProofReferences: []TODOProofReference{claim}})
+	if err != nil || completed.Stage != "Completed" || completed.StageVerification != "verified" || completed.TODORevision != 13 {
+		t.Fatalf("MVP completion after exact local recovery = %+v, %v", completed, err)
 	}
 }
 

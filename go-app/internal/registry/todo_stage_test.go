@@ -6,10 +6,93 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestRestoredLocalProofRequiresExactDeliveredContract(t *testing.T) {
+	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "verified"}
+	commits := []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: strings.Repeat("a", 40), SourceDigest: proof.SourceDigest, VerificationState: "verified"}}
+	position := 4
+	content := TODOAuthoredContent{Title: "Delivered slice", Objective: "Create TODOs", Sections: []TODOSection{{Key: "intent", Title: "Intent", BodyMarkdown: "Approved", Position: 0, Ownership: "contract"}}, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: 53, Stage: "Local-Implemented", StageVerification: "unverified", ReleaseID: "r-08", Position: &position, ImplementationCommits: commits}
+	prior := TODOAsOfResponse{ProjectID: "builder", TODOID: "todo-a", Revision: 39, Content: content, State: TODOAsOfState{Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &proof, ReleaseID: "r-08", Position: position, PlacementAssigned: true, ImplementationCommits: commits}}
+	got, err := restoredLocalProof(record, content, prior)
+	if err != nil || got != proof {
+		t.Fatalf("exact restored proof = %+v, %v", got, err)
+	}
+	changed := content
+	changed.Title = "Future scope"
+	if _, err := restoredLocalProof(record, changed, prior); err == nil {
+		t.Fatal("future contract reused old local delivery proof")
+	}
+	prior.State.ImplementationCommits = []TODOCommitReference{}
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("changed implementation attribution reused old proof")
+	}
+	prior.State.ImplementationCommits = commits
+	record.StageVerification = "verified"
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("already verified stage accepted recovery")
+	}
+	if !reflect.DeepEqual(commits, prior.State.ImplementationCommits) {
+		t.Fatal("test fixture changed")
+	}
+}
+
+func TestMVPCompletionRequiresReaderVerifiedDeploymentAndCurrentContent(t *testing.T) {
+	root := strings.Repeat("a", 40)
+	digest := "sha256:" + strings.Repeat("b", 64)
+	local := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader", Reference: "local", SourceDigest: digest, VerificationState: "verified"}
+	implementation := strings.Repeat("c", 40)
+	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: implementation}}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer secret" || r.URL.Query().Get("project_mode") != "mvp" || r.URL.Query().Get("root_sha") != root || r.URL.Query().Get("commit_sha") != root || r.URL.Query().Get("project_commits") != implementation || r.URL.Query().Get("todo_id") != todo.ID {
+			t.Errorf("invalid private Reader request: %s", r.URL.String())
+		}
+		_, _ = w.Write([]byte(`{"company_id":"company-a","project_id":"builder","todo_id":"todo-a","deployment_id":17,"environment":"production","root_sha":"` + root + `","module_path":"project","commit_sha":"` + root + `","project_commits":["` + implementation + `"],"outcome":"verified","project_mode":"mvp","reader_sha":"` + strings.Repeat("e", 40) + `"}`))
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
+	request := TODOActionRequest{ProofReferences: []TODOProofReference{{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}}}
+	proof, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request)
+	if err != nil || proof.Kind != "production-deployment" || proof.VerificationState != "verified" {
+		t.Fatalf("verified MVP completion = %+v, %v", proof, err)
+	}
+	request.ProofReferences[0].SourceDigest = "sha256:" + strings.Repeat("c", 64)
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request); err == nil {
+		t.Fatal("stale content claim accepted")
+	}
+	request.ProofReferences[0].SourceDigest = digest
+	todo.StageVerification = "unverified"
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request); err == nil {
+		t.Fatal("unverified local delivery accepted")
+	}
+}
+
+func TestMVPImplementationClaimsRejectUnknownSource(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	local := TODOProofReference{Kind: "remote-local-delivery"}
+	todo := TODORecord{VerifiedTransitionRef: &local, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: commit}, {Repository: "PACED", Commit: commit}}}
+	builder, paced, err := mvpImplementationClaims(todo)
+	if err != nil || len(builder) != 1 || len(paced) != 1 {
+		t.Fatalf("classified code sources = %v %v %v", builder, paced, err)
+	}
+	todo.ImplementationCommits[1].Repository = "unregistered-tool"
+	if _, _, err := mvpImplementationClaims(todo); err == nil {
+		t.Fatal("unknown implementation source accepted")
+	}
+	todo.ImplementationCommits = nil
+	if _, _, err := mvpImplementationClaims(todo); err == nil {
+		t.Fatal("missing implementation claims accepted without historical local run")
+	}
+	local.Kind = "local-run-accepted"
+	if _, _, err := mvpImplementationClaims(todo); err != nil {
+		t.Fatalf("previously accepted legacy local run rejected: %v", err)
+	}
+}
 
 func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
