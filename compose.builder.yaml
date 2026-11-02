@@ -85,5 +85,4 @@ networks:
   project-reader-private:
     driver: bridge
   builder-registry-private:
-    name: builder-registry-private
     driver: bridge
