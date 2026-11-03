@@ -88,6 +88,70 @@ func TestCanonicalTEACHReturnsFieldRecordAcceptedValuesAndNextAction(t *testing.
 	}
 }
 
+func TestCanonicalImportEnvelopeTEACHNamesInvalidField(t *testing.T) {
+	base := CanonicalImport{ProjectID: "builder", GenerationID: "g1", OperationID: "import-1", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", Actor: "migration-agent", Records: []CanonicalImportRecord{{}}}
+	tests := []struct {
+		name  string
+		field string
+		edit  func(*CanonicalImport)
+	}{
+		{"records", "records", func(v *CanonicalImport) { v.Records = nil }},
+		{"generation", "generation_id", func(v *CanonicalImport) { v.GenerationID = "" }},
+		{"operation", "operation_id", func(v *CanonicalImport) { v.OperationID = "" }},
+		{"source", "source_revision", func(v *CanonicalImport) { v.SourceRevision = "" }},
+		{"actor", "actor", func(v *CanonicalImport) { v.Actor = "" }},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := base
+			tc.edit(&input)
+			_, err := (*MongoStore)(nil).ImportCanonicalDraft(context.Background(), "company-canonical", input)
+			var teach *canonicalTeachError
+			if !errors.As(err, &teach) || teach.Diagnostic.FieldPath != tc.field || teach.Diagnostic.NextAction == "" {
+				t.Fatalf("expected %s TEACH, got %v", tc.field, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalImportRequestDecodeTEACHNamesUnknownField(t *testing.T) {
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/", strings.NewReader(`{"project_id":"boora","unexpected":"value"}`))
+	var input CanonicalImport
+	if (&Handler{}).decodeCanonicalRequest(response, request, &input) {
+		t.Fatal("unknown request field was accepted")
+	}
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != 400 || body.TeachDetail == nil || body.TeachDetail.FieldPath != "request.unexpected" {
+		t.Fatalf("unexpected TEACH: %+v", body)
+	}
+}
+
+func TestCanonicalEndpointRouteTEACHNamesRecord(t *testing.T) {
+	_, err := normalizeCanonicalPayload(FamilyEndpoint, "endpoint-a", json.RawMessage(`{"method":"GET","route":"/events?after=1","host_scope":"api","module_id":"events"}`))
+	var teach *canonicalTeachError
+	if !errors.As(err, &teach) || teach.Diagnostic.RecordID != "endpoint-a" || teach.Diagnostic.FieldPath != "payload.route" {
+		t.Fatalf("expected exact endpoint route TEACH, got %v", err)
+	}
+}
+
+func TestCanonicalImportRecordTEACHNamesMissingIdentityAndRevision(t *testing.T) {
+	record := CanonicalRecord{ID: "boora", ProjectID: "boora", Payload: json.RawMessage(`{"purpose":"Project","scope":["web"]}`)}
+	err := validateCanonicalRecord("boora", "draft-1", FamilyMandate, record)
+	var teach *canonicalTeachError
+	if !errors.As(err, &teach) || teach.Diagnostic.FieldPath != "record.generation_id" {
+		t.Fatalf("expected generation TEACH, got %v", err)
+	}
+	record.GenerationID = "draft-1"
+	err = validateCanonicalRecord("boora", "draft-1", FamilyMandate, record)
+	if !errors.As(err, &teach) || teach.Diagnostic.FieldPath != "record.revision" {
+		t.Fatalf("expected revision TEACH, got %v", err)
+	}
+}
+
 func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {

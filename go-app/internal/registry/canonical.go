@@ -343,11 +343,26 @@ func canonicalCollection(f CanonicalFamily) (string, error) {
 }
 
 func validateCanonicalRecord(projectID, generationID string, family CanonicalFamily, record CanonicalRecord) error {
-	if !validID(projectID) || !canonicalID.MatchString(record.ID) || record.ProjectID != projectID || !canonicalID.MatchString(generationID) || record.GenerationID != generationID || record.Revision < 1 || len(record.Payload) == 0 || len(record.Payload) > maxCanonicalPayload {
-		return ErrInvalid
+	if !validID(projectID) {
+		return teachCanonical(record.ID, "project_id", "provide the exact registered Project ID", ErrInvalid)
+	}
+	if !canonicalID.MatchString(record.ID) {
+		return teachCanonical(record.ID, "record.id", "provide a stable lowercase record ID", ErrInvalid)
+	}
+	if record.ProjectID != projectID {
+		return teachCanonical(record.ID, "record.project_id", "match the request Project ID", ErrInvalid)
+	}
+	if !canonicalID.MatchString(generationID) || record.GenerationID != generationID {
+		return teachCanonical(record.ID, "record.generation_id", "match the exact draft generation_id in the request", ErrInvalid)
+	}
+	if record.Revision < 1 {
+		return teachCanonical(record.ID, "record.revision", "set the initial content revision to 1", ErrInvalid)
+	}
+	if len(record.Payload) == 0 || len(record.Payload) > maxCanonicalPayload {
+		return teachCanonical(record.ID, "record.payload", "provide one typed payload object within the 4 MiB record limit", ErrInvalid)
 	}
 	if _, err := canonicalCollection(family); err != nil {
-		return err
+		return teachCanonical(record.ID, "family", "use a family listed by knowledge-template", ErrInvalid)
 	}
 	var target any
 	switch family {
@@ -390,19 +405,19 @@ func teachCanonical(recordID, field, action string, err error) error {
 	return &canonicalTeachError{Diagnostic: CanonicalTeachDiagnostic{Code: "canonical_validation", FieldPath: field, RecordID: recordID, AcceptedValues: values, NextAction: action}, Cause: err}
 }
 
-func normalizeCanonicalPayload(family CanonicalFamily, payload json.RawMessage) (json.RawMessage, error) {
+func normalizeCanonicalPayload(family CanonicalFamily, recordID string, payload json.RawMessage) (json.RawMessage, error) {
 	if family != FamilyEndpoint {
 		return payload, nil
 	}
 	var endpoint CanonicalEndpointPayload
-	if err := decodeCanonicalPayload("", payload, &endpoint); err != nil {
+	if err := decodeCanonicalPayload(recordID, payload, &endpoint); err != nil {
 		return nil, err
 	}
 	endpoint.Method = strings.ToUpper(strings.TrimSpace(endpoint.Method))
 	endpoint.HostScope = strings.ToLower(strings.TrimSpace(endpoint.HostScope))
 	endpoint.Route = strings.TrimSpace(endpoint.Route)
 	if !strings.HasPrefix(endpoint.Route, "/") || strings.ContainsAny(endpoint.Route, "?#") {
-		return nil, ErrInvalid
+		return nil, teachCanonical(recordID, "payload.route", "provide a path beginning with /; move query parameters and fragments into the typed request contract", ErrInvalid)
 	}
 	endpoint.Route = path.Clean("/" + strings.TrimLeft(endpoint.Route, "/"))
 	if endpoint.Route == "." {
@@ -410,7 +425,7 @@ func normalizeCanonicalPayload(family CanonicalFamily, payload json.RawMessage) 
 	}
 	encoded, err := json.Marshal(endpoint)
 	if err != nil {
-		return nil, ErrInvalid
+		return nil, teachCanonical(recordID, "payload", "provide an encodable endpoint contract", ErrInvalid)
 	}
 	return encoded, nil
 }
@@ -580,8 +595,20 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 }
 
 func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string, input CanonicalImport) (CanonicalManifest, error) {
-	if len(input.Records) == 0 || len(input.Records) > 500 || !canonicalID.MatchString(input.GenerationID) || !canonicalID.MatchString(input.OperationID) || !canonicalSourceRevision.MatchString(input.SourceRevision) || strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
-		return CanonicalManifest{}, ErrInvalid
+	if len(input.Records) == 0 || len(input.Records) > 500 {
+		return CanonicalManifest{}, teachCanonical("", "records", "provide between 1 and 500 typed records in this draft import", ErrInvalid)
+	}
+	if !canonicalID.MatchString(input.GenerationID) {
+		return CanonicalManifest{}, teachCanonical("", "generation_id", "provide a lowercase stable generation ID", ErrInvalid)
+	}
+	if !canonicalID.MatchString(input.OperationID) {
+		return CanonicalManifest{}, teachCanonical("", "operation_id", "provide a lowercase stable operation ID", ErrInvalid)
+	}
+	if !canonicalSourceRevision.MatchString(input.SourceRevision) {
+		return CanonicalManifest{}, teachCanonical("", "source_revision", "provide the exact 40-character lowercase Git SHA of the source revision", ErrInvalid)
+	}
+	if strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
+		return CanonicalManifest{}, teachCanonical("", "actor", "provide a non-empty actor identifier of at most 200 characters", ErrInvalid)
 	}
 	db, _, err := m.canonicalDB(ctx, companyID, input.ProjectID)
 	if err != nil {
@@ -590,7 +617,7 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 	seen := map[string]bool{}
 	for i := range input.Records {
 		item := &input.Records[i]
-		item.Record.Payload, err = normalizeCanonicalPayload(item.Family, item.Record.Payload)
+		item.Record.Payload, err = normalizeCanonicalPayload(item.Family, item.Record.ID, item.Record.Payload)
 		if err != nil {
 			return CanonicalManifest{}, err
 		}
@@ -826,7 +853,7 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	if generation == "" {
 		return CanonicalRecord{}, ErrNotFound
 	}
-	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.Payload)
+	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.ID, input.Record.Payload)
 	if err != nil {
 		return CanonicalRecord{}, err
 	}
@@ -912,7 +939,7 @@ func (m *MongoStore) CreateCanonical(ctx context.Context, companyID string, inpu
 		return CanonicalRecord{}, ErrNotFound
 	}
 	input.Record.ProjectID, input.Record.GenerationID, input.Record.Revision = input.ProjectID, generation, 1
-	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.Payload)
+	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.ID, input.Record.Payload)
 	if err != nil {
 		return CanonicalRecord{}, err
 	}

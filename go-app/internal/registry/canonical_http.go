@@ -2,9 +2,12 @@ package registry
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 func (h *Handler) canonicalEntity(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +82,23 @@ func (h *Handler) decodeCanonicalRequest(w http.ResponseWriter, r *http.Request,
 		h.writeError(w, err)
 		return false
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	return h.decodeLimit(w, r, target, maxCanonicalPayload)
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		field := "request"
+		if name, ok := strings.CutPrefix(err.Error(), `json: unknown field "`); ok {
+			field += "." + strings.TrimSuffix(name, `"`)
+		}
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) && typeError.Field != "" {
+			field += "." + typeError.Field
+		}
+		h.writeError(w, teachCanonical("", field, "use the typed request shape returned by knowledge-template", ErrInvalid))
+		return false
+	}
+	if decoder.Decode(new(any)) != io.EOF {
+		h.writeError(w, teachCanonical("", "request", "provide exactly one JSON object without trailing values", ErrInvalid))
+		return false
+	}
+	return true
 }
