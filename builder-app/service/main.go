@@ -78,11 +78,14 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(struct { SourceSHA string `json:"source_sha"` }{SourceSHA: buildSourceSHA})
+		_ = json.NewEncoder(w).Encode(struct {
+			SourceSHA string `json:"source_sha"`
+		}{SourceSHA: buildSourceSHA})
 	})
 	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
 	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
 	mux.HandleFunc("/api/roadmap", consumer.apiHandler)
+	mux.HandleFunc("/api/knowledge", consumer.knowledgeAPIHandler)
 	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))

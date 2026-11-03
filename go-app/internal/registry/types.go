@@ -64,6 +64,7 @@ type Project struct {
 	PreparationState      string   `json:"preparation_state" bson:"preparation_state"`
 	PreparationDiagnostic string   `json:"preparation_diagnostic,omitempty" bson:"preparation_diagnostic,omitempty"`
 	SnapshotFingerprint   string   `json:"snapshot_fingerprint,omitempty" bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID string   `json:"knowledge_generation_id,omitempty" bson:"knowledge_generation_id,omitempty"`
 }
 
 type Catalog struct {

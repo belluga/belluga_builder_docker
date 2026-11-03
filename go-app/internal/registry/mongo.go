@@ -70,6 +70,7 @@ type projectDocument struct {
 	PreparationState      string            `bson:"preparation_state"`
 	PreparationDiagnostic string            `bson:"preparation_diagnostic,omitempty"`
 	SnapshotFingerprint   string            `bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID string            `bson:"knowledge_generation_id,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -110,6 +111,7 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 		RoadmapRevision: project.RoadmapRevision,
 		RegisteredAt:    time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
 		PreparationDiagnostic: project.PreparationDiagnostic, SnapshotFingerprint: project.SnapshotFingerprint,
+		KnowledgeGenerationID: project.KnowledgeGenerationID,
 	}
 	if project.Binding == nil || !validBinding(*project.Binding) {
 		return projectDocument{}, ErrInvalid
@@ -129,7 +131,7 @@ func (p projectDocument) toAPI() Project {
 		Binding:          &p.Binding,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
-		SnapshotFingerprint: p.SnapshotFingerprint,
+		SnapshotFingerprint: p.SnapshotFingerprint, KnowledgeGenerationID: p.KnowledgeGenerationID,
 	}
 }
 
@@ -709,7 +711,7 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 			return err
 		}
 	}
-	return nil
+	return m.ensureCanonicalCollections(ctx, database)
 }
 
 func sanitizeProject(project Project) Project { project.Binding = nil; return project }

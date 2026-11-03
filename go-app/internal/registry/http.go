@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxRequestBody = maxSnapshotReferenceBytes
@@ -70,10 +71,43 @@ type releaseInvestigationService interface {
 	ReadReleaseInvestigation(context.Context, string, string, string) (ReleaseInvestigationRead, error)
 }
 
+type canonicalKnowledgeService interface {
+	ImportCanonicalDraft(context.Context, string, CanonicalImport) (CanonicalManifest, error)
+	CanonicalManifest(context.Context, string, string, string) (CanonicalManifest, error)
+	ReadCanonical(context.Context, string, string, CanonicalFamily, string) (CanonicalRecord, error)
+	ReadCanonicalDraft(context.Context, string, string, string, CanonicalFamily, string) (CanonicalRecord, error)
+	CreateCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
+	EditCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
+	RestoreCanonical(context.Context, string, CanonicalRestoreRequest) (CanonicalRecord, error)
+	ActivateCanonical(context.Context, string, string, string, string, string) (CanonicalManifest, error)
+	CanonicalHistory(context.Context, string, string, time.Time, int) (CanonicalHistoryPage, error)
+}
+
+type canonicalKnowledgeReader interface {
+	ReadCanonicalEntity(context.Context, string, string, string) (CanonicalProjection, error)
+	ReadCanonicalDecision(context.Context, string, string, CanonicalFamily, string, string) (CanonicalProjection, error)
+	ReadCanonicalAsOf(context.Context, string, string, CanonicalFamily, string, int64) (CanonicalRecord, error)
+	CompareCanonicalHistory(context.Context, string, string, CanonicalFamily, string, int64, int64) (CanonicalComparison, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template", h.canonicalTemplate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest", h.canonicalManifest)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}", h.canonicalEntity)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}", h.canonicalEndpoint)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}", h.canonicalDecision)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare", h.canonicalCompare)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}", h.canonicalAsOf)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts", h.canonicalImport)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate", h.canonicalActivate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalRead)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalEdit)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}", h.canonicalCreate)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore", h.canonicalRestore)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history", h.canonicalHistory)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}", h.project)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects", h.register)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
@@ -189,9 +223,11 @@ func (h *Handler) releaseInvestigationTemplate(w http.ResponseWriter, r *http.Re
 }
 
 type errorResponse struct {
-	Error        string `json:"error"`
-	Teach        string `json:"teach,omitempty"`
-	TODORevision *int64 `json:"todo_revision,omitempty"`
+	Error        string                    `json:"error"`
+	State        string                    `json:"state,omitempty"`
+	Teach        string                    `json:"teach,omitempty"`
+	TeachDetail  *CanonicalTeachDiagnostic `json:"teach_detail,omitempty"`
+	TODORevision *int64                    `json:"todo_revision,omitempty"`
 }
 
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
@@ -559,6 +595,164 @@ func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.R
 	h.respond(w, value, err)
 }
 
+func (h *Handler) canonicalTemplate(w http.ResponseWriter, r *http.Request) {
+	h.respond(w, CanonicalTemplate(), nil)
+}
+
+func (h *Handler) canonicalManifest(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := service.CanonicalManifest(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), r.URL.Query().Get("generation_id"))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalImport
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ImportCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalCreate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalMutation
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) {
+		h.writeError(w, todoTeach("project_id/family", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.CreateCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalActivate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input struct {
+		ProjectID    string `json:"project_id"`
+		GenerationID string `json:"generation_id"`
+		OperationID  string `json:"operation_id"`
+		Actor        string `json:"actor"`
+	}
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ActivateCanonical(r.Context(), r.PathValue("companyID"), input.ProjectID, input.GenerationID, input.OperationID, input.Actor)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalRead(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	query := r.URL.Query()
+	if len(query["generation_id"]) > 1 || len(query["generation_id"]) == 1 && query.Get("generation_id") == "" {
+		h.writeError(w, teachCanonical("", "generation_id", "provide one exact draft generation ID or omit this parameter for active knowledge", ErrInvalid))
+		return
+	}
+	var value CanonicalRecord
+	var err error
+	if generationID := query.Get("generation_id"); generationID != "" {
+		value, err = service.ReadCanonicalDraft(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), generationID, CanonicalFamily(r.PathValue("family")), r.PathValue("recordID"))
+	} else {
+		value, err = service.ReadCanonical(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), CanonicalFamily(r.PathValue("family")), r.PathValue("recordID"))
+	}
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalEdit(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalMutation
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.Record.ID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record.id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.EditCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalRestore(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalRestoreRequest
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.RecordID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record_id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.RestoreCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalHistory(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
+			return
+		}
+		limit = parsed
+	}
+	var after time.Time
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			h.writeError(w, todoTeach("after", "be an RFC3339 timestamp", ErrInvalid))
+			return
+		}
+		after = parsed
+	}
+	value, err := service.CanonicalHistory(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), after, limit)
+	h.respond(w, value, err)
+}
+
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, target any) bool {
 	return h.decodeLimit(w, r, target, maxRequestBody)
 }
@@ -616,6 +810,14 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	var teach *TODOValidationError
 	if errors.As(err, &teach) {
 		response.Teach = teach.Error()
+	}
+	var canonicalTeach *canonicalTeachError
+	if errors.As(err, &canonicalTeach) {
+		response.Teach = canonicalTeach.Error()
+		response.TeachDetail = &canonicalTeach.Diagnostic
+		if canonicalTeach.Diagnostic.Code == "canonical_pending" {
+			response.State = "pending"
+		}
 	}
 	var revisionConflict *todoRevisionConflict
 	if errors.As(err, &revisionConflict) {

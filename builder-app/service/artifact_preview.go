@@ -514,6 +514,15 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_found")
 		return
 	}
+	if r.URL.RawQuery == "" && registryCutoverEnabled() {
+		catalog, err := p.knowledgeCatalog(r)
+		if err != nil {
+			writeError(w, 503, "registration_state_unavailable")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"schema_version": "1", "companies": catalog.Companies, "projects": catalog.Projects})
+		return
+	}
 	catalog, err := p.catalog()
 	if err != nil {
 		writeError(w, 503, "registration_state_unavailable")

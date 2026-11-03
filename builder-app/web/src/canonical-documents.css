@@ -1,0 +1,16 @@
+.canonical-documents code, .canonical-document code { overflow-wrap: anywhere; font-size: 12px; }
+.canonical-documents .document-row > div { min-width: 0; }
+.canonical-documents .document-row > a { flex-shrink: 0; color: var(--project-accent, #165e83); font-weight: 700; padding: 12px; }
+.canonical-document { margin: 28px 0; padding: clamp(18px, 3vw, 36px); border: 1px solid var(--project-border, #d9e4e8); border-radius: var(--project-radius-card, 12px); background: var(--project-surface, #fff); }
+.canonical-document header h2 { overflow-wrap: anywhere; }
+.canonical-document header p { color: var(--project-text-secondary, #607985); }
+.canonical-section { padding-top: 16px; margin-top: 20px; border-top: 1px solid var(--project-border, #d9e4e8); }
+.canonical-section h3 { margin: 0 0 14px; }
+.canonical-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+.canonical-fields { margin: 0; }
+.canonical-fields > div { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(0, 4fr); gap: 16px; padding: 6px 0; }
+.canonical-fields dt { color: var(--project-text-secondary, #607985); }
+.canonical-fields dd { margin: 0; min-width: 0; }
+.canonical-values { padding-left: 20px; margin: 0; }
+.canonical-values > li { padding: 5px 0; }
+@media (max-width: 650px) { .canonical-fields > div { grid-template-columns: 1fr; gap: 2px; } .canonical-documents .document-row { align-items: flex-start; flex-direction: column; } }

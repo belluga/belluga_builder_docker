@@ -1,0 +1,343 @@
+package registry
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func canonicalTestRecord(family CanonicalFamily, id string, payload string) CanonicalImportRecord {
+	return CanonicalImportRecord{Family: family, Record: CanonicalRecord{ID: id, ProjectID: "builder", GenerationID: "g1", Revision: 1, Payload: json.RawMessage(payload)}}
+}
+
+func TestCanonicalTemplateDescribesCompleteTypedPayloadsAndDraftLimit(t *testing.T) {
+	template := CanonicalTemplate()
+	types := template["payload_types"].(map[string]any)
+	fields := template["type_fields"].(map[string]map[string]string)
+	module := fields[types[string(FamilyModule)].(string)]
+	for _, name := range []string{"purpose", "decisions", "interfaces", "workflows", "scope", "exclusions", "dependencies", "routes", "schemas", "invariants", "local_operations", "events", "jobs", "observability", "verification"} {
+		if module[name] == "" {
+			t.Fatalf("module field %s absent from public template", name)
+		}
+	}
+	if fields["CanonicalField"]["fields"] == "" || fields["CanonicalDecision"]["evidence"] == "" {
+		t.Fatal("nested typed contracts absent from public template")
+	}
+	if fields["DomainCatalogPayload"]["qa_validation_outline"] == "" || fields["MandatePayload"]["business_thesis"] == "" || fields["StrategicRoadmapPayload"]["epic_candidates"] == "" {
+		t.Fatal("source corpus has no complete typed field map")
+	}
+	guidance := strings.Join(template["migration_guidance"].([]string), " ")
+	if !strings.Contains(guidance, "does not prove source-content completeness") || !strings.Contains(guidance, "before activation") {
+		t.Fatal("public template must distinguish draft admission from complete migration")
+	}
+	if template["migration_id_policy"].(map[string]string)["output"] == "" {
+		t.Fatal("missing source-ID migration policy")
+	}
+}
+
+func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
+	cases := []struct {
+		family  CanonicalFamily
+		payload string
+		valid   bool
+	}{
+		{FamilyMandate, `{"purpose":"Build","scope":["web"]}`, true},
+		{FamilyDomain, `{"entities":[{"id":"project","name":"Project","description":""}],"relations":[],"distinctions":[]}`, true},
+		{FamilyConstitution, `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"tenant-access","status":"current","statement":"Scope reads"}]}`, true},
+		{FamilyRoadmap, `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`, true},
+		{FamilyModule, `{"purpose":"Owns project work","decisions":[{"id":"ownership","status":"current","statement":"Module owns its routes"}]}`, true},
+		{FamilyEndpoint, `{"method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`, true},
+		{FamilyPolicy, `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"ownership"}]}`, true},
+		{FamilyMandate, `{"purpose":"x","scope":[],"sections":[]}`, false},
+		{FamilyMandate, `# Markdown is deliberately not parsed`, false},
+		{FamilyPolicy, `{"rules":[{"id":"x","status":"open","statement":"Unknown status"}],"ownership":[]}`, false},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.family)+fmt.Sprint(tc.valid), func(t *testing.T) {
+			record := CanonicalRecord{ID: "stable", ProjectID: "builder", GenerationID: "g1", Revision: 1, Payload: json.RawMessage(tc.payload)}
+			err := validateCanonicalRecord("builder", "g1", tc.family, record)
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%v, error=%v", tc.valid, err)
+			}
+		})
+	}
+}
+
+func TestCanonicalDigestNormalizesJSONObjectOrder(t *testing.T) {
+	if canonicalDigest(json.RawMessage(`{"a":1,"b":{"c":2}}`)) != canonicalDigest(json.RawMessage(`{"b":{"c":2},"a":1}`)) {
+		t.Fatal("semantically equal payloads produced different digests")
+	}
+}
+
+func TestCanonicalTEACHReturnsFieldRecordAcceptedValuesAndNextAction(t *testing.T) {
+	response := httptest.NewRecorder()
+	handler := &Handler{}
+	handler.writeError(response, teachCanonical("module-a", "payload.decisions.status", "use an accepted decision status", ErrInvalid))
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != 400 || body.TeachDetail == nil || body.TeachDetail.Code != "canonical_validation" || body.TeachDetail.FieldPath != "payload.decisions.status" || body.TeachDetail.RecordID != "module-a" || len(body.TeachDetail.AcceptedValues) != 4 || body.TeachDetail.NextAction == "" {
+		t.Fatalf("TEACH response=%+v status=%d", body, response.Code)
+	}
+}
+
+func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("canonical_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-canonical")).Drop(context.Background())
+		_ = store.client.Database(store.tenantDatabase("company-other")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.CanonicalManifest(ctx, "company-canonical", "builder", "")
+	if err != nil || pending.State != "pending" || pending.Active || pending.TeachDetail == nil || pending.TeachDetail.Code != "canonical_pending" || len(pending.Documents) != 0 {
+		t.Fatalf("pending manifest=%+v, %v", pending, err)
+	}
+	handler := NewHandler(store)
+	base := "/internal/v1/companies/company-canonical/projects/builder/knowledge/"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("GET", base+"project_mandate/builder", nil))
+	var pendingBody errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &pendingBody); err != nil || response.Code != 404 || pendingBody.State != "pending" || pendingBody.TeachDetail == nil || pendingBody.TeachDetail.Code != "canonical_pending" {
+		t.Fatalf("pending read=%s status=%d error=%v", response.Body, response.Code, err)
+	}
+	input := CanonicalImport{ProjectID: "builder", GenerationID: "g1", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", OperationID: "import-1", Actor: "migration-agent", Records: []CanonicalImportRecord{
+		canonicalTestRecord(FamilyMandate, "builder", `{"purpose":"Build","scope":["web"]}`),
+		canonicalTestRecord(FamilyDomain, "builder", `{"entities":[{"id":"project","name":"Project","description":""}],"relations":[],"distinctions":[]}`),
+		canonicalTestRecord(FamilyConstitution, "builder", `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"tenant-access","status":"current","statement":"Scope reads"}]}`),
+		canonicalTestRecord(FamilyRoadmap, "builder", `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`),
+		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-ART-01","status":"current","statement":"Module owns routes"}],"schemas":[{"id":"project","name":"projects","kind":"collection","fields":[{"name":"name","type":"string"}]}]}`),
+		canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`),
+	}}
+	for i := range input.Records {
+		input.Records[i].Record.ProjectID = "builder"
+		input.Records[i].Record.GenerationID = "g1"
+	}
+	draft, err := store.ImportCanonicalDraft(ctx, "company-canonical", input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if draft.Active || len(draft.Documents) != 6 {
+		t.Fatalf("draft manifest=%+v", draft)
+	}
+	if repeated, e := store.ImportCanonicalDraft(ctx, "company-canonical", input); e != nil || len(repeated.Documents) != 6 {
+		t.Fatalf("idempotent draft import=%+v, %v", repeated, e)
+	}
+	duplicate := CanonicalImport{ProjectID: "builder", GenerationID: "g1", SourceRevision: input.SourceRevision, OperationID: "import-2", Actor: "migration-agent", Records: []CanonicalImportRecord{canonicalTestRecord(FamilyMandate, "builder", `{"purpose":"Changed after import","scope":["web"]}`)}}
+	duplicate.Records[0].Record.ProjectID = "builder"
+	duplicate.Records[0].Record.GenerationID = "g1"
+	if _, err := store.ImportCanonicalDraft(ctx, "company-canonical", duplicate); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "already exists in the draft") {
+		t.Fatalf("duplicate family/id should require a new draft generation: %v", err)
+	}
+	draftRead, err := store.ReadCanonicalDraft(ctx, "company-canonical", "builder", "g1", FamilyModule, "projects")
+	if err != nil || draftRead.GenerationID != "g1" || !strings.Contains(string(draftRead.Payload), "DEC-ART-01") {
+		t.Fatalf("draft readback lost typed content: %+v, %v", draftRead, err)
+	}
+	draftHTTP := httptest.NewRecorder()
+	handler.ServeHTTP(draftHTTP, httptest.NewRequest("GET", base+"module/projects?generation_id=g1", nil))
+	if draftHTTP.Code != 200 || !strings.Contains(draftHTTP.Body.String(), "DEC-ART-01") {
+		t.Fatalf("private draft readback=%d %s", draftHTTP.Code, draftHTTP.Body.String())
+	}
+	wrongDraft := httptest.NewRecorder()
+	handler.ServeHTTP(wrongDraft, httptest.NewRequest("GET", base+"module/projects?generation_id=other", nil))
+	if wrongDraft.Code != 404 || !strings.Contains(wrongDraft.Body.String(), "import this record") {
+		t.Fatalf("wrong draft readback=%d %s", wrongDraft.Code, wrongDraft.Body.String())
+	}
+	if _, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyMandate, "builder"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("draft leaked into active reads: %v", err)
+	}
+	incomplete := CanonicalImport{ProjectID: "builder", GenerationID: "incomplete", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", OperationID: "import-incomplete", Actor: "migration-agent", Records: []CanonicalImportRecord{canonicalTestRecord(FamilyMandate, "builder", `{"purpose":"Incomplete","scope":["web"]}`)}}
+	incomplete.Records[0].Record.GenerationID = incomplete.GenerationID
+	if _, err := store.ImportCanonicalDraft(ctx, "company-canonical", incomplete); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ActivateCanonical(ctx, "company-canonical", "builder", "incomplete", "activate-incomplete", "owner"); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("activation accepted a generation missing required singleton families: %v", err)
+	}
+	colliding := CanonicalImport{ProjectID: "builder", GenerationID: "colliding", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", OperationID: "import-colliding", Actor: "migration-agent", Records: []CanonicalImportRecord{
+		canonicalTestRecord(FamilyEndpoint, "route-a", `{"method":"get","route":"//projects/","host_scope":"API","module_id":"projects","request":[],"response":[]}`),
+		canonicalTestRecord(FamilyEndpoint, "route-b", `{"method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`),
+	}}
+	for i := range colliding.Records {
+		colliding.Records[i].Record.GenerationID = colliding.GenerationID
+	}
+	if _, err := store.ImportCanonicalDraft(ctx, "company-canonical", colliding); !errors.Is(err, ErrConflict) {
+		t.Fatalf("normalized endpoint method/route/host collision was accepted: %v", err)
+	}
+	active, err := store.ActivateCanonical(ctx, "company-canonical", "builder", "g1", "activate-1", "owner")
+	if err != nil || !active.Active || active.State != "active" {
+		t.Fatalf("activation=%+v, %v", active, err)
+	}
+	if repeated, e := store.ActivateCanonical(ctx, "company-canonical", "builder", "g1", "activate-1", "owner"); e != nil || !repeated.Active {
+		t.Fatalf("idempotent activation=%+v, %v", repeated, e)
+	}
+	if _, err := store.ActivateCanonical(ctx, "company-canonical", "builder", "incomplete", "replace-generation", "owner"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active generation replacement must fail: %v", err)
+	}
+	stillActive, err := store.CanonicalManifest(ctx, "company-canonical", "builder", "")
+	if err != nil || stillActive.GenerationID != "g1" || stillActive.State != "active" {
+		t.Fatalf("rejected activation changed active pointer: %+v, %v", stillActive, err)
+	}
+	constitution, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyConstitution, "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var constitutionPayload ConstitutionPayload
+	if err := json.Unmarshal(constitution.Payload, &constitutionPayload); err != nil || constitutionPayload.PromotionMode != "mvp" {
+		t.Fatalf("active API lost Builder promotion mode: %s, %v", constitution.Payload, err)
+	}
+	module, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyModule, "projects")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modulePayload ModulePayload
+	if err := json.Unmarshal(module.Payload, &modulePayload); err != nil || len(modulePayload.Schemas) != 1 || modulePayload.Decisions[0].ID != "DEC-ART-01" {
+		t.Fatalf("active API lost typed module contract: %s, %v", module.Payload, err)
+	}
+	read, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyMandate, "builder")
+	if err != nil || read.Revision != 1 {
+		t.Fatalf("active read=%+v, %v", read, err)
+	}
+	read.Payload = json.RawMessage(`{"purpose":"Build safely","scope":["web"]}`)
+	updated, err := store.EditCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyMandate, Record: read, ExpectedRevision: 1, OperationID: "edit-1", Actor: "owner"})
+	if err != nil || updated.Revision != 2 {
+		t.Fatalf("edit=%+v, %v", updated, err)
+	}
+	if repeated, e := store.EditCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyMandate, Record: read, ExpectedRevision: 1, OperationID: "edit-1", Actor: "owner"}); e != nil || repeated.Revision != 2 {
+		t.Fatalf("idempotent edit=%+v, %v", repeated, e)
+	}
+	if _, err := store.EditCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyMandate, Record: read, ExpectedRevision: 1, OperationID: "edit-stale", Actor: "owner"}); err != ErrConflict {
+		t.Fatalf("stale write error=%v", err)
+	}
+	created, err := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyPolicy, Record: CanonicalRecord{ID: "new-policy", Payload: json.RawMessage(`{"rules":[{"id":"new-rule","status":"planned","statement":"New policy"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`)}, OperationID: "create-1", Actor: "owner"})
+	if err != nil || created.Revision != 1 {
+		t.Fatalf("create=%+v, %v", created, err)
+	}
+	if repeated, e := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyPolicy, Record: CanonicalRecord{ID: "new-policy", Payload: json.RawMessage(`{"rules":[{"id":"new-rule","status":"planned","statement":"New policy"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`)}, OperationID: "create-1", Actor: "owner"}); e != nil || repeated.Revision != 1 {
+		t.Fatalf("idempotent create=%+v, %v", repeated, e)
+	}
+	restored, err := store.RestoreCanonical(ctx, "company-canonical", CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyMandate, RecordID: "builder", Revision: 1, ExpectedRevision: 2, OperationID: "restore-1", Actor: "owner"})
+	if err != nil || restored.Revision != 3 || canonicalDigest(restored.Payload) != read.ContentDigest {
+		t.Fatalf("restore=%+v, %v", restored, err)
+	}
+	history, err := store.CanonicalHistory(ctx, "company-canonical", "builder", time.Time{}, 100)
+	if err != nil || len(history.Events) != 11 {
+		t.Fatalf("history events=%d, %v", len(history.Events), err)
+	}
+	entity, err := store.ReadCanonicalEntity(ctx, "company-canonical", "builder", "project")
+	if err != nil || entity.Entity == nil || entity.Entity.Name != "Project" || entity.RecordID != "builder" || entity.Revision != 1 {
+		t.Fatalf("entity projection=%+v, %v", entity, err)
+	}
+	decision, err := store.ReadCanonicalDecision(ctx, "company-canonical", "builder", FamilyModule, "projects", "DEC-ART-01")
+	if err != nil || decision.Decision == nil || decision.Decision.Statement != "Module owns routes" || decision.RecordID != "projects" {
+		t.Fatalf("decision projection=%+v, %v", decision, err)
+	}
+	if _, err := store.ReadCanonicalDecision(ctx, "company-canonical", "builder", FamilyPolicy, "access-policy", "DEC-ART-01"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("decision lookup escaped owner: %v", err)
+	}
+	if _, err := store.ReadCanonicalDecision(ctx, "company-canonical", "builder", FamilyModule, "projects", "dec-art-01"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("decision identity lost case: %v", err)
+	}
+	before, err := store.ReadCanonicalAsOf(ctx, "company-canonical", "builder", FamilyMandate, "builder", 1)
+	if err != nil || before.ContentDigest != read.ContentDigest || before.Revision != 1 {
+		t.Fatalf("as-of=%+v, %v", before, err)
+	}
+	comparison, err := store.CompareCanonicalHistory(ctx, "company-canonical", "builder", FamilyMandate, "builder", 1, 2)
+	if err != nil || !comparison.Changed || comparison.From.Revision != 1 || comparison.To.Revision != 2 || !strings.Contains(string(comparison.To.Payload), "Build safely") {
+		t.Fatalf("comparison=%+v, %v", comparison, err)
+	}
+	comparison, err = store.CompareCanonicalHistory(ctx, "company-canonical", "builder", FamilyMandate, "builder", 1, 3)
+	if err != nil || comparison.Changed {
+		t.Fatalf("restored comparison=%+v, %v", comparison, err)
+	}
+	if _, err := store.ReadCanonicalAsOf(ctx, "company-canonical", "builder", FamilyMandate, "builder", 99); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing version=%v", err)
+	}
+	endpoint, err := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyEndpoint, Record: CanonicalRecord{ID: "list-projects", Payload: json.RawMessage(`{"method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`)}, OperationID: "create-endpoint", Actor: "owner"})
+	if err != nil || endpoint.Revision != 1 {
+		t.Fatalf("endpoint=%+v, %v", endpoint, err)
+	}
+	for _, path := range []string{"entities/project", "endpoints/list-projects", "module/projects/decisions/DEC-ART-01", "project_mandate/builder/history/1", "project_mandate/builder/history/compare?from=1&to=2"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", base+path, nil))
+		if response.Code != 200 || !json.Valid(response.Body.Bytes()) || !strings.Contains(response.Body.String(), `"revision":1`) {
+			t.Fatalf("HTTP projection %s status=%d body=%s", path, response.Code, response.Body)
+		}
+	}
+	for _, path := range []string{"entities/missing", "endpoints/missing", "module/projects/decisions/missing", "project_mandate/builder/history/99"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", base+path, nil))
+		if response.Code != 404 || strings.Contains(response.Body.String(), "canonical_pending") {
+			t.Fatalf("missing ID must differ from pending: %s status=%d body=%s", path, response.Code, response.Body)
+		}
+	}
+	for _, path := range []string{"module/projects/history/0", "module/projects/history/compare?from=1&to=2&to=3", "module/projects/history/compare?from=1"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("GET", base+path, nil))
+		if response.Code != 400 || !strings.Contains(response.Body.String(), "teach_detail") {
+			t.Fatalf("invalid version query %s status=%d body=%s", path, response.Code, response.Body)
+		}
+	}
+	// One new endpoint operation above, but read/compare/projection operations
+	// must not create events or mutate the owning record's revision.
+	historyAfter, err := store.CanonicalHistory(ctx, "company-canonical", "builder", time.Time{}, 100)
+	if err != nil || len(historyAfter.Events) != len(history.Events)+1 {
+		t.Fatalf("reads changed history: events=%d, %v", len(historyAfter.Events), err)
+	}
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-other", CompanyName: "Other", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReadCanonical(ctx, "company-other", "builder", FamilyMandate, "builder"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("canonical read crossed Company tenant boundary: %v", err)
+	}
+	if _, err := store.ReadCanonicalAsOf(ctx, "company-other", "builder", FamilyMandate, "builder", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("historical read crossed Company tenant boundary: %v", err)
+	}
+}
+
+func TestCanonicalDuplicateJSONKeysFailBeforeTypedDecoding(t *testing.T) {
+	for _, raw := range []string{
+		`{"purpose":"first","purpose":"last","scope":["web"]}`,
+		`{"purpose":"Build","decisions":[{"id":"D-1","id":"D-2","status":"current","statement":"Own"}]}`,
+	} {
+		err := rejectCanonicalDuplicateKeys("owner", []byte(raw), "payload")
+		var teach *canonicalTeachError
+		if !errors.As(err, &teach) || teach.Diagnostic.RecordID != "owner" || !strings.Contains(teach.Diagnostic.NextAction, "duplicate JSON key") {
+			t.Fatalf("duplicate accepted: %s error=%v", raw, err)
+		}
+	}
+	var mandate MandatePayload
+	if err := decodeCanonicalPayload("owner", json.RawMessage(`{"purpose":"first","purpose":"last","scope":["web"]}`), &mandate); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("typed decode accepted duplicate: %v", err)
+	}
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest("POST", "/", strings.NewReader(`{"project_id":"first","project_id":"last"}`))
+	var input CanonicalImport
+	if (&Handler{}).decodeCanonicalRequest(response, request, &input) || response.Code != 400 || !strings.Contains(response.Body.String(), "request.project_id") {
+		t.Fatalf("duplicate envelope accepted: %s", response.Body)
+	}
+	// Same field names in distinct objects are valid.
+	if err := rejectCanonicalDuplicateKeys("", []byte(`{"items":[{"id":"a"},{"id":"b"}]}`), "payload"); err != nil {
+		t.Fatal(err)
+	}
+}

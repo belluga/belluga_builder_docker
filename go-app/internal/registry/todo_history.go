@@ -1185,7 +1185,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if err != nil {
 		return TODOContentEditResponse{}, ErrInvalid
 	}
-	reopensPlanning := record.Source.Kind == "mongo-content-revision" && record.Stage == "Implementation-Approval-Pending"
+	reopensPlanning := record.Source.Kind == "mongo-content-revision" && (record.Stage == "Implementation-Approval-Pending" || record.Stage == "Ready-for-Implementation")
 	var planningProof *TODOProofReference
 	if reopensPlanning {
 		planningProof = &TODOProofReference{

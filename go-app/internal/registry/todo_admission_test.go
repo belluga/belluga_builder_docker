@@ -813,6 +813,65 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || readyAfterReview.Stage != "Ready-for-Implementation" || readyAfterReview.StageVerification != "verified" || readyAfterReview.TODORevision != 9 {
 		t.Fatalf("re-reviewed plan rejected approval for current content: %+v, %v", readyAfterReview, err)
 	}
+	readyBeforeNoOp, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readyContent := contentFromTODO(readyBeforeNoOp.TODO)
+	readyNoOp, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(9), OperationID: "mongo-ready-content-noop",
+		Content: readyContent, Reason: "Confirm identical content does not reopen an approved plan",
+	})
+	if err != nil || !readyNoOp.NoOp || readyNoOp.Revision != 9 {
+		t.Fatalf("identical Ready content edit = %+v, %v", readyNoOp, err)
+	}
+	readyAfterNoOp, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	if err != nil || readyAfterNoOp.TODO.Stage != "Ready-for-Implementation" || readyAfterNoOp.TODO.StageVerification != "verified" || readyAfterNoOp.TODO.VerifiedTransitionRef == nil || readyAfterNoOp.TODO.VerifiedTransitionRef.SourceDigest != restoredMongo.ContentDigest {
+		t.Fatalf("no-op content edit changed verified Ready state: %+v, %v", readyAfterNoOp, err)
+	}
+	readyContent.Title += " revised after approval"
+	readyEdit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(9), OperationID: "mongo-ready-content-edit",
+		Content: readyContent, Reason: "A substantive edit after Ready requires planning review again",
+	})
+	if err != nil || readyEdit.NoOp || readyEdit.Revision != 10 || readyEdit.ContentRevision == nil || *readyEdit.ContentRevision != 10 || !validSourceDigest(readyEdit.ContentDigest) {
+		t.Fatalf("substantive Ready content edit = %+v, %v", readyEdit, err)
+	}
+	readyAfterEdit, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	if err != nil || readyAfterEdit.TODO.Stage != "Planning" || readyAfterEdit.TODO.StageVerification != "verified" || readyAfterEdit.TODO.VerifiedTransitionRef == nil || readyAfterEdit.TODO.VerifiedTransitionRef.Kind != "planning-stage" || readyAfterEdit.TODO.VerifiedTransitionRef.SourceDigest != readyEdit.ContentDigest || readyAfterEdit.ContentRevision == nil || *readyAfterEdit.ContentRevision != 10 || readyAfterEdit.ContentDigest != readyEdit.ContentDigest {
+		t.Fatalf("Ready edit did not return to digest-bound verified Planning: %+v, %v", readyAfterEdit, err)
+	}
+	readyEditHistory, err := store.ReadTODOHistory(ctx, "company-a", "builder", mongoBorn.ID, 9, 10)
+	if err != nil || len(readyEditHistory.Events) != 1 || readyEditHistory.Events[0].Kind != "content_changed" || readyEditHistory.Events[0].ContentRevision == nil || *readyEditHistory.Events[0].ContentRevision != 10 || readyEditHistory.Events[0].Changes.Stage == nil || *readyEditHistory.Events[0].Changes.Stage != "Planning" || readyEditHistory.Events[0].Changes.StageVerification == nil || *readyEditHistory.Events[0].Changes.StageVerification != "verified" || readyEditHistory.Events[0].Changes.VerifiedTransitionRef == nil || readyEditHistory.Events[0].Changes.VerifiedTransitionRef.SourceDigest != readyEdit.ContentDigest {
+		t.Fatalf("Ready edit history lacks the Planning proof and content revision: %+v, %v", readyEditHistory, err)
+	}
+	reapprovedAfterEdit, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(10), OperationID: "mongo-ready-edit-re-review", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}})
+	if err != nil || reapprovedAfterEdit.Stage != "Implementation-Approval-Pending" || reapprovedAfterEdit.TODORevision != 11 {
+		t.Fatalf("edited Ready plan could not re-enter review: %+v, %v", reapprovedAfterEdit, err)
+	}
+	approvalAfterEdit := currentApproval
+	approvalAfterEdit.SourceDigest = readyEdit.ContentDigest
+	readyAgain, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(11), OperationID: "mongo-ready-edit-reapproved", RequestedStage: "Ready-for-Implementation", ProofReferences: []TODOProofReference{approvalAfterEdit}, WaiverReferences: []TODOProofReference{}})
+	if err != nil || readyAgain.Stage != "Ready-for-Implementation" || readyAgain.TODORevision != 12 {
+		t.Fatalf("edited plan could not return to Ready: %+v, %v", readyAgain, err)
+	}
+	startedAfterEdit, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(12), OperationID: "mongo-ready-edit-started", RequestedStage: "In-Progress", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}})
+	if err != nil || startedAfterEdit.Stage != "In-Progress" || startedAfterEdit.TODORevision != 13 {
+		t.Fatalf("reapproved plan could not start implementation: %+v, %v", startedAfterEdit, err)
+	}
+	inProgressContent := contentFromTODO(readyAfterEdit.TODO)
+	inProgressContent.Title += " implementation refinement"
+	inProgressEdit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{
+		ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(13), OperationID: "mongo-in-progress-content-edit",
+		Content: inProgressContent, Reason: "Confirm implementation-stage edits retain the existing rule",
+	})
+	if err != nil || inProgressEdit.Revision != 14 || inProgressEdit.ContentRevision == nil || *inProgressEdit.ContentRevision != 14 {
+		t.Fatalf("In-Progress content edit = %+v, %v", inProgressEdit, err)
+	}
+	inProgressAfterEdit, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	if err != nil || inProgressAfterEdit.TODO.Stage != "In-Progress" || inProgressAfterEdit.TODO.StageVerification != "unverified" || inProgressAfterEdit.TODO.VerifiedTransitionRef != nil {
+		t.Fatalf("In-Progress content edit changed its existing lifecycle rule: %+v, %v", inProgressAfterEdit, err)
+	}
 	zero := int64(0)
 	proof := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: request.TODO.Source.Digest, VerificationState: "unverified"}
 	started, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
