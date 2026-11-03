@@ -869,8 +869,8 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("In-Progress content edit = %+v, %v", inProgressEdit, err)
 	}
 	inProgressAfterEdit, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
-	if err != nil || inProgressAfterEdit.TODO.Stage != "In-Progress" || inProgressAfterEdit.TODO.StageVerification != "unverified" || inProgressAfterEdit.TODO.VerifiedTransitionRef != nil {
-		t.Fatalf("In-Progress content edit changed its existing lifecycle rule: %+v, %v", inProgressAfterEdit, err)
+	if err != nil || inProgressAfterEdit.TODO.Stage != "Planning" || inProgressAfterEdit.TODO.StageVerification != "verified" || inProgressAfterEdit.TODO.VerifiedTransitionRef == nil || inProgressAfterEdit.TODO.VerifiedTransitionRef.Kind != "planning-stage" || inProgressAfterEdit.TODO.VerifiedTransitionRef.SourceDigest != inProgressEdit.ContentDigest {
+		t.Fatalf("In-Progress content edit did not reopen verified Planning: %+v, %v", inProgressAfterEdit, err)
 	}
 	zero := int64(0)
 	proof := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: request.TODO.Source.Digest, VerificationState: "unverified"}
