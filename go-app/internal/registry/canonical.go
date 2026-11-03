@@ -400,7 +400,7 @@ func canonicalDigest(payload json.RawMessage) string {
 func teachCanonical(recordID, field, action string, err error) error {
 	values := []string(nil)
 	if strings.HasSuffix(field, ".status") {
-		values = []string{"current", "planned", "deprecated", "historical"}
+		values = []string{"current", "planned", "draft", "deprecated", "historical"}
 	}
 	return &canonicalTeachError{Diagnostic: CanonicalTeachDiagnostic{Code: "canonical_validation", FieldPath: field, RecordID: recordID, AcceptedValues: values, NextAction: action}, Cause: err}
 }
@@ -442,7 +442,7 @@ func CanonicalTemplate() map[string]any {
 		canonicalTemplateFields(kind, definitions)
 	}
 	return map[string]any{
-		"values":        map[string]any{"status": []string{"current", "planned", "deprecated", "historical"}, "decision_status": []string{"current", "planned", "deprecated", "historical"}, "owner_kind": []string{"module", "project_constitution", "policy"}},
+		"values":        map[string]any{"status": []string{"current", "planned", "draft", "deprecated", "historical"}, "decision_status": []string{"current", "planned", "draft", "deprecated", "historical"}, "owner_kind": []string{"module", "project_constitution", "policy"}},
 		"identity":      map[string]string{"record_id": "lowercase slug", "semantic_id": "case-sensitive owner-local ID; preserve uppercase", "decision_ref": "owner_kind/owner_id/decision_id"},
 		"reads":         []string{"entities/{entityID}", "endpoints/{endpointID}", "{family}/{recordID}/decisions/{decisionID}", "{family}/{recordID}/history/{revision}", "{family}/{recordID}/history/compare?from=1&to=2"},
 		"families":      []string{string(FamilyMandate), string(FamilyDomain), string(FamilyConstitution), string(FamilyRoadmap), string(FamilyModule), string(FamilyEndpoint), string(FamilyPolicy)},

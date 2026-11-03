@@ -129,7 +129,7 @@ func (v *canonicalValidator) identity(id, field string, seen map[string]int) {
 }
 func (v *canonicalValidator) state(value CanonicalKnowledgeState) {
 	if value.Status != "" {
-		v.choice(value.Status, "payload.status", "current", "planned", "deprecated", "historical")
+		v.choice(value.Status, "payload.status", "current", "planned", "draft", "deprecated", "historical")
 	}
 	seen := map[string]int{}
 	for i, item := range value.OpenQuestions {
@@ -154,7 +154,7 @@ func (v *canonicalValidator) decisions(items []CanonicalDecision) {
 		v.identity(item.ID, p+".id", seen)
 		v.text(item.Statement, p+".statement")
 		if item.Status != "" {
-			v.choice(item.Status, p+".status", "current", "planned", "deprecated", "historical")
+			v.choice(item.Status, p+".status", "current", "planned", "draft", "deprecated", "historical")
 		}
 		v.references(item.Evidence, p+".evidence")
 	}
@@ -167,7 +167,7 @@ func (v *canonicalValidator) rules(items []CanonicalRule, field string, required
 		v.identity(item.ID, p+".id", seen)
 		v.text(item.Statement, p+".statement")
 		if item.Status != "" {
-			v.choice(item.Status, p+".status", "current", "planned", "deprecated", "historical")
+			v.choice(item.Status, p+".status", "current", "planned", "draft", "deprecated", "historical")
 		}
 	}
 }
@@ -376,7 +376,7 @@ func validateCanonicalPayload(recordID string, target any) error {
 			v.identity(item.ID, p+".id", seen)
 			v.text(item.Name, p+".name")
 			if item.Status != "" {
-				v.choice(item.Status, p+".status", "current", "planned", "deprecated", "historical")
+				v.choice(item.Status, p+".status", "current", "planned", "draft", "deprecated", "historical")
 			}
 		}
 		v.namedTexts(value.EpicCandidates, "payload.epic_candidates")

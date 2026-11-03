@@ -53,6 +53,7 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 		{FamilyRoadmap, `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`, true},
 		{FamilyModule, `{"purpose":"Owns project work","decisions":[{"id":"ownership","status":"current","statement":"Module owns its routes"}]}`, true},
 		{FamilyEndpoint, `{"method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`, true},
+		{FamilyEndpoint, `{"status":"draft","method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`, true},
 		{FamilyPolicy, `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"ownership"}]}`, true},
 		{FamilyMandate, `{"purpose":"x","scope":[],"sections":[]}`, false},
 		{FamilyMandate, `# Markdown is deliberately not parsed`, false},
@@ -83,7 +84,7 @@ func TestCanonicalTEACHReturnsFieldRecordAcceptedValuesAndNextAction(t *testing.
 	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-	if response.Code != 400 || body.TeachDetail == nil || body.TeachDetail.Code != "canonical_validation" || body.TeachDetail.FieldPath != "payload.decisions.status" || body.TeachDetail.RecordID != "module-a" || len(body.TeachDetail.AcceptedValues) != 4 || body.TeachDetail.NextAction == "" {
+	if response.Code != 400 || body.TeachDetail == nil || body.TeachDetail.Code != "canonical_validation" || body.TeachDetail.FieldPath != "payload.decisions.status" || body.TeachDetail.RecordID != "module-a" || len(body.TeachDetail.AcceptedValues) != 5 || body.TeachDetail.NextAction == "" {
 		t.Fatalf("TEACH response=%+v status=%d", body, response.Code)
 	}
 }
