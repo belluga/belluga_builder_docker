@@ -163,6 +163,7 @@ type TODORecord struct {
 	DiffExpectation       []TODORepositoryScope `json:"diff_expectation" bson:"diff_expectation,omitempty"`
 	ImplementationCommits []TODOCommitReference `json:"implementation_commits" bson:"implementation_commits,omitempty"`
 	AffectedFiles         []string              `json:"affected_files" bson:"affected_files"`
+	Content               *TODOContent          `json:"content,omitempty" bson:"-"`
 	Source                TODOSource            `json:"source" bson:"source"`
 	StageVerification     string                `json:"stage_verification" bson:"stage_verification"`
 	VerifiedTransitionRef *TODOProofReference   `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
@@ -430,7 +431,7 @@ func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
 		kinds = append(kinds, "content-edit")
 	}
 	if allowRecordEvents {
-		kinds = append(kinds, "evidence-edit", "placement-edit")
+		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration")
 	}
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"id", "kind", "request_digest", "result_revision"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: kinds}}},

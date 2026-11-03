@@ -16,12 +16,14 @@ type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
 type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
-type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
+type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[]; investigation?: { title: string } };
+type ReleaseInvestigationRead = { company_id: string; project_id: string; release_id: string; state: "available" | "absent"; document?: { title: string; introduction: string; materials: { id: string; title: string; body_markdown: string; source_refs?: string[] }[] } };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
 type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
 type RoadmapDiagnostic = { code: string; path?: string; message: string };
 type RoadmapProjection = { schema_version: string; project_id: string; focus_release_id: string; epics: RoadmapEpic[]; backlog: { todos: RoadmapTodo[]; folders: BacklogFolder[] }; unclassified: { path: string; reason: string }[]; diagnostics: RoadmapDiagnostic[] };
-type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
+type MongoTODOContentItem = { id: string; text: string };
+type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included: string[]; excluded: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
 type ReleaseStatus = "delivered" | "blocked" | "in-progress" | "planned" | "unknown";
 const releaseStatusLabel: Record<ReleaseStatus, string> = { delivered: "Entregue", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
 const deliveryStageLabels: Record<DeliveryStage, string> = {
@@ -72,6 +74,21 @@ function releaseStatus(release: RoadmapRelease): ReleaseStatus {
 }
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
   return epic?.releases.find((release) => releaseStatus(release) !== "delivered") || epic?.releases.at(-1);
+}
+function TypedTODOContent({ content, legacySections }: { content: NonNullable<MongoTODORead["todo"]["content"]>; legacySections: MongoTODORead["todo"]["sections"] }) {
+  const panels: ReactNode[] = [];
+  if (content.context) panels.push(<section className="todo-panel" key="context"><h2>Context</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content.context}</ReactMarkdown></div></section>);
+  if (content.scope) panels.push(<section className="todo-panel" key="scope"><h2>Scope</h2><h3>Included</h3><ul>{content.scope.included.map((value, index) => <li key={`included:${index}`}>{value}</li>)}</ul><h3>Excluded</h3><ul>{content.scope.excluded.map((value, index) => <li key={`excluded:${index}`}>{value}</li>)}</ul></section>);
+  if (content.criteria?.length) panels.push(<section className="todo-panel" key="criteria"><h2>Acceptance criteria</h2><ul>{content.criteria.map((item) => <li key={item.id}><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.text}</ReactMarkdown></li>)}</ul></section>);
+  if (content.validation_scenarios?.length) panels.push(<section className="todo-panel" key="validation"><h2>Validation scenarios</h2>{content.validation_scenarios.map((scenario) => <div key={scenario.id}><h3>{scenario.id}</h3><p><strong>Method:</strong> {scenario.method}</p><p><strong>Expected:</strong> {scenario.expected}</p></div>)}</section>);
+  if (content.implementation_plan?.length) panels.push(<section className="todo-panel" key="plan"><h2>Implementation plan</h2><ol>{content.implementation_plan.map((item) => <li key={item.id}>{item.text}</li>)}</ol></section>);
+  if (content.decisions?.length) panels.push(<section className="todo-panel" key="decisions"><h2>Decisions</h2><ul>{content.decisions.map((item) => <li key={item.id}>{item.text}</li>)}</ul></section>);
+  if (content.risks?.length) panels.push(<section className="todo-panel" key="risks"><h2>Risks</h2><ul>{content.risks.map((risk) => <li key={risk.id}><strong>{risk.text}</strong><p>{risk.mitigation}</p></li>)}</ul></section>);
+  if (content.references?.length) panels.push(<section className="todo-panel" key="references"><h2>References</h2><ul>{content.references.map((reference, index) => <li key={`${reference.kind}:${index}`}><strong>{reference.kind}:</strong> {reference.ref}</li>)}</ul></section>);
+  if (content.architecture) panels.push(<section className="todo-panel" key="architecture"><h2>Architecture decision</h2><p><strong>Decision:</strong> {content.architecture.decision}</p><p><strong>Rationale:</strong> {content.architecture.rationale}</p><p><strong>Protection:</strong> {content.architecture.protection}</p></section>);
+  if (legacySections.length) panels.push(<section className="todo-panel" key="legacy-source"><h2>Historical v1 source</h2><details><summary>Show preserved v1 sections</summary>{legacySections.map((section) => <section key={`${section.position}:${section.key}`}><h3>{section.title}</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</details></section>);
+  if (content.legacy_context?.length) panels.push(<section className="todo-panel" key="legacy"><h2>Preserved legacy sections</h2>{content.legacy_context.map((section) => <details key={`${section.source_revision}:${section.section_position}`}><summary>{section.title} · {section.ownership}</summary><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body}</ReactMarkdown></div></details>)}</section>);
+  return <>{panels}</>;
 }
 type OverviewSection = { heading: string; body: string; points: string[]; image_alt?: string };
 type OverviewSource = { schema_version: string; tagline: string; summary: string; desktop_alt?: string; mobile_alt?: string; sections: Record<"problem" | "proposal" | "impact" | "audience", OverviewSection>; media?: Record<string, string> };
@@ -186,7 +203,7 @@ function backlogFolderTodoCount(folder: BacklogFolder): number {
   return folder.todos.length + folder.folders.reduce((total, child) => total + backlogFolderTodoCount(child), 0);
 }
 
-function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { roadmap?: RoadmapProjection; projectID: string; epicID: string; releaseID: string; todoID: string }) {
+function ReleaseDetailView({ roadmap, companyID, projectID, epicID, releaseID, todoID }: { roadmap?: RoadmapProjection; companyID: string; projectID: string; epicID: string; releaseID: string; todoID: string }) {
   const previewOpenerRef = useRef<HTMLButtonElement | null>(null);
   const releaseBackRef = useRef<HTMLButtonElement | null>(null);
   const previewDialogRef = useRef<HTMLDivElement | null>(null);
@@ -194,6 +211,21 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
     ? roadmap.epics.find((item) => item.id === epicID && item.releases.some((release) => release.id === releaseID)) : undefined;
   const release = epic?.releases.find((item) => item.id === releaseID);
   const selectedTodo = release?.todos.find((todo) => todo.id === todoID && isTODOReadable(todo));
+  const investigationKey = `${companyID}/${projectID}/${releaseID}`;
+  const [investigationRead, setInvestigationRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: ReleaseInvestigationRead }>({ key: "", state: "loading" });
+  useEffect(() => {
+    if (!release) return;
+    const controller = new AbortController();
+    setInvestigationRead({ key: investigationKey, state: "loading" });
+    const query = new URLSearchParams({ company_id: companyID, project_id: projectID, release_id: releaseID });
+    fetch(`/api/roadmap?${query}`, { signal: controller.signal }).then(async (response) => {
+      if (!response.ok) throw new Error("Release investigation unavailable");
+      const value = await response.json() as ReleaseInvestigationRead;
+      if (value.company_id !== companyID || value.project_id !== projectID || value.release_id !== releaseID || value.state !== "available" && value.state !== "absent" || value.state === "available" && !value.document) throw new Error("Release investigation identity mismatch");
+      if (!controller.signal.aborted) setInvestigationRead({ key: investigationKey, state: "ready", value });
+    }).catch(() => { if (!controller.signal.aborted) setInvestigationRead({ key: investigationKey, state: "error" }); });
+    return () => controller.abort();
+  }, [companyID, projectID, releaseID, release?.id, investigationKey]);
   useLayoutEffect(() => {
     if (!selectedTodo) return;
     const dialog = previewDialogRef.current;
@@ -241,6 +273,12 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
     <section className="release-context-strip without-investigation" aria-label="Contexto da release">
       <div className="release-context-epic"><span className="release-context-icon" aria-hidden="true">◉</span><div><small>Épico</small><strong>{epic.name}</strong>{epic.description && <span>{epic.description}</span>}</div></div>
     </section>
+    {investigationRead.key === investigationKey && investigationRead.state === "loading" && <p role="status">Carregando estudos da Release…</p>}
+    {investigationRead.key === investigationKey && investigationRead.state === "error" && <p className="project-notice" role="alert">Os estudos desta Release não puderam ser carregados. Os TODOs continuam disponíveis.</p>}
+    {investigationRead.key === investigationKey && investigationRead.state === "ready" && investigationRead.value?.state === "available" && investigationRead.value.document && <section className="release-investigation" aria-labelledby="release-investigation-title">
+      <div className="release-work-heading"><div><h2 id="release-investigation-title">{investigationRead.value.document.title}</h2>{investigationRead.value.document.introduction && <p>{investigationRead.value.document.introduction}</p>}</div></div>
+      {investigationRead.value.document.materials.map((material) => <details key={material.id} className="release-study"><summary>{material.title}<span aria-hidden="true">›</span></summary><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{material.body_markdown}</ReactMarkdown></div>{material.source_refs && material.source_refs.length > 0 && <ul className="release-study-refs" aria-label="Fontes do estudo">{material.source_refs.map((ref) => <li key={ref}>{ref}</li>)}</ul>}</details>)}
+    </section>}
     <section className="release-work" aria-labelledby="release-work-title"><div className="release-work-heading"><div><h2 id="release-work-title">TODOs executáveis</h2><p>Trabalho agrupado nesta release.</p></div></div>
       {executable.length ? <div className="release-work-list" role="list">{executable.map((todo) => {
         return <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={(event) => { previewOpenerRef.current = event.currentTarget; navigate({ todo_id: todo.id }); }}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.id}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>;
@@ -311,7 +349,7 @@ function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: R
   if (mongoSummary) {
     const loadedMongo = mongoRead.key === mongoKey ? mongoRead : { key: mongoKey, state: "loading" as const };
     const item = loadedMongo.value?.todo;
-    return <article className="todo-page" aria-label="Mongo TODO detail"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: mongoInBacklog ? "backlog" : "roadmap" })}>{mongoInBacklog ? "Backlog" : "Roadmap"}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav><header className="todo-hero"><h1>{mongoSummary.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={mongoSummary} className="todo-stage"/><span className="todo-source-label">Fonte: Mongo · revisão {mongoSummary.todo_revision}</span></div></header>{loadedMongo.state === "loading" && <p role="status">Carregando contrato Mongo…</p>}{loadedMongo.state === "error" && <p className="project-notice" role="alert">{loadedMongo.message || "TEACH: Mongo TODO readback failed. Reload Roadmap and retry."}</p>}{item && <><section className="todo-objective"><div><h2>Objective</h2><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.objective}</ReactMarkdown></div></section><section className="todo-facts"><div><span><small>Next exact step</small><strong>{item.next_exact_step}</strong></span></div><div><span><small>Stage</small><strong>{item.stage}</strong></span></div></section>{item.sections.map((section) => <section className="todo-panel" key={`${section.position}:${section.key}`}><h2>{section.title}</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</>}</article>;
+    return <article className="todo-page" aria-label="Mongo TODO detail"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: mongoInBacklog ? "backlog" : "roadmap" })}>{mongoInBacklog ? "Backlog" : "Roadmap"}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav><header className="todo-hero"><h1>{mongoSummary.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={mongoSummary} className="todo-stage"/><span className="todo-source-label">Fonte: Mongo · revisão {mongoSummary.todo_revision}</span></div></header>{loadedMongo.state === "loading" && <p role="status">Carregando contrato Mongo…</p>}{loadedMongo.state === "error" && <p className="project-notice" role="alert">{loadedMongo.message || "TEACH: Mongo TODO readback failed. Reload Roadmap and retry."}</p>}{item && <><section className="todo-objective"><div><h2>Objective</h2><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.objective}</ReactMarkdown></div></section><section className="todo-facts"><div><span><small>Next exact step</small><strong>{item.next_exact_step}</strong></span></div><div><span><small>Stage</small><strong>{item.stage}</strong></span></div></section>{item.content ? <TypedTODOContent content={item.content} legacySections={item.sections}/> : item.sections.map((section) => <section className="todo-panel" key={`${section.position}:${section.key}`}><h2>{section.title}</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</>}</article>;
   }
   return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>TEACH: Este item não possui uma revisão exata no Mongo Roadmap. Markdown Foundation é proveniência de migração e não será usado como conteúdo atual.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
 }
@@ -723,7 +761,7 @@ export function Projects() {
         {page === "overview" && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. O Overview permanece disponível, sem fallback para dados Foundation.</p>}
         {!roadmapPending && page === "roadmap" && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} />}
         {!roadmapPending && page === "backlog" && <BacklogView roadmap={roadData} detail={detail} projectID={project!.id} todoID={selection.todoID} />}
-        {!roadmapPending && page === "release" && <ReleaseDetailView roadmap={roadData} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
+        {!roadmapPending && page === "release" && <ReleaseDetailView roadmap={roadData} companyID={selection.companyID} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
         {!roadmapPending && page === "todo" && <TodoDetailView key={`${viewKey}/${selection.todoID}`} roadmap={roadData} companyID={selection.companyID} projectID={project!.id} todoID={selection.todoID} />}
       </section></div>
   </main>;

@@ -13,7 +13,7 @@ WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY web/ ./
-RUN npm test && npm run build
+RUN npm test -- --maxWorkers=1 && npm run build
 
 FROM alpine:3.22 AS exporter
 RUN apk add --no-cache git ca-certificates

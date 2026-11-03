@@ -135,6 +135,38 @@ func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	}
 }
 
+func TestMongoBornReviewedMigrationPreservesApprovalAcrossAdjacentEdges(t *testing.T) {
+	oldDigest := "sha256:" + strings.Repeat("a", 64)
+	currentDigest := "sha256:" + strings.Repeat("b", 64)
+	approval := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: oldDigest, VerificationState: "verified"}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: 7, Stage: "Implementation-Approval-Pending", StageVerification: "verified", VerifiedTransitionRef: &approval}
+	request := TODOActionRequest{RequestedStage: "Ready-for-Implementation"}
+	proof, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true)
+	if !ok || proof != approval {
+		t.Fatalf("reviewed migration did not preserve the exact frozen approval on Ready edge: %+v, %t", proof, ok)
+	}
+
+	record.Stage = "Ready-for-Implementation"
+	request.RequestedStage = "In-Progress"
+	proof, ok = mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true)
+	want := TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: "builder/todo-a/content/7/revision/8", SourceDigest: currentDigest, VerificationState: "verified"}
+	if !ok || proof != want {
+		t.Fatalf("reviewed migration did not permit the adjacent work-start edge: %+v, %t; want %+v", proof, ok, want)
+	}
+
+	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", false); ok {
+		t.Fatal("unverified migration lineage authorized the work-start edge")
+	}
+	record.VerifiedTransitionRef.SourceDigest = currentDigest
+	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true); ok {
+		t.Fatal("same-digest approval was treated as migration lineage")
+	}
+	request.ProofReferences = []TODOProofReference{{Kind: "owner-approval"}}
+	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true); ok {
+		t.Fatal("migration continuity accepted caller-supplied replacement approval")
+	}
+}
+
 func TestPlanningRefinementPreservesOnlyMongoBornStageProof(t *testing.T) {
 	mongo := TODORecord{Stage: "Planning", Source: TODOSource{Kind: "mongo-content-revision"}}
 	if invalidatesContentApproval(mongo) {

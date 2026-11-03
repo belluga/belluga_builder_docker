@@ -27,6 +27,14 @@ type individualTODOAdmitter interface {
 	AdmitTODO(context.Context, string, string, TODOAdmissionRequest) (TODOAdmissionReport, error)
 }
 
+type historicalTODOStageAdopter interface {
+	AdoptHistoricalTODOStages(context.Context, string, HistoricalTODOAdoptionRequest) (HistoricalTODOAdoptionResponse, error)
+}
+
+type todoContentMigrator interface {
+	MigrateTODOContent(context.Context, string, TODOContentMigrationRequest) (TODOContentEditResponse, error)
+}
+
 type todoCreationTemplateReader interface {
 	TODOCreationTemplate(context.Context, string, string) (TODOCreationTemplate, error)
 }
@@ -58,6 +66,10 @@ type roadmapChangeService interface {
 	ChangeRoadmap(context.Context, string, string, RoadmapChange) (RoadmapChangeResult, error)
 }
 
+type releaseInvestigationService interface {
+	ReadReleaseInvestigation(context.Context, string, string, string) (ReleaseInvestigationRead, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -77,10 +89,15 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("edit-release"))
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order", h.roadmapChange("order-releases"))
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("delete-release"))
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template", h.releaseInvestigationTemplate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.releaseInvestigation)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("set-investigation"))
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("clear-investigation"))
 	mux.HandleFunc("GET /internal/v1/tenants/resolve", h.resolveTenant)
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
 	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos", h.admitTODO)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/historical-adoption", h.adoptHistoricalTODOStages)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", h.todoCreationTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}", h.readTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition", h.transitionTODO)
@@ -89,6 +106,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}", h.readTODOAsOf)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history", h.readTODOHistory)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content", h.editTODOContent)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate", h.migrateTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
@@ -104,7 +122,11 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 			return
 		}
 		var input RoadmapChange
-		if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		limit := int64(maxRequestBody)
+		if action == "set-investigation" {
+			limit = maxInvestigationBytes + 4<<10
+		}
+		if !h.decodeLimit(w, r, &input, limit) {
 			return
 		}
 		projectID := strings.TrimSpace(r.PathValue("projectID"))
@@ -137,6 +159,33 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
 		h.respond(w, value, err)
 	}
+}
+
+func (h *Handler) releaseInvestigation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseInvestigationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := service.ReadReleaseInvestigation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) releaseInvestigationTemplate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseInvestigationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	read, err := service.ReadReleaseInvestigation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	template := ReleaseInvestigationTemplate()
+	write := template["write"].(map[string]any)
+	write["project_id"], write["id"], write["expected_roadmap_revision"] = read.ProjectID, read.ReleaseID, read.RoadmapRevision
+	h.respond(w, template, nil)
 }
 
 type errorResponse struct {
@@ -250,6 +299,25 @@ func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := admitter.AdmitTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) adoptHistoricalTODOStages(w http.ResponseWriter, r *http.Request) {
+	adopter, ok := h.service.(historicalTODOStageAdopter)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input HistoricalTODOAdoptionRequest
+	if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		return
+	}
+	projectID := strings.TrimSpace(r.PathValue("projectID"))
+	if input.ProjectID != projectID {
+		h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+		return
+	}
+	value, err := adopter.AdoptHistoricalTODOStages(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 
@@ -398,6 +466,24 @@ func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) migrateTODOContent(w http.ResponseWriter, r *http.Request) {
+	migrator, ok := h.service.(todoContentMigrator)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOContentMigrationRequest
+	if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identities", ErrConflict))
+		return
+	}
+	value, err := migrator.MigrateTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

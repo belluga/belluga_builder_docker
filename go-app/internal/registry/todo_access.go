@@ -21,7 +21,7 @@ import (
 var todoOperationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 func validTODOOperationKind(value string) bool {
-	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit"
+	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "historical-adoption" || value == "content-migration"
 }
 
 type TODOReadResponse struct {
@@ -88,12 +88,31 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		return TODOReadResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
 	response := TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: project.SnapshotFingerprint, TODO: record, TODORevision: record.Revision}
-	if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
-		company, err := m.company(ctx, companyID)
-		if err != nil {
-			return TODOReadResponse{}, err
+	company, err := m.company(ctx, companyID)
+	if err != nil {
+		return TODOReadResponse{}, err
+	}
+	database := m.client.Database(company.DatabaseName)
+	var latest TODOContentVersion
+	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&latest); err == nil {
+		expected, digestErr := todoContentRevisionDigest(projectID, todoID, latest.Revision, latest.Content)
+		if validSourceDigest(latest.Digest) && (digestErr != nil || expected != latest.Digest) {
+			return TODOReadResponse{}, todoTeach("content_digest", "match the canonical immutable Project/TODO/content-revision hash", ErrConflict)
 		}
-		contentRevision, contentDigest, _, hasCurrentContent, err := currentTODOContentSubject(ctx, m.client.Database(company.DatabaseName), record)
+		if validSourceDigest(latest.Digest) {
+			response.ContentRevision, response.ContentDigest = &latest.Revision, latest.Digest
+		}
+		if latest.Content.SchemaVersion == todoContentSchemaVersion {
+			if !validSourceDigest(latest.Digest) {
+				return TODOReadResponse{}, todoTeach("content_digest", "exist and match the canonical immutable Project/TODO/content-revision hash", ErrConflict)
+			}
+			response.TODO.Content = &latest.Content.TODOContent
+		}
+	} else if !errors.Is(err, mongo.ErrNoDocuments) {
+		return TODOReadResponse{}, ErrUnavailable
+	}
+	if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
+		contentRevision, contentDigest, _, hasCurrentContent, err := currentTODOContentSubject(ctx, database, record)
 		if err != nil {
 			return TODOReadResponse{}, err
 		}
@@ -102,6 +121,13 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		// identity that consumers could mistake for current proof.
 		if hasCurrentContent && validSourceDigest(contentDigest) {
 			response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
+			var version TODOContentVersion
+			if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "revision", Value: contentRevision}}).Decode(&version); err != nil {
+				return TODOReadResponse{}, ErrUnavailable
+			}
+			if version.Content.SchemaVersion == todoContentSchemaVersion {
+				response.TODO.Content = &version.Content.TODOContent
+			}
 		}
 	}
 	return response, nil
@@ -157,12 +183,14 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	} else {
 		hasEditedImportedContent := false
 		var contentDigest, contentRef string
+		var contentDatabase *mongo.Database
 		if usesImportedTODOContentStageProof(record) {
 			company, companyErr := m.company(ctx, companyID)
 			if companyErr != nil {
 				return TODOActionResponse{}, companyErr
 			}
-			_, contentDigest, contentRef, hasEditedImportedContent, err = currentTODOContentSubject(ctx, m.client.Database(company.DatabaseName), record)
+			contentDatabase = m.client.Database(company.DatabaseName)
+			_, contentDigest, contentRef, hasEditedImportedContent, err = currentTODOContentSubject(ctx, contentDatabase, record)
 			if err != nil {
 				return TODOActionResponse{}, err
 			}
@@ -187,7 +215,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 				}
 				deliveryDigest := record.Source.Digest
 				if hasEditedImportedContent {
-					deliveryDigest, err = importedEditedTODOCurrentDeliveryDigest(record, contentDigest)
+					deliveryDigest, err = importedEditedTODOCurrentDeliveryDigestWithMigration(ctx, contentDatabase, record, contentDigest)
 					if err != nil {
 						return TODOActionResponse{}, err
 					}
@@ -286,8 +314,33 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 	if err != nil {
 		return TODOProofReference{}, err
 	}
+	// A reviewed v1→v2 conversion preserves an already verified owner approval
+	// for exactly the migration target. It is not a new approval and must not
+	// authorize any later content digest.
+	migrationApproval := false
+	if record.VerifiedTransitionRef != nil && record.VerifiedTransitionRef.Kind == "owner-approval" &&
+		record.VerifiedTransitionRef.Source == "owner-chat" && record.VerifiedTransitionRef.Reference == "APROVADO" &&
+		record.VerifiedTransitionRef.SourceDigest != contentDigest {
+		if err := requireApprovedCurrentContentOrMigration(ctx, m.client.Database(company.DatabaseName), record, contentDigest); err == nil {
+			migrationApproval = true
+		}
+	}
+	if proof, ok := mongoBornMigrationTransitionProof(record, request, contentDigest, contentRef, migrationApproval); ok {
+		return proof, nil
+	}
+	if record.Stage == "Planning" && request.RequestedStage == "Implementation-Approval-Pending" {
+		content, contentErr := m.contentAtRevision(ctx, m.client.Database(company.DatabaseName), record.ProjectID, record.ID, record.Revision)
+		if contentErr != nil {
+			return TODOProofReference{}, contentErr
+		}
+		if content.SchemaVersion == todoContentSchemaVersion {
+			if err := ValidateTODOContent(content.TODOContent, false); err != nil {
+				return TODOProofReference{}, err
+			}
+		}
+	}
 	if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
-		if err := requireApprovedCurrentContent(record, contentDigest); err != nil {
+		if err := requireApprovedCurrentContentOrMigration(ctx, m.client.Database(company.DatabaseName), record, contentDigest); err != nil {
 			return TODOProofReference{}, err
 		}
 		if project.Binding == nil {
@@ -318,9 +371,61 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
 }
 
+// mongoBornMigrationTransitionProof carries an already verified owner approval
+// across the one exact, database-verified reviewed migration edge. Callers must
+// establish that edge with requireApprovedCurrentContentOrMigration first.
+func mongoBornMigrationTransitionProof(record TODORecord, request TODOActionRequest, contentDigest, contentRef string, reviewedMigration bool) (TODOProofReference, bool) {
+	if !reviewedMigration || record.StageVerification != "verified" || record.VerifiedTransitionRef == nil ||
+		record.VerifiedTransitionRef.Kind != "owner-approval" || record.VerifiedTransitionRef.Source != "owner-chat" ||
+		record.VerifiedTransitionRef.Reference != "APROVADO" || !validSourceDigest(record.VerifiedTransitionRef.SourceDigest) ||
+		record.VerifiedTransitionRef.SourceDigest == contentDigest || request.LocalProof != nil ||
+		len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
+		return TODOProofReference{}, false
+	}
+	switch {
+	case record.Stage == "Implementation-Approval-Pending" && request.RequestedStage == "Ready-for-Implementation":
+		return *record.VerifiedTransitionRef, true
+	case record.Stage == "Ready-for-Implementation" && request.RequestedStage == "In-Progress":
+		return TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: fmt.Sprintf("%s/revision/%d", contentRef, record.Revision+1), SourceDigest: contentDigest, VerificationState: "verified"}, true
+	default:
+		return TODOProofReference{}, false
+	}
+}
+
 func requireApprovedCurrentContent(record TODORecord, contentDigest string) error {
 	if record.StageVerification != "verified" || record.VerifiedTransitionRef == nil || record.VerifiedTransitionRef.VerificationState != "verified" || record.VerifiedTransitionRef.SourceDigest != contentDigest {
 		return todoTeach("approval/content_revision", "reconcile approval of the current Mongo TODO contract before Local-Implemented", ErrConflict)
+	}
+	return nil
+}
+
+func requireApprovedCurrentContentOrMigration(ctx context.Context, database *mongo.Database, record TODORecord, contentDigest string) error {
+	if err := requireApprovedCurrentContent(record, contentDigest); err == nil {
+		return nil
+	}
+	if record.StageVerification != "verified" || record.VerifiedTransitionRef == nil || record.VerifiedTransitionRef.VerificationState != "verified" || !validSourceDigest(record.VerifiedTransitionRef.SourceDigest) {
+		return todoTeach("approval/content_revision", "retain verified approval for the exact source content or its explicitly reviewed migration target", ErrConflict)
+	}
+	var latest TODOContentVersion
+	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&latest); err != nil {
+		return todoTeach("approval/content_revision", "retain a verified approval bound to the current immutable content or migration edge", ErrConflict)
+	}
+	if latest.Digest != contentDigest || latest.Revision <= 0 {
+		return todoTeach("approval/content_revision", "use the latest immutable content revision", ErrConflict)
+	}
+	var migration TODOHistoryEvent
+	err := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{
+		{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID},
+		{Key: "kind", Value: todoContentMigrationEventKind}, {Key: "content_revision", Value: latest.Revision},
+	}).Decode(&migration)
+	if err != nil || !validSourceDigest(migration.RequestDigest) || !validSourceDigest(migration.FromContentDigest) || !validSourceDigest(migration.ToContentDigest) || migration.OccurredAt.IsZero() || migration.FromContentDigest != record.VerifiedTransitionRef.SourceDigest || migration.ToContentDigest != contentDigest || migration.ReviewedAcceptance != todoContentMigrationAcceptance || migration.PermissionDecision != "pre-iam-private-api-allow-all" || migration.FromContentRevision == nil || *migration.FromContentRevision >= latest.Revision {
+		return todoTeach("approval/content_revision", "use the exact reviewed v1-to-v2 migration target of the already approved content", ErrConflict)
+	}
+	var source TODOContentVersion
+	err = database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "revision", Value: *migration.FromContentRevision}}).Decode(&source)
+	computedSourceDigest, digestErr := todoContentRevisionDigest(record.ProjectID, record.ID, source.Revision, source.Content)
+	if err != nil || digestErr != nil || computedSourceDigest != migration.FromContentDigest || (source.Digest != "" && source.Digest != migration.FromContentDigest) {
+		return todoTeach("approval/content_revision", "resolve the migration source digest to its exact immutable content version", ErrConflict)
 	}
 	return nil
 }
@@ -330,6 +435,16 @@ func importedEditedTODOCurrentDeliveryDigest(record TODORecord, contentDigest st
 		return "", todoTeach("source/content_revision", "use the current content digest only for a generic edited Foundation import", ErrConflict)
 	}
 	if err := requireApprovedCurrentContent(record, contentDigest); err != nil {
+		return "", err
+	}
+	return contentDigest, nil
+}
+
+func importedEditedTODOCurrentDeliveryDigestWithMigration(ctx context.Context, database *mongo.Database, record TODORecord, contentDigest string) (string, error) {
+	if !usesImportedTODOContentStageProof(record) {
+		return "", todoTeach("source/content_revision", "use the current content digest only for a generic edited Foundation import", ErrConflict)
+	}
+	if err := requireApprovedCurrentContentOrMigration(ctx, database, record, contentDigest); err != nil {
 		return "", err
 	}
 	return contentDigest, nil

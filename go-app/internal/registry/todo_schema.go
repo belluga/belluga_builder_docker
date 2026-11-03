@@ -115,7 +115,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	if bsonValidatorEqual(actual, TODOCollectionValidator()) {
 		return nil
 	}
-	if !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
+	if !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeContentMigration()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeHistoricalAdoption()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
 		return todoTeach("todos.validator", "match the canonical schema or a recognized strict/error predecessor", ErrConflict)
 	}
 	cursor, err := database.Collection(todosCollection).Find(ctx, bson.D{})
@@ -150,6 +150,85 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 		return ErrUnavailable
 	}
 	return verifyTODOCollection(ctx, database)
+}
+
+// TODOCollectionValidatorBeforeHistoricalAdoption is the exact strict
+// predecessor whose last-operation enum did not yet include this private
+// server-owned mutation. Existing records are scanned before collMod.
+func TODOCollectionValidatorBeforeHistoricalAdoption() bson.D {
+	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit"})
+}
+
+func TODOCollectionValidatorBeforeContentMigration() bson.D {
+	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption"})
+}
+
+func todoCollectionValidatorWithOperationKinds(kinds bson.A) bson.D {
+	validator := TODOCollectionValidator()
+	raw, err := bson.Marshal(validator)
+	if err != nil {
+		return nil
+	}
+	var clone bson.D
+	if bson.Unmarshal(raw, &clone) != nil {
+		return nil
+	}
+	for i := range clone {
+		if clone[i].Key != "$jsonSchema" {
+			continue
+		}
+		schema, ok := clone[i].Value.(bson.D)
+		if !ok {
+			return nil
+		}
+		for j := range schema {
+			if schema[j].Key != "properties" {
+				continue
+			}
+			properties, ok := schema[j].Value.(bson.D)
+			if !ok {
+				return nil
+			}
+			for k := range properties {
+				if properties[k].Key != "last_operation" {
+					continue
+				}
+				operation, ok := properties[k].Value.(bson.D)
+				if !ok {
+					return nil
+				}
+				for n := range operation {
+					if operation[n].Key != "properties" {
+						continue
+					}
+					operationProperties, ok := operation[n].Value.(bson.D)
+					if !ok {
+						return nil
+					}
+					for q := range operationProperties {
+						if operationProperties[q].Key != "kind" {
+							continue
+						}
+						kind, ok := operationProperties[q].Value.(bson.D)
+						if !ok {
+							return nil
+						}
+						for p := range kind {
+							if kind[p].Key == "enum" {
+								kind[p].Value = kinds
+							}
+						}
+						operationProperties[q].Value = kind
+					}
+					operation[n].Value = operationProperties
+				}
+				properties[k].Value = operation
+			}
+			schema[j].Value = properties
+		}
+		clone[i].Value = schema
+	}
+	return clone
 }
 
 func bsonValidatorEqual(actual bson.Raw, expected bson.D) bool {
