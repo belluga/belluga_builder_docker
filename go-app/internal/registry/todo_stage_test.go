@@ -47,12 +47,13 @@ func TestMVPCompletionRequiresReaderVerifiedDeploymentAndCurrentContent(t *testi
 	digest := "sha256:" + strings.Repeat("b", 64)
 	local := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader", Reference: "local", SourceDigest: digest, VerificationState: "verified"}
 	implementation := strings.Repeat("c", 40)
-	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: implementation}}}
+	foundation := strings.Repeat("d", 40)
+	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: implementation}, {Repository: "belluga_builder_foundation_documentation", Commit: foundation}}}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer secret" || r.URL.Query().Get("project_mode") != "mvp" || r.URL.Query().Get("root_sha") != root || r.URL.Query().Get("commit_sha") != root || r.URL.Query().Get("project_commits") != implementation || r.URL.Query().Get("todo_id") != todo.ID {
+		if r.Header.Get("Authorization") != "Bearer secret" || r.URL.Query().Get("project_mode") != "mvp" || r.URL.Query().Get("root_sha") != root || r.URL.Query().Get("commit_sha") != root || r.URL.Query().Get("project_commits") != implementation || r.URL.Query().Get("foundation_commits") != foundation || r.URL.Query().Get("todo_id") != todo.ID {
 			t.Errorf("invalid private Reader request: %s", r.URL.String())
 		}
-		_, _ = w.Write([]byte(`{"company_id":"company-a","project_id":"builder","todo_id":"todo-a","deployment_id":17,"environment":"production","root_sha":"` + root + `","module_path":"project","commit_sha":"` + root + `","project_commits":["` + implementation + `"],"outcome":"verified","project_mode":"mvp","reader_sha":"` + strings.Repeat("e", 40) + `"}`))
+		_, _ = w.Write([]byte(`{"company_id":"company-a","project_id":"builder","todo_id":"todo-a","deployment_id":17,"environment":"production","root_sha":"` + root + `","module_path":"project","commit_sha":"` + root + `","project_commits":["` + implementation + `"],"foundation_commits":["` + foundation + `"],"outcome":"verified","project_mode":"mvp","reader_sha":"` + strings.Repeat("e", 40) + `"}`))
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
@@ -76,20 +77,25 @@ func TestMVPImplementationClaimsRejectUnknownSource(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	local := TODOProofReference{Kind: "remote-local-delivery"}
 	todo := TODORecord{VerifiedTransitionRef: &local, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: commit}, {Repository: "PACED", Commit: commit}}}
-	builder, paced, err := mvpImplementationClaims(todo)
-	if err != nil || len(builder) != 1 || len(paced) != 1 {
+	builder, paced, foundation, err := mvpImplementationClaims(todo)
+	if err != nil || len(builder) != 1 || len(paced) != 1 || len(foundation) != 0 {
 		t.Fatalf("classified code sources = %v %v %v", builder, paced, err)
 	}
+	todo.ImplementationCommits = append(todo.ImplementationCommits, TODOCommitReference{Repository: "belluga_builder_foundation_documentation", Commit: commit})
+	_, _, foundation, err = mvpImplementationClaims(todo)
+	if err != nil || len(foundation) != 1 {
+		t.Fatalf("published Foundation source = %v, %v", foundation, err)
+	}
 	todo.ImplementationCommits[1].Repository = "unregistered-tool"
-	if _, _, err := mvpImplementationClaims(todo); err == nil {
+	if _, _, _, err := mvpImplementationClaims(todo); err == nil {
 		t.Fatal("unknown implementation source accepted")
 	}
 	todo.ImplementationCommits = nil
-	if _, _, err := mvpImplementationClaims(todo); err == nil {
+	if _, _, _, err := mvpImplementationClaims(todo); err == nil {
 		t.Fatal("missing implementation claims accepted without historical local run")
 	}
 	local.Kind = "local-run-accepted"
-	if _, _, err := mvpImplementationClaims(todo); err != nil {
+	if _, _, _, err := mvpImplementationClaims(todo); err != nil {
 		t.Fatalf("previously accepted legacy local run rejected: %v", err)
 	}
 }
