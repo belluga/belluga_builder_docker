@@ -16,7 +16,8 @@ type Project = { id: string; name: string; company_id: string };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
 type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
-type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[] };
+type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[]; investigation?: { title: string } };
+type ReleaseInvestigationRead = { company_id: string; project_id: string; release_id: string; state: "available" | "absent"; document?: { title: string; introduction: string; materials: { id: string; title: string; body_markdown: string; source_refs?: string[] }[] } };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
 type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
 type RoadmapDiagnostic = { code: string; path?: string; message: string };
@@ -202,7 +203,7 @@ function backlogFolderTodoCount(folder: BacklogFolder): number {
   return folder.todos.length + folder.folders.reduce((total, child) => total + backlogFolderTodoCount(child), 0);
 }
 
-function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { roadmap?: RoadmapProjection; projectID: string; epicID: string; releaseID: string; todoID: string }) {
+function ReleaseDetailView({ roadmap, companyID, projectID, epicID, releaseID, todoID }: { roadmap?: RoadmapProjection; companyID: string; projectID: string; epicID: string; releaseID: string; todoID: string }) {
   const previewOpenerRef = useRef<HTMLButtonElement | null>(null);
   const releaseBackRef = useRef<HTMLButtonElement | null>(null);
   const previewDialogRef = useRef<HTMLDivElement | null>(null);
@@ -210,6 +211,21 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
     ? roadmap.epics.find((item) => item.id === epicID && item.releases.some((release) => release.id === releaseID)) : undefined;
   const release = epic?.releases.find((item) => item.id === releaseID);
   const selectedTodo = release?.todos.find((todo) => todo.id === todoID && isTODOReadable(todo));
+  const investigationKey = `${companyID}/${projectID}/${releaseID}`;
+  const [investigationRead, setInvestigationRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: ReleaseInvestigationRead }>({ key: "", state: "loading" });
+  useEffect(() => {
+    if (!release) return;
+    const controller = new AbortController();
+    setInvestigationRead({ key: investigationKey, state: "loading" });
+    const query = new URLSearchParams({ company_id: companyID, project_id: projectID, release_id: releaseID });
+    fetch(`/api/roadmap?${query}`, { signal: controller.signal }).then(async (response) => {
+      if (!response.ok) throw new Error("Release investigation unavailable");
+      const value = await response.json() as ReleaseInvestigationRead;
+      if (value.company_id !== companyID || value.project_id !== projectID || value.release_id !== releaseID || value.state !== "available" && value.state !== "absent" || value.state === "available" && !value.document) throw new Error("Release investigation identity mismatch");
+      if (!controller.signal.aborted) setInvestigationRead({ key: investigationKey, state: "ready", value });
+    }).catch(() => { if (!controller.signal.aborted) setInvestigationRead({ key: investigationKey, state: "error" }); });
+    return () => controller.abort();
+  }, [companyID, projectID, releaseID, release?.id, investigationKey]);
   useLayoutEffect(() => {
     if (!selectedTodo) return;
     const dialog = previewDialogRef.current;
@@ -257,6 +273,12 @@ function ReleaseDetailView({ roadmap, projectID, epicID, releaseID, todoID }: { 
     <section className="release-context-strip without-investigation" aria-label="Contexto da release">
       <div className="release-context-epic"><span className="release-context-icon" aria-hidden="true">◉</span><div><small>Épico</small><strong>{epic.name}</strong>{epic.description && <span>{epic.description}</span>}</div></div>
     </section>
+    {investigationRead.key === investigationKey && investigationRead.state === "loading" && <p role="status">Carregando estudos da Release…</p>}
+    {investigationRead.key === investigationKey && investigationRead.state === "error" && <p className="project-notice" role="alert">Os estudos desta Release não puderam ser carregados. Os TODOs continuam disponíveis.</p>}
+    {investigationRead.key === investigationKey && investigationRead.state === "ready" && investigationRead.value?.state === "available" && investigationRead.value.document && <section className="release-investigation" aria-labelledby="release-investigation-title">
+      <div className="release-work-heading"><div><h2 id="release-investigation-title">{investigationRead.value.document.title}</h2>{investigationRead.value.document.introduction && <p>{investigationRead.value.document.introduction}</p>}</div></div>
+      {investigationRead.value.document.materials.map((material) => <details key={material.id} className="release-study"><summary>{material.title}<span aria-hidden="true">›</span></summary><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{material.body_markdown}</ReactMarkdown></div>{material.source_refs && material.source_refs.length > 0 && <ul className="release-study-refs" aria-label="Fontes do estudo">{material.source_refs.map((ref) => <li key={ref}>{ref}</li>)}</ul>}</details>)}
+    </section>}
     <section className="release-work" aria-labelledby="release-work-title"><div className="release-work-heading"><div><h2 id="release-work-title">TODOs executáveis</h2><p>Trabalho agrupado nesta release.</p></div></div>
       {executable.length ? <div className="release-work-list" role="list">{executable.map((todo) => {
         return <article className="release-work-row" role="listitem" key={todo.id}><span className="release-work-icon" aria-hidden="true">▤</span><h3><button className="release-todo-link" onClick={(event) => { previewOpenerRef.current = event.currentTarget; navigate({ todo_id: todo.id }); }}>{todo.title} <span aria-hidden="true">›</span></button></h3><span className="release-work-id">{todo.id}</span><span className="release-work-status-wrap"><TodoStageStatus todo={todo} className="release-work-status" /></span></article>;
@@ -739,7 +761,7 @@ export function Projects() {
         {page === "overview" && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. O Overview permanece disponível, sem fallback para dados Foundation.</p>}
         {!roadmapPending && page === "roadmap" && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} />}
         {!roadmapPending && page === "backlog" && <BacklogView roadmap={roadData} detail={detail} projectID={project!.id} todoID={selection.todoID} />}
-        {!roadmapPending && page === "release" && <ReleaseDetailView roadmap={roadData} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
+        {!roadmapPending && page === "release" && <ReleaseDetailView roadmap={roadData} companyID={selection.companyID} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} todoID={selection.todoID} />}
         {!roadmapPending && page === "todo" && <TodoDetailView key={`${viewKey}/${selection.todoID}`} roadmap={roadData} companyID={selection.companyID} projectID={project!.id} todoID={selection.todoID} />}
       </section></div>
   </main>;

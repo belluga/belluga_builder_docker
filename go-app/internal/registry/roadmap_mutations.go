@@ -14,14 +14,15 @@ import (
 // RoadmapChange is a Project-scoped planning operation. The action is selected
 // by the private route, never by a caller-authored body field.
 type RoadmapChange struct {
-	ProjectID               string   `json:"project_id"`
-	ExpectedRoadmapRevision *int64   `json:"expected_roadmap_revision"`
-	OperationID             string   `json:"operation_id"`
-	ID                      string   `json:"id,omitempty"`
-	EpicID                  string   `json:"epic_id,omitempty"`
-	Name                    string   `json:"name,omitempty"`
-	Description             string   `json:"description,omitempty"`
-	OrderedIDs              []string `json:"ordered_ids,omitempty"`
+	ProjectID               string                `json:"project_id"`
+	ExpectedRoadmapRevision *int64                `json:"expected_roadmap_revision"`
+	OperationID             string                `json:"operation_id"`
+	ID                      string                `json:"id,omitempty"`
+	EpicID                  string                `json:"epic_id,omitempty"`
+	Name                    string                `json:"name,omitempty"`
+	Description             string                `json:"description,omitempty"`
+	OrderedIDs              []string              `json:"ordered_ids,omitempty"`
+	Investigation           *ReleaseInvestigation `json:"investigation,omitempty"`
 }
 
 type RoadmapChangeResult struct {
@@ -54,12 +55,21 @@ func validRoadmapChange(action string, request RoadmapChange) bool {
 		return request.OrderedIDs != nil && len(request.OrderedIDs) <= 500
 	case "order-releases":
 		return validID(request.EpicID) && request.OrderedIDs != nil && len(request.OrderedIDs) <= 500
+	case "set-investigation":
+		return validID(request.ID) && validateReleaseInvestigation(request.Investigation) == nil
+	case "clear-investigation":
+		return validID(request.ID) && request.Investigation == nil
 	default:
 		return false
 	}
 }
 
 func (m *MongoStore) ChangeRoadmap(ctx context.Context, companyID, action string, request RoadmapChange) (RoadmapChangeResult, error) {
+	if action == "set-investigation" {
+		if err := validateReleaseInvestigation(request.Investigation); err != nil {
+			return RoadmapChangeResult{}, err
+		}
+	}
 	if !validID(companyID) || !validRoadmapChange(action, request) {
 		return RoadmapChangeResult{}, todoTeach("roadmap", "provide valid Project, expected Roadmap revision, operation ID, and action fields", ErrInvalid)
 	}
@@ -193,6 +203,17 @@ func changeRoadmapCollections(ctx context.Context, db *mongo.Database, projectID
 			return todoTeach("release_id", "detach or move member TODOs before deleting a Release", ErrConflict)
 		}
 		return deleteRoadmapRecord(ctx, releases, identity(req.ID), "release_id")
+	case "set-investigation":
+		return updateRoadmapFields(ctx, releases, identity(req.ID), bson.D{{Key: "investigation", Value: req.Investigation}}, "release_id")
+	case "clear-investigation":
+		result, err := releases.UpdateOne(ctx, identity(req.ID), bson.D{{Key: "$unset", Value: bson.D{{Key: "investigation", Value: ""}}}})
+		if err != nil {
+			return normalizeMongoError(err)
+		}
+		if result.MatchedCount == 0 {
+			return todoTeach("release_id", "name an existing item in the same Project", ErrNotFound)
+		}
+		return nil
 	case "order-releases":
 		if err := requireRoadmapRecord(ctx, epics, identity(req.EpicID), "epic_id"); err != nil {
 			return err

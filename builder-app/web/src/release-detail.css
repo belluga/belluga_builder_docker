@@ -40,6 +40,15 @@
 .release-work-status.done { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
 .release-work-status.blocked { border-color: #c77664; color: #edaa91; }
 .release-work-footnote { margin: 15px 0 0; color: var(--project-muted); font-size: 11px; }
+.release-investigation { margin-top: 32px; padding: 25px; border: 1px solid var(--project-border); border-radius: 14px; background: var(--project-surface); }
+.release-investigation h2 { margin: 0 0 8px; font-size: 23px; }
+.release-investigation .release-work-heading p { line-height: 1.5; }
+.release-study { border-top: 1px solid var(--project-border); }
+.release-study summary { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 17px 0; cursor: pointer; font-weight: 700; }
+.release-study summary span { color: var(--project-accent); font-size: 22px; }
+.release-study[open] summary span { transform: rotate(90deg); }
+.release-study .todo-markdown { padding: 0 0 18px; color: var(--project-text); overflow-wrap: anywhere; }
+.release-study-refs { margin: 0 0 18px; padding-left: 20px; color: var(--project-muted); font-size: 12px; overflow-wrap: anywhere; }
 .roadmap-release-open { position: absolute; top: 11px; right: 11px; display: grid; place-items: center; width: 42px; height: 50px; padding: 0; border: 0; border-radius: var(--project-controlRadius); background: transparent; color: var(--project-accent); cursor: pointer; font-size: 30px !important; line-height: 1; }
 .roadmap-release-open:hover { background: color-mix(in srgb, var(--project-accent) 15%, transparent); }
 @media (max-width: 1000px) { .release-work-row { grid-template-columns: 25px minmax(0, 1fr); gap: 8px 10px; padding: 15px 0; } .release-work-icon { grid-column: 1; grid-row: 1 / span 3; font-size: 20px; } .release-work-row h3 { grid-column: 2; grid-row: 1; } .release-work-id { grid-column: 2; grid-row: 3; } .release-work-status-wrap { grid-column: 2; grid-row: 2; align-items: start; } .release-work-status { padding: 6px 8px; } }

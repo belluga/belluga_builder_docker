@@ -75,9 +75,9 @@ func TestRoadmapAPIProxyIsRegisteredReadOnlyAndAllowsPlanningTODOWithoutApproval
 	root := t.TempDir()
 	registration := persistedRegistration{
 		SchemaVersion: "builder-project-registry-v1",
-		Companies: map[string]registeredCompany{"third-company": {ID: "third-company", Name: "Third Company"}},
-		Projects: map[string]persistedProject{"schema": {registeredProject: registeredProject{ID: "schema", Name: "Schema", CompanyID: "third-company"}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/workspace", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "example/schema", PublicationBranch: "main"}}},
-		Preferences: map[string]persistedPreference{},
+		Companies:     map[string]registeredCompany{"third-company": {ID: "third-company", Name: "Third Company"}},
+		Projects:      map[string]persistedProject{"schema": {registeredProject: registeredProject{ID: "schema", Name: "Schema", CompanyID: "third-company"}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/workspace", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "example/schema", PublicationBranch: "main"}}},
+		Preferences:   map[string]persistedPreference{},
 	}
 	data, err := json.Marshal(registration)
 	if err != nil {
@@ -103,6 +103,11 @@ func TestRoadmapAPIProxyIsRegisteredReadOnlyAndAllowsPlanningTODOWithoutApproval
 			_, _ = w.Write([]byte(roadmap))
 			return
 		}
+		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/roadmap/releases/release-a/investigation" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"company_id":"third-company","project_id":"schema","release_id":"release-a","state":"available","document":{"title":"Research","introduction":"Context","materials":[{"id":"study-a","title":"A","body_markdown":"Evidence"}]}}`))
+			return
+		}
 		if r.URL.Path == "/internal/v1/companies/third-company/projects/schema/todos/schema-study" && r.URL.Query().Get("todo_revision") == "0" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(todo))
@@ -122,6 +127,11 @@ func TestRoadmapAPIProxyIsRegisteredReadOnlyAndAllowsPlanningTODOWithoutApproval
 	preview.roadmapAPIHandler(planningResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema&todo_id=schema-study&todo_revision=0", nil))
 	if planningResponse.Code != http.StatusOK || !strings.Contains(planningResponse.Body.String(), "Schema study") || !strings.Contains(planningResponse.Body.String(), `"content_digest":"sha256:`) {
 		t.Fatalf("unapproved Planning TODO must remain readable: status=%d body=%s", planningResponse.Code, planningResponse.Body.String())
+	}
+	studyResponse := httptest.NewRecorder()
+	preview.roadmapAPIHandler(studyResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=third-company&project_id=schema&release_id=release-a", nil))
+	if studyResponse.Code != http.StatusOK || !strings.Contains(studyResponse.Body.String(), `"body_markdown":"Evidence"`) {
+		t.Fatalf("Release Investigation was not proxied on demand: status=%d body=%s", studyResponse.Code, studyResponse.Body.String())
 	}
 	unregisteredResponse := httptest.NewRecorder()
 	preview.roadmapAPIHandler(unregisteredResponse, httptest.NewRequest(http.MethodGet, "/api/roadmap?company_id=outside&project_id=secret", nil))

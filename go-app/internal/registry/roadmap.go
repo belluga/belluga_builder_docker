@@ -21,19 +21,21 @@ type roadmapEpic struct {
 	Position    int           `bson:"position"`
 }
 type roadmapRelease struct {
-	StorageID   bson.ObjectID `bson:"_id,omitempty"`
-	ProjectID   string        `bson:"project_id"`
-	ID          string        `bson:"id"`
-	EpicID      string        `bson:"epic_id"`
-	Name        string        `bson:"name"`
-	Description string        `bson:"description"`
-	Position    int           `bson:"position"`
+	StorageID     bson.ObjectID         `bson:"_id,omitempty"`
+	ProjectID     string                `bson:"project_id"`
+	ID            string                `bson:"id"`
+	EpicID        string                `bson:"epic_id"`
+	Name          string                `bson:"name"`
+	Description   string                `bson:"description"`
+	Position      int                   `bson:"position"`
+	Investigation *ReleaseInvestigation `bson:"investigation,omitempty"`
 }
 type roadmapReleaseView struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	TODOs       []roadmapTODOView `json:"todos"`
+	ID            string                       `json:"id"`
+	Name          string                       `json:"name"`
+	Description   string                       `json:"description"`
+	TODOs         []roadmapTODOView            `json:"todos"`
+	Investigation *ReleaseInvestigationSummary `json:"investigation,omitempty"`
 }
 
 // roadmapTODOView preserves the v3 Reader vocabulary and adds only the
@@ -85,7 +87,11 @@ func projectRoadmap(projectID string, revision int64, epics []roadmapEpic, relea
 			return nil, ErrUnavailable
 		}
 		seen[release.ID] = true
-		views[index].Releases = append(views[index].Releases, roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, TODOs: []roadmapTODOView{}})
+		view := roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, TODOs: []roadmapTODOView{}}
+		if release.Investigation != nil {
+			view.Investigation = &ReleaseInvestigationSummary{Title: release.Investigation.Title}
+		}
+		views[index].Releases = append(views[index].Releases, view)
 	}
 	releaseViews := make(map[string]*roadmapReleaseView)
 	for i := range views {

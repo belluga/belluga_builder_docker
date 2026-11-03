@@ -66,6 +66,10 @@ type roadmapChangeService interface {
 	ChangeRoadmap(context.Context, string, string, RoadmapChange) (RoadmapChangeResult, error)
 }
 
+type releaseInvestigationService interface {
+	ReadReleaseInvestigation(context.Context, string, string, string) (ReleaseInvestigationRead, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -85,6 +89,10 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("edit-release"))
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order", h.roadmapChange("order-releases"))
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("delete-release"))
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template", h.releaseInvestigationTemplate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.releaseInvestigation)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("set-investigation"))
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("clear-investigation"))
 	mux.HandleFunc("GET /internal/v1/tenants/resolve", h.resolveTenant)
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
 	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
@@ -114,7 +122,11 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 			return
 		}
 		var input RoadmapChange
-		if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		limit := int64(maxRequestBody)
+		if action == "set-investigation" {
+			limit = maxInvestigationBytes + 4<<10
+		}
+		if !h.decodeLimit(w, r, &input, limit) {
 			return
 		}
 		projectID := strings.TrimSpace(r.PathValue("projectID"))
@@ -147,6 +159,33 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
 		h.respond(w, value, err)
 	}
+}
+
+func (h *Handler) releaseInvestigation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseInvestigationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := service.ReadReleaseInvestigation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) releaseInvestigationTemplate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseInvestigationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	read, err := service.ReadReleaseInvestigation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	template := ReleaseInvestigationTemplate()
+	write := template["write"].(map[string]any)
+	write["project_id"], write["id"], write["expected_roadmap_revision"] = read.ProjectID, read.ReleaseID, read.RoadmapRevision
+	h.respond(w, template, nil)
 }
 
 type errorResponse struct {

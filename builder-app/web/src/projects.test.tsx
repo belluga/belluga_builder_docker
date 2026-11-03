@@ -557,6 +557,23 @@ describe("single root Project experience", () => {
     expect(location.search).toContain("page=roadmap");
     expect(location.search).toContain("release_id=r-04");
   });
+  it("loads Release studies on demand without treating them as TODOs", async () => {
+    const baseFetch = globalThis.fetch;
+    const fetcher = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap" && url.searchParams.has("release_id")) return Promise.resolve({ ok: true, json: async () => ({ company_id: "belluga", project_id: "builder", release_id: "r-04", state: "available", document: { title: "Release research", introduction: "Decision context", materials: [{ id: "study-1", title: "Architecture study", body_markdown: "A **human-readable** finding.", source_refs: ["source:study-1"] }] } }) } as Response);
+      return baseFetch(input, init);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-04");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Release research" })).toBeInTheDocument();
+    expect(screen.getByText("Architecture study")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Architecture study"));
+    expect(screen.getByRole("list", { name: "Fontes do estudo" })).toHaveTextContent("source:study-1");
+    expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Architecture study");
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).searchParams.has("release_id"))).toBe(true);
+  });
   it("shows truthful delivered and invalid Release states without planning-ledger arithmetic", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);

@@ -553,12 +553,15 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 	projectID, projectOK := oneQueryValue(q, "project_id")
 	todoID, todoOK := oneQueryValue(q, "todo_id")
 	todoRevision, revisionOK := oneQueryValue(q, "todo_revision")
-	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 2048 || !companyOK || !projectOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || len(q) != 2 && len(q) != 4 {
+	releaseID, releaseOK := oneQueryValue(q, "release_id")
+	if r.Method != http.MethodGet || r.ContentLength > 0 || len(r.URL.RawQuery) > 2048 || !companyOK || !projectOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || len(q) != 2 && len(q) != 3 && len(q) != 4 || len(q) == 3 && (!releaseOK || !validRegistrationID(releaseID)) {
 		writeError(w, http.StatusBadRequest, "roadmap_request_invalid")
 		return
 	}
 	endpointPath := "/internal/v1/companies/" + url.PathEscape(companyID) + "/projects/" + url.PathEscape(projectID) + "/roadmap"
-	if len(q) == 4 {
+	if len(q) == 3 {
+		endpointPath += "/releases/" + url.PathEscape(releaseID) + "/investigation"
+	} else if len(q) == 4 {
 		revision, err := strconv.ParseInt(todoRevision, 10, 64)
 		if !todoOK || todoID == "" || !revisionOK || err != nil || revision < 0 || !validRegistrationID(todoID) {
 			writeError(w, http.StatusBadRequest, "roadmap_todo_request_invalid")
@@ -619,6 +622,24 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 	}
 	if len(q) == 2 {
 		if !validRegistryRoadmap(body, projectID) {
+			writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	if len(q) == 3 {
+		var result struct {
+			CompanyID string          `json:"company_id"`
+			ProjectID string          `json:"project_id"`
+			ReleaseID string          `json:"release_id"`
+			State     string          `json:"state"`
+			Document  json.RawMessage `json:"document"`
+		}
+		if json.Unmarshal(body, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.ReleaseID != releaseID || result.State != "available" && result.State != "absent" || result.State == "available" && (len(result.Document) == 0 || string(result.Document) == "null") || result.State == "absent" && len(result.Document) != 0 {
 			writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
 			return
 		}

@@ -549,7 +549,7 @@ func (m *MongoStore) readRoadmap(ctx context.Context, id, companyID string, retr
 	if epicCursor.Err() != nil {
 		return nil, ErrUnavailable
 	}
-	releaseCursor, err := m.client.Database(company.DatabaseName).Collection(releasesCollection).Find(ctx, bson.D{{Key: "project_id", Value: id}}, options.Find().SetSort(bson.D{{Key: "position", Value: 1}, {Key: "id", Value: 1}}))
+	releaseCursor, err := m.client.Database(company.DatabaseName).Collection(releasesCollection).Find(ctx, bson.D{{Key: "project_id", Value: id}}, options.Find().SetSort(bson.D{{Key: "position", Value: 1}, {Key: "id", Value: 1}}).SetProjection(bson.D{{Key: "investigation.introduction", Value: 0}, {Key: "investigation.materials", Value: 0}}))
 	if err != nil {
 		return nil, ErrUnavailable
 	}
