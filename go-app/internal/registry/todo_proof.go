@@ -49,7 +49,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	if m.proofReaderURL == "" || m.proofHTTPClient == nil || m.proofReaderToken == "" {
 		return TODOProofReference{}, todoTeach("production_proof", "configure the private Reader proof route before Completed", ErrUnavailable)
 	}
-	builderCommits, pacedCommits, err := mvpImplementationClaims(todo)
+	builderCommits, pacedCommits, foundationCommits, err := mvpImplementationClaims(todo)
 	if err != nil {
 		return TODOProofReference{}, err
 	}
@@ -62,6 +62,9 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	}
 	if len(pacedCommits) > 0 {
 		query.Set("paced_commits", strings.Join(pacedCommits, ","))
+	}
+	if len(foundationCommits) > 0 {
+		query.Set("foundation_commits", strings.Join(foundationCommits, ","))
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/production?"+query.Encode(), nil)
 	if err != nil {
@@ -87,7 +90,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		return TODOProofReference{}, todoTeach("production_proof", "obtain verified MVP publication evidence from the private Reader", ErrConflict)
 	}
 	var verified remoteProductionResult
-	if json.Unmarshal(data, &verified) != nil || verified.CompanyID != companyID || verified.ProjectID != todo.ProjectID || verified.TODOID != todo.ID || verified.DeploymentID != deploymentID || verified.RootSHA != parts[1] || verified.Environment != "production" || verified.ModulePath != "project" || verified.CommitSHA != parts[1] || verified.Outcome != "verified" || verified.ProjectMode != "mvp" || !validGitCommit(verified.ReaderSHA) || !equalCommitClaims(verified.ProjectCommits, builderCommits) {
+	if json.Unmarshal(data, &verified) != nil || verified.CompanyID != companyID || verified.ProjectID != todo.ProjectID || verified.TODOID != todo.ID || verified.DeploymentID != deploymentID || verified.RootSHA != parts[1] || verified.Environment != "production" || verified.ModulePath != "project" || verified.CommitSHA != parts[1] || verified.Outcome != "verified" || verified.ProjectMode != "mvp" || !validGitCommit(verified.ReaderSHA) || !equalCommitClaims(verified.ProjectCommits, builderCommits) || !equalCommitClaims(verified.FoundationCommits, foundationCommits) {
 		return TODOProofReference{}, todoTeach("production_proof", "match every selected implementation commit and the exact served MVP Deployment", ErrConflict)
 	}
 	evidence, _ := json.Marshal(struct {
@@ -112,25 +115,27 @@ func equalCommitClaims(a, b []string) bool {
 	return true
 }
 
-func mvpImplementationClaims(todo TODORecord) ([]string, []string, error) {
-	var builderCommits, pacedCommits []string
+func mvpImplementationClaims(todo TODORecord) ([]string, []string, []string, error) {
+	var builderCommits, pacedCommits, foundationCommits []string
 	for _, claim := range todo.ImplementationCommits {
 		if !validGitCommit(claim.Commit) {
-			return nil, nil, todoTeach("implementation_commits", "provide valid published implementation commit SHAs before MVP completion", ErrConflict)
+			return nil, nil, nil, todoTeach("implementation_commits", "provide valid published implementation commit SHAs before MVP completion", ErrConflict)
 		}
 		switch strings.ToLower(strings.TrimSpace(claim.Repository)) {
 		case "builder", "builder code", "belluga_builder_docker":
 			builderCommits = append(builderCommits, claim.Commit)
 		case "paced", "delphi-ai":
 			pacedCommits = append(pacedCommits, claim.Commit)
+		case "belluga_builder_foundation_documentation":
+			foundationCommits = append(foundationCommits, claim.Commit)
 		default:
-			return nil, nil, todoTeach("implementation_commits.repository", "use the registered Builder or PACED source for this MVP release", ErrConflict)
+			return nil, nil, nil, todoTeach("implementation_commits.repository", "use the registered Builder, PACED or Foundation source for this MVP release", ErrConflict)
 		}
 	}
-	if len(builderCommits) == 0 && len(pacedCommits) == 0 && (todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.Kind != "local-run-accepted") {
-		return nil, nil, todoTeach("implementation_commits", "link attributable implementation commits, or retain a previously accepted local run for this historical TODO", ErrConflict)
+	if len(builderCommits) == 0 && len(pacedCommits) == 0 && len(foundationCommits) == 0 && (todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.Kind != "local-run-accepted") {
+		return nil, nil, nil, todoTeach("implementation_commits", "link attributable implementation commits, or retain a previously accepted local run for this historical TODO", ErrConflict)
 	}
-	return builderCommits, pacedCommits, nil
+	return builderCommits, pacedCommits, foundationCommits, nil
 }
 
 const (
@@ -139,18 +144,19 @@ const (
 )
 
 type remoteProductionResult struct {
-	CompanyID      string   `json:"company_id"`
-	ProjectID      string   `json:"project_id"`
-	TODOID         string   `json:"todo_id"`
-	DeploymentID   int64    `json:"deployment_id"`
-	Environment    string   `json:"environment"`
-	RootSHA        string   `json:"root_sha"`
-	ModulePath     string   `json:"module_path"`
-	CommitSHA      string   `json:"commit_sha"`
-	Outcome        string   `json:"outcome"`
-	ProjectMode    string   `json:"project_mode"`
-	ProjectCommits []string `json:"project_commits,omitempty"`
-	ReaderSHA      string   `json:"reader_sha,omitempty"`
+	CompanyID         string   `json:"company_id"`
+	ProjectID         string   `json:"project_id"`
+	TODOID            string   `json:"todo_id"`
+	DeploymentID      int64    `json:"deployment_id"`
+	Environment       string   `json:"environment"`
+	RootSHA           string   `json:"root_sha"`
+	ModulePath        string   `json:"module_path"`
+	CommitSHA         string   `json:"commit_sha"`
+	Outcome           string   `json:"outcome"`
+	ProjectMode       string   `json:"project_mode"`
+	ProjectCommits    []string `json:"project_commits,omitempty"`
+	FoundationCommits []string `json:"foundation_commits,omitempty"`
+	ReaderSHA         string   `json:"reader_sha,omitempty"`
 }
 
 func (m *MongoStore) verifyProductionCommit(ctx context.Context, companyID string, todo TODORecord, modulePath string, claim TODOCommitReference) (TODOProofReference, error) {
