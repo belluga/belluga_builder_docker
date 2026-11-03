@@ -79,6 +79,7 @@ type canonicalKnowledgeService interface {
 	CreateCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
 	EditCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
 	RestoreCanonical(context.Context, string, CanonicalRestoreRequest) (CanonicalRecord, error)
+	DeleteCanonical(context.Context, string, CanonicalDeleteRequest) (CanonicalRecord, error)
 	ActivateCanonical(context.Context, string, string, string, string, string) (CanonicalManifest, error)
 	CanonicalHistory(context.Context, string, string, time.Time, int) (CanonicalHistoryPage, error)
 }
@@ -105,6 +106,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate", h.canonicalActivate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalRead)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalEdit)
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalDelete)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}", h.canonicalCreate)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore", h.canonicalRestore)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history", h.canonicalHistory)
@@ -704,6 +706,24 @@ func (h *Handler) canonicalEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalDelete(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalDeleteRequest
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.RecordID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record_id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.DeleteCanonical(r.Context(), r.PathValue("companyID"), input)
 	h.respond(w, value, err)
 }
 

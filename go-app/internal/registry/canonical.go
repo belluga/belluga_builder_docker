@@ -54,6 +54,7 @@ type CanonicalRecord struct {
 	Revision      int64           `json:"revision" bson:"revision"`
 	ContentDigest string          `json:"content_digest" bson:"content_digest"`
 	UpdatedAt     time.Time       `json:"updated_at" bson:"updated_at"`
+	Deleted       bool            `json:"deleted,omitempty" bson:"deleted,omitempty"`
 	Payload       json.RawMessage `json:"payload" bson:"-"`
 }
 
@@ -85,6 +86,15 @@ type CanonicalRestoreRequest struct {
 	Family           CanonicalFamily `json:"family"`
 	RecordID         string          `json:"record_id"`
 	Revision         int64           `json:"revision"`
+	ExpectedRevision int64           `json:"expected_revision"`
+	OperationID      string          `json:"operation_id"`
+	Actor            string          `json:"actor"`
+}
+
+type CanonicalDeleteRequest struct {
+	ProjectID        string          `json:"project_id"`
+	Family           CanonicalFamily `json:"family"`
+	RecordID         string          `json:"record_id"`
 	ExpectedRevision int64           `json:"expected_revision"`
 	OperationID      string          `json:"operation_id"`
 	Actor            string          `json:"actor"`
@@ -131,6 +141,10 @@ type CanonicalTeachDiagnostic struct {
 	RecordID       string   `json:"record_id,omitempty"`
 	AcceptedValues []string `json:"accepted_values,omitempty"`
 	NextAction     string   `json:"next_action"`
+	ObjectPurpose  string   `json:"object_purpose,omitempty"`
+	RequiredFields []string `json:"required_fields,omitempty"`
+	AcceptedFields []string `json:"accepted_fields,omitempty"`
+	NotPersisted   []string `json:"not_persisted_fields,omitempty"`
 }
 type canonicalTeachError struct {
 	Diagnostic CanonicalTeachDiagnostic
@@ -218,21 +232,22 @@ type CanonicalStage struct {
 }
 type CanonicalEndpointPayload struct {
 	CanonicalKnowledgeState
-	Purpose     string                `json:"purpose,omitempty"`
-	Method      string                `json:"method"`
-	Route       string                `json:"route"`
-	HostScope   string                `json:"host_scope"`
-	ModuleID    string                `json:"module_id"`
-	Request     []CanonicalField      `json:"request"`
-	Response    []CanonicalField      `json:"response"`
-	Errors      []CanonicalRule       `json:"errors,omitempty"`
-	Security    *CanonicalSecurity    `json:"security,omitempty"`
-	Pagination  *CanonicalPagination  `json:"pagination,omitempty"`
-	Idempotency *CanonicalIdempotency `json:"idempotency,omitempty"`
-	Patch       *CanonicalPatch       `json:"patch,omitempty"`
-	Responses   []CanonicalResponse   `json:"responses,omitempty"`
-	PolicyIDs   []string              `json:"policy_ids,omitempty"`
-	EntityIDs   []string              `json:"entity_ids,omitempty"`
+	Purpose       string                `json:"purpose,omitempty"`
+	Method        string                `json:"method"`
+	Route         string                `json:"route"`
+	HostScope     string                `json:"host_scope"`
+	ModuleID      string                `json:"module_id"`
+	Request       []CanonicalField      `json:"request"`
+	Response      []CanonicalField      `json:"response"`
+	BehaviorRules []CanonicalRule       `json:"behavior_rules,omitempty"`
+	Errors        []CanonicalRule       `json:"errors,omitempty"`
+	Security      *CanonicalSecurity    `json:"security,omitempty"`
+	Pagination    *CanonicalPagination  `json:"pagination,omitempty"`
+	Idempotency   *CanonicalIdempotency `json:"idempotency,omitempty"`
+	Patch         *CanonicalPatch       `json:"patch,omitempty"`
+	Responses     []CanonicalResponse   `json:"responses,omitempty"`
+	PolicyIDs     []string              `json:"policy_ids,omitempty"`
+	EntityIDs     []string              `json:"entity_ids,omitempty"`
 }
 type MandatePayload struct {
 	CanonicalKnowledgeState
@@ -358,6 +373,9 @@ func validateCanonicalRecord(projectID, generationID string, family CanonicalFam
 	if record.Revision < 1 {
 		return teachCanonical(record.ID, "record.revision", "set the initial content revision to 1", ErrInvalid)
 	}
+	if record.Deleted {
+		return teachCanonical(record.ID, "record.deleted", "use delete-knowledge with the current expected_revision; content import/create/edit cannot set a tombstone", ErrInvalid)
+	}
 	if len(record.Payload) == 0 || len(record.Payload) > maxCanonicalPayload {
 		return teachCanonical(record.ID, "record.payload", "provide one typed payload object within the 4 MiB record limit", ErrInvalid)
 	}
@@ -433,6 +451,7 @@ func normalizeCanonicalPayload(family CanonicalFamily, recordID string, payload 
 func CanonicalTemplate() map[string]any {
 	formats := map[string]any{}
 	definitions := map[string]map[string]string{}
+	guides := map[string]any{}
 	for family, payload := range map[CanonicalFamily]any{
 		FamilyMandate: MandatePayload{}, FamilyDomain: DomainCatalogPayload{}, FamilyConstitution: ConstitutionPayload{},
 		FamilyRoadmap: StrategicRoadmapPayload{}, FamilyModule: ModulePayload{}, FamilyEndpoint: CanonicalEndpointPayload{}, FamilyPolicy: PolicyPayload{},
@@ -440,6 +459,7 @@ func CanonicalTemplate() map[string]any {
 		kind := reflect.TypeOf(payload)
 		formats[string(family)] = kind.Name()
 		canonicalTemplateFields(kind, definitions)
+		guides[string(family)] = canonicalObjectGuide(kind)
 	}
 	return map[string]any{
 		"values":        map[string]any{"status": []string{"current", "planned", "draft", "deprecated", "historical"}, "decision_status": []string{"current", "planned", "draft", "deprecated", "historical"}, "owner_kind": []string{"module", "project_constitution", "policy"}},
@@ -449,10 +469,11 @@ func CanonicalTemplate() map[string]any {
 		"record":        map[string]any{"id": "stable-id", "project_id": "project", "generation_id": "generation", "revision": 1, "content_digest": "sha256:<digest>", "updated_at": "<BSON Date/RFC3339>", "payload": "<family-specific object>"},
 		"payload_types": formats,
 		"type_fields":   definitions,
+		"object_guides": guides,
 		"migration_guidance": []string{
 			"Draft import validates record structure but does not prove source-content completeness.",
-			"Map every normative source statement to the matching typed field; do not summarize away rules, decisions, routes, schemas, operations, events or verification contracts.",
-			"Compare imported records field by field against the fixed source revision before activation. Activation verifies structure and references, not editorial parity.",
+			"Map canonical purpose, rules, decisions and backend contracts to typed fields. Prototype presentation details belong to a later visual-artifact migration.",
+			"Compare imported records against the source inventory before activation. Activation verifies structure and references, not editorial parity or product truth.",
 			"Preserve explicit source IDs verbatim. For a source unit without an ID, use only a technical mig- ID derived by the published migration_id_policy; do not infer a semantic ID.",
 			"Keep ambiguous source meanings or duplicate explicit IDs unresolved and request a decision; never silently merge distinct statements.",
 		},
@@ -472,6 +493,59 @@ func CanonicalTemplate() map[string]any {
 			string(FamilyPolicy):       PolicyPayload{Rules: []CanonicalRule{{ID: "retention", Status: "current", Statement: "Retain governed events"}}, Ownership: []CanonicalOwnership{{OwnerKind: "module", OwnerID: "projects", DecisionID: "DEC-01"}}},
 		},
 		"limits": map[string]int{"max_record_bytes": maxCanonicalPayload, "max_records_per_import": 500},
+	}
+}
+
+func canonicalObjectGuide(kind reflect.Type) map[string]any {
+	fields := map[string]string{}
+	definitions := map[string]map[string]string{}
+	canonicalTemplateFields(kind, definitions)
+	for name, format := range definitions[kind.Name()] {
+		fields[name] = format
+	}
+	required := canonicalRequiredFields(kind.Name())
+	return map[string]any{"purpose": canonicalPurpose(kind.Name()), "required_fields": required, "accepted_fields": fields, "unknown_fields": "rejected and reported as not persisted"}
+}
+
+func canonicalRequiredFields(kind string) []string {
+	switch kind {
+	case "MandatePayload":
+		return []string{"purpose", "scope"}
+	case "DomainCatalogPayload":
+		return []string{"entities"}
+	case "ConstitutionPayload":
+		return []string{"promotion_mode", "capability_namespaces", "rules"}
+	case "StrategicRoadmapPayload":
+		return []string{"stages"}
+	case "ModulePayload":
+		return []string{"purpose"}
+	case "CanonicalEndpointPayload":
+		return []string{"method", "route", "host_scope", "module_id"}
+	case "PolicyPayload":
+		return []string{"rules"}
+	default:
+		return []string{}
+	}
+}
+
+func canonicalPurpose(kind string) string {
+	switch kind {
+	case "MandatePayload":
+		return "Project purpose, scope and business direction"
+	case "DomainCatalogPayload":
+		return "Domain entities, relations and distinctions"
+	case "ConstitutionPayload":
+		return "Project governance and canonical decisions"
+	case "StrategicRoadmapPayload":
+		return "Strategic stages and direction, not delivery TODOs"
+	case "ModulePayload":
+		return "Module responsibility, behavior, decisions and interfaces"
+	case "CanonicalEndpointPayload":
+		return "Backend endpoint contract and request/response fields"
+	case "PolicyPayload":
+		return "Cross-module policy rules and ownership"
+	default:
+		return "Typed canonical knowledge object"
 	}
 }
 
@@ -678,6 +752,9 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(sc context.Context) (any, error) {
+		if e := canonicalLockProject(sc, db, companyID, input.ProjectID, input.GenerationID, false); e != nil {
+			return nil, e
+		}
 		for _, item := range input.Records {
 			collectionName, _ := canonicalCollection(item.Family)
 			coll := db.Collection(collectionName)
@@ -723,6 +800,7 @@ type canonicalStored struct {
 	Revision      int64           `bson:"revision"`
 	ContentDigest string          `bson:"content_digest"`
 	UpdatedAt     time.Time       `bson:"updated_at"`
+	Deleted       bool            `bson:"deleted,omitempty"`
 	Payload       bson.M          `bson:"payload"`
 	Family        CanonicalFamily `bson:"family"`
 }
@@ -732,11 +810,11 @@ func canonicalStoredRecord(f CanonicalFamily, r CanonicalRecord) canonicalStored
 	if json.Unmarshal(r.Payload, &payload) != nil {
 		payload = bson.M{}
 	}
-	return canonicalStored{ObjectID: bson.NewObjectID(), ID: r.ID, ProjectID: r.ProjectID, GenerationID: r.GenerationID, Revision: r.Revision, ContentDigest: r.ContentDigest, UpdatedAt: r.UpdatedAt, Payload: payload, Family: f}
+	return canonicalStored{ObjectID: bson.NewObjectID(), ID: r.ID, ProjectID: r.ProjectID, GenerationID: r.GenerationID, Revision: r.Revision, ContentDigest: r.ContentDigest, UpdatedAt: r.UpdatedAt, Deleted: r.Deleted, Payload: payload, Family: f}
 }
 func (r canonicalStored) toRecord() CanonicalRecord {
 	payload, _ := json.Marshal(r.Payload)
-	return CanonicalRecord{ID: r.ID, ProjectID: r.ProjectID, GenerationID: r.GenerationID, Revision: r.Revision, ContentDigest: r.ContentDigest, UpdatedAt: r.UpdatedAt, Payload: payload}
+	return CanonicalRecord{ID: r.ID, ProjectID: r.ProjectID, GenerationID: r.GenerationID, Revision: r.Revision, ContentDigest: r.ContentDigest, UpdatedAt: r.UpdatedAt, Deleted: r.Deleted, Payload: payload}
 }
 func canonicalVersion(project, generation string, f CanonicalFamily, r CanonicalRecord) bson.M {
 	return bson.M{"_id": bson.NewObjectID(), "project_id": project, "generation_id": generation, "family": f, "record_id": r.ID, "revision": r.Revision, "content_digest": r.ContentDigest, "occurred_at": r.UpdatedAt, "record": canonicalStoredRecord(f, r)}
@@ -760,9 +838,13 @@ func (m *MongoStore) CanonicalManifest(ctx context.Context, companyID, projectID
 		manifest.State, manifest.Teach, manifest.TeachDetail = "pending", pending.Error(), &pending.Diagnostic
 		return manifest, nil
 	}
+	return canonicalManifestInDB(ctx, db, manifest)
+}
+
+func canonicalManifestInDB(ctx context.Context, db *mongo.Database, manifest CanonicalManifest) (CanonicalManifest, error) {
 	for _, family := range []CanonicalFamily{FamilyMandate, FamilyDomain, FamilyConstitution, FamilyRoadmap, FamilyModule, FamilyEndpoint, FamilyPolicy} {
 		name, _ := canonicalCollection(family)
-		cursor, e := db.Collection(name).Find(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: generationID}}, options.Find().SetSort(bson.D{{Key: "id", Value: 1}}))
+		cursor, e := db.Collection(name).Find(ctx, bson.D{{Key: "project_id", Value: manifest.ProjectID}, {Key: "generation_id", Value: manifest.GenerationID}, {Key: "deleted", Value: bson.M{"$ne": true}}}, options.Find().SetSort(bson.D{{Key: "id", Value: 1}}))
 		if e != nil {
 			return CanonicalManifest{}, ErrUnavailable
 		}
@@ -783,6 +865,31 @@ func (m *MongoStore) CanonicalManifest(ctx context.Context, companyID, projectID
 	return manifest, nil
 }
 
+func canonicalLockProject(ctx context.Context, db *mongo.Database, companyID, projectID, generationID string, active bool) error {
+	filter := bson.D{{Key: "id", Value: projectID}, {Key: "company_id", Value: companyID}}
+	if active {
+		filter = append(filter, bson.E{Key: "knowledge_generation_id", Value: generationID})
+	} else {
+		filter = append(filter, bson.E{Key: "$or", Value: bson.A{bson.M{"knowledge_generation_id": bson.M{"$exists": false}}, bson.M{"knowledge_generation_id": ""}}})
+	}
+	result, err := db.Collection(projectsCollection).UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"canonical_write_epoch": 1}})
+	if err != nil {
+		return err
+	}
+	if result.MatchedCount != 1 {
+		return teachCanonical(projectID, "generation_id", "draft import is closed after activation; use active knowledge operations", ErrConflict)
+	}
+	return nil
+}
+
+func canonicalValidateActive(ctx context.Context, db *mongo.Database, projectID, generationID string) error {
+	manifest, err := canonicalManifestInDB(ctx, db, CanonicalManifest{ProjectID: projectID, GenerationID: generationID, Active: true, State: "active", Documents: []CanonicalManifestEntry{}})
+	if err != nil {
+		return err
+	}
+	return validateCanonicalGeneration(ctx, db, projectID, generationID, manifest)
+}
+
 func (m *MongoStore) ReadCanonical(ctx context.Context, companyID, projectID string, family CanonicalFamily, id string) (CanonicalRecord, error) {
 	if !canonicalID.MatchString(id) {
 		return CanonicalRecord{}, teachCanonical(id, "record_id", "use a stable lowercase record ID", ErrInvalid)
@@ -799,7 +906,7 @@ func (m *MongoStore) ReadCanonical(ctx context.Context, companyID, projectID str
 		return CanonicalRecord{}, err
 	}
 	var value canonicalStored
-	err = db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: project.KnowledgeGenerationID}, {Key: "id", Value: id}}).Decode(&value)
+	err = db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: project.KnowledgeGenerationID}, {Key: "id", Value: id}, {Key: "deleted", Value: bson.M{"$ne": true}}}).Decode(&value)
 	if err == mongo.ErrNoDocuments {
 		return CanonicalRecord{}, ErrNotFound
 	}
@@ -895,6 +1002,9 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(sc context.Context) (any, error) {
+		if e := canonicalLockProject(sc, db, companyID, input.ProjectID, generation, true); e != nil {
+			return nil, e
+		}
 		stored := canonicalStoredRecord(input.Family, input.Record)
 		encoded, e := bson.Marshal(stored)
 		if e != nil {
@@ -911,6 +1021,9 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 		}
 		if result.MatchedCount != 1 {
 			return nil, ErrConflict
+		}
+		if e = canonicalValidateActive(sc, db, input.ProjectID, generation); e != nil {
+			return nil, e
 		}
 		if _, e = db.Collection(canonicalVersions).InsertOne(sc, canonicalVersion(input.ProjectID, generation, input.Family, input.Record)); e != nil {
 			return nil, e
@@ -953,11 +1066,16 @@ func (m *MongoStore) CreateCanonical(ctx context.Context, companyID string, inpu
 	}
 	var prior CanonicalEvent
 	if err = db.Collection(canonicalEvents).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.Record.ID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: "record_created"}}).Decode(&prior); err == nil {
-		var stored canonicalStored
-		if err = db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "id", Value: input.Record.ID}}).Decode(&stored); err != nil || stored.ContentDigest != input.Record.ContentDigest || prior.Actor != input.Actor {
+		var version struct {
+			Record canonicalStored `bson:"record"`
+		}
+		if err = db.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.Record.ID}, {Key: "revision", Value: prior.Revision}}).Decode(&version); err != nil {
+			return CanonicalRecord{}, ErrUnavailable
+		}
+		if version.Record.ContentDigest != input.Record.ContentDigest || prior.Actor != input.Actor {
 			return CanonicalRecord{}, ErrConflict
 		}
-		return stored.toRecord(), nil
+		return version.Record.toRecord(), nil
 	} else if err != mongo.ErrNoDocuments {
 		return CanonicalRecord{}, ErrUnavailable
 	}
@@ -967,7 +1085,13 @@ func (m *MongoStore) CreateCanonical(ctx context.Context, companyID string, inpu
 	}
 	defer session.EndSession(ctx)
 	_, err = session.WithTransaction(ctx, func(tx context.Context) (any, error) {
+		if e := canonicalLockProject(tx, db, companyID, input.ProjectID, generation, true); e != nil {
+			return nil, e
+		}
 		if _, e := db.Collection(name).InsertOne(tx, canonicalStoredRecord(input.Family, input.Record)); e != nil {
+			return nil, e
+		}
+		if e := canonicalValidateActive(tx, db, input.ProjectID, generation); e != nil {
 			return nil, e
 		}
 		if _, e := db.Collection(canonicalVersions).InsertOne(tx, canonicalVersion(input.ProjectID, generation, input.Family, input.Record)); e != nil {
@@ -1008,11 +1132,109 @@ func (m *MongoStore) RestoreCanonical(ctx context.Context, companyID string, inp
 	return m.editCanonical(ctx, companyID, CanonicalMutation{ProjectID: input.ProjectID, Family: input.Family, Record: version.Record.toRecord(), ExpectedRevision: input.ExpectedRevision, OperationID: input.OperationID, Actor: input.Actor}, "content_restored")
 }
 
+func (m *MongoStore) DeleteCanonical(ctx context.Context, companyID string, input CanonicalDeleteRequest) (CanonicalRecord, error) {
+	if input.ExpectedRevision < 1 || !canonicalID.MatchString(input.RecordID) || !canonicalID.MatchString(input.OperationID) || strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
+		return CanonicalRecord{}, teachCanonical(input.RecordID, "request", "provide record ID, expected revision, operation ID and actor", ErrInvalid)
+	}
+	db, project, err := m.canonicalDB(ctx, companyID, input.ProjectID)
+	if err != nil {
+		return CanonicalRecord{}, err
+	}
+	generation := project.KnowledgeGenerationID
+	if generation == "" {
+		return CanonicalRecord{}, canonicalPending()
+	}
+	name, err := canonicalCollection(input.Family)
+	if err != nil {
+		return CanonicalRecord{}, err
+	}
+	var prior CanonicalEvent
+	if e := db.Collection(canonicalEvents).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.RecordID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: "record_deleted"}}).Decode(&prior); e == nil {
+		var version struct {
+			Record canonicalStored `bson:"record"`
+		}
+		if e = db.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.RecordID}, {Key: "revision", Value: prior.Revision}}).Decode(&version); e != nil {
+			return CanonicalRecord{}, ErrUnavailable
+		}
+		if prior.Actor != input.Actor {
+			return CanonicalRecord{}, ErrConflict
+		}
+		return version.Record.toRecord(), nil
+	} else if e != mongo.ErrNoDocuments {
+		return CanonicalRecord{}, ErrUnavailable
+	}
+	current, err := m.ReadCanonical(ctx, companyID, input.ProjectID, input.Family, input.RecordID)
+	if err != nil {
+		return CanonicalRecord{}, err
+	}
+	if current.Revision != input.ExpectedRevision {
+		return CanonicalRecord{}, ErrConflict
+	}
+	current.Revision++
+	current.Deleted = true
+	current.UpdatedAt = canonicalTime()
+	session, err := db.Client().StartSession()
+	if err != nil {
+		return CanonicalRecord{}, ErrUnavailable
+	}
+	defer session.EndSession(ctx)
+	_, err = session.WithTransaction(ctx, func(tx context.Context) (any, error) {
+		if e := canonicalLockProject(tx, db, companyID, input.ProjectID, generation, true); e != nil {
+			return nil, e
+		}
+		result, e := db.Collection(name).UpdateOne(tx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "id", Value: input.RecordID}, {Key: "revision", Value: input.ExpectedRevision}, {Key: "deleted", Value: bson.M{"$ne": true}}}, bson.M{"$set": bson.M{"deleted": true, "revision": current.Revision, "updated_at": current.UpdatedAt}})
+		if e != nil {
+			return nil, e
+		}
+		if result.MatchedCount != 1 {
+			return nil, ErrConflict
+		}
+		if e = canonicalValidateActive(tx, db, input.ProjectID, generation); e != nil {
+			return nil, e
+		}
+		if _, e = db.Collection(canonicalVersions).InsertOne(tx, canonicalVersion(input.ProjectID, generation, input.Family, current)); e != nil {
+			return nil, e
+		}
+		_, e = db.Collection(canonicalEvents).InsertOne(tx, CanonicalEvent{ObjectID: bson.NewObjectID(), ProjectID: input.ProjectID, GenerationID: generation, Family: input.Family, RecordID: input.RecordID, Kind: "record_deleted", Revision: current.Revision, OperationID: input.OperationID, Actor: input.Actor, OccurredAt: current.UpdatedAt})
+		return nil, e
+	})
+	if err != nil {
+		return CanonicalRecord{}, normalizeMongoError(err)
+	}
+	return current, nil
+}
+
 func validateCanonicalGeneration(ctx context.Context, db *mongo.Database, projectID, generationID string, manifest CanonicalManifest) error {
 	modules := map[string]bool{}
+	policies := map[string]bool{}
+	entities := map[string]bool{}
+	for _, family := range []CanonicalFamily{FamilyMandate, FamilyDomain, FamilyConstitution, FamilyRoadmap} {
+		if manifestCount(manifest, family) != 1 {
+			return teachCanonical("", "generation."+string(family), "keep exactly one active canonical singleton", ErrInvalid)
+		}
+	}
+	if manifestCount(manifest, FamilyModule) == 0 || manifestCount(manifest, FamilyPolicy) == 0 {
+		return teachCanonical("", "generation", "keep at least one active module and policy", ErrInvalid)
+	}
 	for _, entry := range manifest.Documents {
 		if entry.Family == FamilyModule {
 			modules[entry.ID] = true
+		}
+		if entry.Family == FamilyPolicy {
+			policies[entry.ID] = true
+		}
+		if entry.Family == FamilyDomain {
+			var domainStored canonicalStored
+			if err := db.Collection(canonicalDomains).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: generationID}, {Key: "id", Value: entry.ID}}).Decode(&domainStored); err != nil {
+				return ErrUnavailable
+			}
+			var domain DomainCatalogPayload
+			if json.Unmarshal(domainStored.toRecord().Payload, &domain) != nil {
+				return ErrInvalid
+			}
+			for _, entity := range domain.Entities {
+				entities[entity.ID] = true
+			}
 		}
 	}
 	for _, entry := range manifest.Documents {
@@ -1029,6 +1251,16 @@ func validateCanonicalGeneration(ctx context.Context, db *mongo.Database, projec
 			var endpoint CanonicalEndpointPayload
 			if json.Unmarshal(stored.toRecord().Payload, &endpoint) != nil || !modules[endpoint.ModuleID] {
 				return teachCanonical(entry.ID, "payload.module_id", "reference an existing module owner", ErrInvalid)
+			}
+			for _, id := range endpoint.PolicyIDs {
+				if !policies[id] {
+					return teachCanonical(entry.ID, "payload.policy_ids", "reference an existing active policy record ID", ErrInvalid)
+				}
+			}
+			for _, id := range endpoint.EntityIDs {
+				if !entities[id] {
+					return teachCanonical(entry.ID, "payload.entity_ids", "reference an entity ID in the active domain catalog", ErrInvalid)
+				}
 			}
 		case FamilyDomain:
 			var domain DomainCatalogPayload
@@ -1085,7 +1317,7 @@ func canonicalOwnerHasDecision(ctx context.Context, db *mongo.Database, projectI
 	}
 	name, _ := canonicalCollection(family)
 	var stored canonicalStored
-	if db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: generationID}, {Key: "id", Value: owner.OwnerID}}).Decode(&stored) != nil {
+	if db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: generationID}, {Key: "id", Value: owner.OwnerID}, {Key: "deleted", Value: bson.M{"$ne": true}}}).Decode(&stored) != nil {
 		return false
 	}
 	if owner.DecisionID == "" {
@@ -1158,6 +1390,13 @@ func (m *MongoStore) ActivateCanonical(ctx context.Context, companyID, projectID
 		}
 		if result.MatchedCount != 1 {
 			return nil, ErrConflict
+		}
+		activeManifest, e := canonicalManifestInDB(sc, db, CanonicalManifest{ProjectID: projectID, GenerationID: generationID, Active: true, State: "active", Documents: []CanonicalManifestEntry{}})
+		if e != nil {
+			return nil, e
+		}
+		if e = validateCanonicalGeneration(sc, db, projectID, generationID, activeManifest); e != nil {
+			return nil, e
 		}
 		_, e = db.Collection(canonicalEvents).InsertOne(sc, CanonicalEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, GenerationID: generationID, Family: "project", RecordID: projectID, Kind: "generation_activated", Revision: 1, OperationID: operationID, Actor: actor, OccurredAt: canonicalTime()})
 		return nil, e

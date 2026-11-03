@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -22,13 +24,30 @@ func decodeCanonicalPayload(recordID string, payload json.RawMessage, target any
 	if err := rejectCanonicalDuplicateKeys(recordID, payload, "payload"); err != nil {
 		return err
 	}
+	if err := checkCanonicalUnknownFields(recordID, payload, reflect.TypeOf(target), "payload", 0); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		field := "payload"
 		if name, ok := strings.CutPrefix(err.Error(), `json: unknown field "`); ok {
-			field += "." + strings.TrimSuffix(name, `"`)
-			return teachCanonical(recordID, field, "remove the unknown field; use the selected typed family contract", ErrInvalid)
+			unknown := strings.TrimSuffix(name, `"`)
+			field += "." + unknown
+			teach := teachCanonical(recordID, field, "remove the unknown field, use the accepted typed fields for this object and resubmit; unaccepted fields are not persisted", ErrInvalid).(*canonicalTeachError)
+			kind := reflect.TypeOf(target)
+			for kind.Kind() == reflect.Pointer {
+				kind = kind.Elem()
+			}
+			guide := canonicalObjectGuide(kind)
+			teach.Diagnostic.ObjectPurpose = guide["purpose"].(string)
+			teach.Diagnostic.RequiredFields = guide["required_fields"].([]string)
+			for accepted := range guide["accepted_fields"].(map[string]string) {
+				teach.Diagnostic.AcceptedFields = append(teach.Diagnostic.AcceptedFields, accepted)
+			}
+			sort.Strings(teach.Diagnostic.AcceptedFields)
+			teach.Diagnostic.NotPersisted = []string{unknown}
+			return teach
 		}
 		var typeError *json.UnmarshalTypeError
 		if errors.As(err, &typeError) && typeError.Field != "" {
@@ -38,6 +57,74 @@ func decodeCanonicalPayload(recordID string, payload json.RawMessage, target any
 	}
 	if decoder.Decode(new(any)) != io.EOF {
 		return teachCanonical(recordID, "payload", "provide exactly one JSON object without trailing values", ErrInvalid)
+	}
+	return nil
+}
+
+func checkCanonicalUnknownFields(recordID string, raw json.RawMessage, kind reflect.Type, path string, depth int) error {
+	if depth > 32 {
+		return teachCanonical(recordID, path, "limit nested canonical objects to 32 levels", ErrInvalid)
+	}
+	for kind.Kind() == reflect.Pointer {
+		kind = kind.Elem()
+	}
+	if kind.Kind() == reflect.Slice {
+		var items []json.RawMessage
+		if json.Unmarshal(raw, &items) != nil {
+			return nil
+		}
+		for i, item := range items {
+			if err := checkCanonicalUnknownFields(recordID, item, kind.Elem(), fmt.Sprintf("%s[%d]", path, i), depth+1); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if kind.Kind() != reflect.Struct || len(raw) == 0 || raw[0] != '{' {
+		return nil
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return nil
+	}
+	allowed := map[string]reflect.Type{}
+	var gather func(reflect.Type)
+	gather = func(t reflect.Type) {
+		for i := 0; i < t.NumField(); i++ {
+			field := t.Field(i)
+			if field.Anonymous {
+				gather(field.Type)
+				continue
+			}
+			name := strings.Split(field.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				allowed[name] = field.Type
+			}
+		}
+	}
+	gather(kind)
+	keys := make([]string, 0, len(fields))
+	for name := range fields {
+		keys = append(keys, name)
+	}
+	sort.Strings(keys)
+	for _, name := range keys {
+		fieldType, ok := allowed[name]
+		if !ok {
+			teach := teachCanonical(recordID, path+"."+name, "remove the unknown field, use the accepted typed fields for this object and resubmit; unaccepted fields are not persisted", ErrInvalid).(*canonicalTeachError)
+			guide := canonicalObjectGuide(kind)
+			teach.Diagnostic.ObjectPurpose = guide["purpose"].(string)
+			teach.Diagnostic.RequiredFields = guide["required_fields"].([]string)
+			for accepted := range guide["accepted_fields"].(map[string]string) {
+				teach.Diagnostic.AcceptedFields = append(teach.Diagnostic.AcceptedFields, accepted)
+			}
+			sort.Strings(teach.Diagnostic.AcceptedFields)
+			teach.Diagnostic.NotPersisted = []string{name}
+			return teach
+		}
+		if err := checkCanonicalUnknownFields(recordID, fields[name], fieldType, path+"."+name, depth+1); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -406,6 +493,7 @@ func validateCanonicalPayload(recordID string, target any) error {
 		v.check(canonicalID.MatchString(value.ModuleID), "payload.module_id", "provide the owning module record ID")
 		v.fields(value.Request, "payload.request", 0, false)
 		v.fields(value.Response, "payload.response", 0, false)
+		v.rules(value.BehaviorRules, "payload.behavior_rules", false)
 		v.rules(value.Errors, "payload.errors", false)
 		v.security(value.Security, "payload.security")
 		v.pagination(value.Pagination, "payload.pagination")

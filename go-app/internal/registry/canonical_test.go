@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -39,6 +40,11 @@ func TestCanonicalTemplateDescribesCompleteTypedPayloadsAndDraftLimit(t *testing
 	if template["migration_id_policy"].(map[string]string)["output"] == "" {
 		t.Fatal("missing source-ID migration policy")
 	}
+	guides := template["object_guides"].(map[string]any)
+	moduleGuide := guides[string(FamilyModule)].(map[string]any)
+	if moduleGuide["purpose"] == "" || len(moduleGuide["required_fields"].([]string)) == 0 || moduleGuide["accepted_fields"].(map[string]string)["decisions"] == "" {
+		t.Fatalf("public template lacks positive module guidance: %+v", moduleGuide)
+	}
 }
 
 func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
@@ -53,7 +59,7 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 		{FamilyRoadmap, `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`, true},
 		{FamilyModule, `{"purpose":"Owns project work","decisions":[{"id":"ownership","status":"current","statement":"Module owns its routes"}]}`, true},
 		{FamilyEndpoint, `{"method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`, true},
-		{FamilyEndpoint, `{"status":"draft","method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[]}`, true},
+		{FamilyEndpoint, `{"status":"draft","method":"GET","route":"/projects","host_scope":"api","module_id":"projects","request":[],"response":[],"behavior_rules":[{"id":"fallback","statement":"Redirect with a deterministic fallback"}]}`, true},
 		{FamilyPolicy, `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"ownership"}]}`, true},
 		{FamilyMandate, `{"purpose":"x","scope":[],"sections":[]}`, false},
 		{FamilyMandate, `# Markdown is deliberately not parsed`, false},
@@ -68,6 +74,8 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 			}
 		})
 	}
+	record := CanonicalRecord{ID: "hidden", ProjectID: "builder", GenerationID: "g1", Revision: 1, Deleted: true, Payload: json.RawMessage(`{"purpose":"Hidden","scope":["web"]}`)}
+	if err := validateCanonicalRecord("builder", "g1", FamilyMandate, record); !errors.Is(err, ErrInvalid) { t.Fatalf("content write accepted tombstone: %v", err) }
 }
 
 func TestCanonicalDigestNormalizesJSONObjectOrder(t *testing.T) {
@@ -86,6 +94,20 @@ func TestCanonicalTEACHReturnsFieldRecordAcceptedValuesAndNextAction(t *testing.
 	}
 	if response.Code != 400 || body.TeachDetail == nil || body.TeachDetail.Code != "canonical_validation" || body.TeachDetail.FieldPath != "payload.decisions.status" || body.TeachDetail.RecordID != "module-a" || len(body.TeachDetail.AcceptedValues) != 5 || body.TeachDetail.NextAction == "" {
 		t.Fatalf("TEACH response=%+v status=%d", body, response.Code)
+	}
+}
+
+func TestCanonicalUnknownFieldTEACHReportsAcceptedAndNotPersistedFields(t *testing.T) {
+	var module ModulePayload
+	err := decodeCanonicalPayload("module-a", json.RawMessage(`{"purpose":"Owner","screens":[]}`), &module)
+	var teach *canonicalTeachError
+	if !errors.As(err, &teach) || teach.Diagnostic.ObjectPurpose == "" || len(teach.Diagnostic.AcceptedFields) == 0 || len(teach.Diagnostic.NotPersisted) != 1 || teach.Diagnostic.NotPersisted[0] != "screens" {
+		t.Fatalf("unknown field guidance incomplete: %v", err)
+	}
+	var endpoint CanonicalEndpointPayload
+	err = decodeCanonicalPayload("endpoint-a", json.RawMessage(`{"method":"GET","route":"/x","host_scope":"api","module_id":"projects","request":[{"name":"id","type":"string","invented":"x"}],"response":[]}`), &endpoint)
+	if !errors.As(err, &teach) || teach.Diagnostic.FieldPath != "payload.request[0].invented" || teach.Diagnostic.ObjectPurpose != "Typed canonical knowledge object" || len(teach.Diagnostic.NotPersisted) != 1 || teach.Diagnostic.NotPersisted[0] != "invented" {
+		t.Fatalf("nested unknown field did not identify its owning object: %v", err)
 	}
 }
 
@@ -259,6 +281,10 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if _, err := store.ActivateCanonical(ctx, "company-canonical", "builder", "incomplete", "replace-generation", "owner"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("active generation replacement must fail: %v", err)
 	}
+	late := CanonicalImport{ProjectID: "builder", GenerationID: "g1", SourceRevision: input.SourceRevision, OperationID: "import-after-activation", Actor: "migration-agent", Records: []CanonicalImportRecord{canonicalTestRecord(FamilyModule, "late-module", `{"purpose":"Late import"}`)}}
+	if _, err := store.ImportCanonicalDraft(ctx, "company-canonical", late); !errors.Is(err, ErrConflict) {
+		t.Fatalf("active generation accepted a draft import: %v", err)
+	}
 	stillActive, err := store.CanonicalManifest(ctx, "company-canonical", "builder", "")
 	if err != nil || stillActive.GenerationID != "g1" || stillActive.State != "active" {
 		t.Fatalf("rejected activation changed active pointer: %+v, %v", stillActive, err)
@@ -301,12 +327,39 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if repeated, e := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyPolicy, Record: CanonicalRecord{ID: "new-policy", Payload: json.RawMessage(`{"rules":[{"id":"new-rule","status":"planned","statement":"New policy"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`)}, OperationID: "create-1", Actor: "owner"}); e != nil || repeated.Revision != 1 {
 		t.Fatalf("idempotent create=%+v, %v", repeated, e)
 	}
+	badModule := module
+	badModule.Payload = json.RawMessage(`{"purpose":"Owns project work","decisions":[]}`)
+	if _, err := store.EditCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyModule, Record: badModule, ExpectedRevision: 1, OperationID: "edit-remove-referenced-decision", Actor: "owner"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("active edit removed a referenced decision: %v", err)
+	}
+	if _, err := store.DeleteCanonical(ctx, "company-canonical", CanonicalDeleteRequest{ProjectID: "builder", Family: FamilyModule, RecordID: "projects", ExpectedRevision: 1, OperationID: "delete-referenced-module", Actor: "owner"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("delete removed referenced module: %v", err)
+	}
+	if _, err := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyEndpoint, Record: CanonicalRecord{ID: "bad-reference", Payload: json.RawMessage(`{"method":"GET","route":"/missing","host_scope":"api","module_id":"projects","request":[],"response":[],"policy_ids":["missing-policy"]}`)}, OperationID: "create-bad-reference", Actor: "owner"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("endpoint accepted unknown policy reference: %v", err)
+	}
+	if _, err := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyEndpoint, Record: CanonicalRecord{ID: "bad-entity", Payload: json.RawMessage(`{"method":"GET","route":"/missing-entity","host_scope":"api","module_id":"projects","request":[],"response":[],"entity_ids":["absent"]}`)}, OperationID: "create-bad-entity", Actor: "owner"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("endpoint accepted unknown entity reference: %v", err)
+	}
+	deleted, err := store.DeleteCanonical(ctx, "company-canonical", CanonicalDeleteRequest{ProjectID: "builder", Family: FamilyPolicy, RecordID: "new-policy", ExpectedRevision: 1, OperationID: "delete-new-policy", Actor: "owner"})
+	if err != nil || !deleted.Deleted || deleted.Revision != 2 {
+		t.Fatalf("delete=%+v, %v", deleted, err)
+	}
+	if _, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted record remained readable: %v", err)
+	}
+	if repeated, err := store.CreateCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyPolicy, Record: CanonicalRecord{ID: "new-policy", Payload: json.RawMessage(`{"rules":[{"id":"new-rule","status":"planned","statement":"New policy"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`)}, OperationID: "create-1", Actor: "owner"}); err != nil || repeated.Revision != 1 || repeated.Deleted {
+		t.Fatalf("create retry after deletion lost its immutable response: %+v, %v", repeated, err)
+	}
+	if historical, err := store.ReadCanonicalAsOf(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy", 1); err != nil || historical.Deleted {
+		t.Fatalf("deleted record history lost: %+v, %v", historical, err)
+	}
 	restored, err := store.RestoreCanonical(ctx, "company-canonical", CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyMandate, RecordID: "builder", Revision: 1, ExpectedRevision: 2, OperationID: "restore-1", Actor: "owner"})
 	if err != nil || restored.Revision != 3 || canonicalDigest(restored.Payload) != read.ContentDigest {
 		t.Fatalf("restore=%+v, %v", restored, err)
 	}
 	history, err := store.CanonicalHistory(ctx, "company-canonical", "builder", time.Time{}, 100)
-	if err != nil || len(history.Events) != 11 {
+	if err != nil || len(history.Events) != 12 {
 		t.Fatalf("history events=%d, %v", len(history.Events), err)
 	}
 	entity, err := store.ReadCanonicalEntity(ctx, "company-canonical", "builder", "project")
@@ -377,6 +430,48 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	if _, err := store.ReadCanonicalAsOf(ctx, "company-other", "builder", FamilyMandate, "builder", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("historical read crossed Company tenant boundary: %v", err)
+	}
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "parallel", ProjectName: "Parallel", Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	parallel := input
+	parallel.ProjectID, parallel.GenerationID, parallel.OperationID = "parallel", "race", "import-race-base"
+	parallel.Records = append([]CanonicalImportRecord(nil), input.Records...)
+	for i := range parallel.Records {
+		parallel.Records[i].Record.ProjectID, parallel.Records[i].Record.GenerationID = "parallel", "race"
+	}
+	if _, err := store.ImportCanonicalDraft(ctx, "company-canonical", parallel); err != nil {
+		t.Fatal(err)
+	}
+	additional := CanonicalImport{ProjectID: "parallel", GenerationID: "race", SourceRevision: input.SourceRevision, OperationID: "import-race-extra", Actor: "migration-agent", Records: []CanonicalImportRecord{canonicalTestRecord(FamilyModule, "extra", `{"purpose":"Extra module"}`)}}
+	additional.Records[0].Record.ProjectID, additional.Records[0].Record.GenerationID = "parallel", "race"
+	var activateErr, importErr error
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		_, activateErr = store.ActivateCanonical(ctx, "company-canonical", "parallel", "race", "activate-race", "owner")
+	}()
+	go func() {
+		defer group.Done()
+		_, importErr = store.ImportCanonicalDraft(ctx, "company-canonical", additional)
+	}()
+	group.Wait()
+	if activateErr != nil || importErr != nil && !errors.Is(importErr, ErrConflict) {
+		t.Fatalf("concurrent activation/import: activation=%v import=%v", activateErr, importErr)
+	}
+	parallelManifest, err := store.CanonicalManifest(ctx, "company-canonical", "parallel", "")
+	if err != nil || !parallelManifest.Active {
+		t.Fatalf("parallel activation=%+v, %v", parallelManifest, err)
+	}
+	foundExtra := false
+	for _, entry := range parallelManifest.Documents {
+		if entry.Family == FamilyModule && entry.ID == "extra" {
+			foundExtra = true
+		}
+	}
+	if foundExtra != (importErr == nil) {
+		t.Fatalf("import/activation race lost a committed record: import=%v manifest=%+v", importErr, parallelManifest)
 	}
 }
 
