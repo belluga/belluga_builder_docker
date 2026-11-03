@@ -31,7 +31,7 @@ type TODOAdmissionReport struct {
 	SourcePath      string `json:"source_path,omitempty"`
 }
 
-const todoCreationSchemaVersion = "builder-todo-creation-v1"
+const todoCreationSchemaVersion = "builder-todo-creation-v2"
 
 type TODOCreationTemplate struct {
 	SchemaVersion string               `json:"schema_version"`
@@ -40,7 +40,7 @@ type TODOCreationTemplate struct {
 	InitialStage  string               `json:"initial_stage"`
 	Stages        []string             `json:"stages"`
 	Qualifiers    []string             `json:"qualifiers"`
-	SectionShape  map[string]string    `json:"section_shape"`
+	ContentShape  map[string]string    `json:"content_shape"`
 	Limits        map[string]int       `json:"limits"`
 	ReleaseRules  []string             `json:"release_rules"`
 	Example       TODOAdmissionRequest `json:"example"`
@@ -52,13 +52,24 @@ func ProjectTODOCreationTemplate(projectID string) (TODOCreationTemplate, error)
 	}
 	return TODOCreationTemplate{
 		SchemaVersion: todoCreationSchemaVersion,
-		Required:      []string{"todo.id", "todo.project_id", "todo.title", "todo.objective", "todo.next_exact_step", "todo.artifact_type", "todo.stage", "todo.qualifiers", "todo.work_state", "todo.sections", "todo.proof_refs", "todo.waiver_refs", "todo.diff_expectation", "todo.implementation_commits", "todo.affected_files"},
-		Optional:      []string{"todo.release_id", "todo.position"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...),
-		Qualifiers:   append([]string{}, canonicalTODOQualifiers...),
-		SectionShape: map[string]string{"key": "stable snake_case key", "title": "nonempty unique heading", "body_markdown": "UTF-8 Markdown, at most 65536 bytes", "position": "zero-based source order", "ownership": "contract or record"},
-		Limits:       map[string]int{"title_runes": 160, "objective_bytes": 1024, "next_exact_step_bytes": 512, "sections": maxTODOSections, "section_body_bytes": 64 << 10, "proof_references": maxTODOProofs, "record_bytes": maxTODORecordBytes},
+		Required:      []string{"todo.id", "todo.project_id", "todo.title", "todo.objective", "todo.next_exact_step", "todo.artifact_type", "todo.stage", "todo.qualifiers", "todo.work_state", "todo.content.schema_version", "todo.proof_refs", "todo.waiver_refs", "todo.diff_expectation", "todo.implementation_commits", "todo.affected_files"},
+		Optional:      []string{"todo.release_id", "todo.position", "todo.content.context", "todo.content.scope", "todo.content.criteria", "todo.content.validation_scenarios", "todo.content.implementation_plan", "todo.content.decisions", "todo.content.risks", "todo.content.references", "todo.content.architecture"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...),
+		Qualifiers: append([]string{}, canonicalTODOQualifiers...),
+		ContentShape: map[string]string{
+			"schema_version":       "2",
+			"context":              "required before Implementation-Approval-Pending; nonblank UTF-8, at most 16384 bytes",
+			"scope":                "included/excluded arrays; 1..64 included and at most 64 excluded entries",
+			"criteria":             "1..64 unique {id,text} items",
+			"validation_scenarios": "1..64 unique {id,criterion_ids,method,expected}; criterion_ids must resolve",
+			"implementation_plan":  "1..64 ordered unique {id,text} items",
+			"decisions":            "0..32 unique {id,text} items",
+			"risks":                "0..32 unique {id,text,mitigation} items",
+			"references":           "0..64 {kind,ref} items",
+			"architecture":         "optional {decision,rationale,protection}; all fields required together",
+		},
+		Limits:       map[string]int{"title_runes": 160, "objective_bytes": 1024, "next_exact_step_bytes": 512, "context_bytes": 16 << 10, "content_field_bytes": 2048, "scope_entries": 64, "criteria_scenarios_and_plan_entries": 64, "legacy_context_entries": 128, "legacy_body_bytes": 64 << 10, "proof_references": maxTODOProofs, "record_bytes": maxTODORecordBytes},
 		ReleaseRules: []string{"release_id and position are both absent for Backlog", "when assigned, both are required and the Release must belong to this Company and Project", "a Backlog TODO remains Planning until governed attachment"},
-		Example:      TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: TODORecord{ID: "example-todo-id", ProjectID: projectID, Title: "TODO: Example", Objective: "Describe the intended outcome.", NextExactStep: "Perform the next governed action.", ArtifactType: "tactical_execution_contract", Stage: "Planning", Qualifiers: []string{}, WorkState: "planning", Sections: []TODOSection{{Key: "intent", Title: "Intent", BodyMarkdown: "Bounded authoring content.", Position: 0, Ownership: "contract"}}, ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, DiffExpectation: []TODORepositoryScope{}, ImplementationCommits: []TODOCommitReference{}, AffectedFiles: []string{}}},
+		Example:      TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: TODORecord{ID: "example-todo-id", ProjectID: projectID, Title: "TODO: Example", Objective: "Describe the intended outcome.", NextExactStep: "Perform the next governed action.", ArtifactType: "tactical_execution_contract", Stage: "Planning", Qualifiers: []string{}, WorkState: "planning", Sections: []TODOSection{}, Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, DiffExpectation: []TODORepositoryScope{}, ImplementationCommits: []TODOCommitReference{}, AffectedFiles: []string{}}},
 	}, nil
 }
 
@@ -209,7 +220,7 @@ func validateGenericTODOAdmission(record TODORecord) error {
 	if !validName(record.Title) || !validSummaryField(record.Objective, 1024) || !validSummaryField(record.NextExactStep, 512) || record.ArtifactType != "tactical_execution_contract" || !containsTODOString(canonicalTODOStages, record.Stage) || !validSummaryField(record.WorkState, 128) {
 		return todoTeach("todo.title/objective/next_exact_step/artifact_type/stage/work_state", "provide typed fields within the canonical TODO limits", ErrInvalid)
 	}
-	if record.Qualifiers == nil || record.Sections == nil || len(record.Sections) > maxTODOSections || len(record.ProofReferences)+len(record.WaiverReferences)+len(record.ImplementationCommits) > maxTODOProofs {
+	if record.Qualifiers == nil || record.Sections == nil || record.Content != nil && len(record.Sections) != 0 || len(record.Sections) > maxTODOSections || len(record.ProofReferences)+len(record.WaiverReferences)+len(record.ImplementationCommits) > maxTODOProofs {
 		return todoTeach("todo.qualifiers/sections/proof_refs", "use non-null bounded arrays and at most 128 sections and 64 evidence references", ErrInvalid)
 	}
 	seenQualifiers := map[string]bool{}
@@ -266,6 +277,12 @@ func validateGenericTODOAdmission(record TODORecord) error {
 func validateMongoTODOCreation(record TODORecord) error {
 	if record.Stage != "Planning" || record.Source != (TODOSource{}) {
 		return todoTeach("todo.stage/source", "start at Planning and omit all caller-authored provenance", ErrInvalid)
+	}
+	if record.Content == nil {
+		return todoTeach("todo.content", "provide a schema-v2 typed content object", ErrInvalid)
+	}
+	if err := ValidateTODOContentDraft(*record.Content); err != nil {
+		return err
 	}
 	return validateGenericTODOAdmission(record)
 }

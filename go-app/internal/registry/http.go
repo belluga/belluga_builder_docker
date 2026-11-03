@@ -27,6 +27,14 @@ type individualTODOAdmitter interface {
 	AdmitTODO(context.Context, string, string, TODOAdmissionRequest) (TODOAdmissionReport, error)
 }
 
+type historicalTODOStageAdopter interface {
+	AdoptHistoricalTODOStages(context.Context, string, HistoricalTODOAdoptionRequest) (HistoricalTODOAdoptionResponse, error)
+}
+
+type todoContentMigrator interface {
+	MigrateTODOContent(context.Context, string, TODOContentMigrationRequest) (TODOContentEditResponse, error)
+}
+
 type todoCreationTemplateReader interface {
 	TODOCreationTemplate(context.Context, string, string) (TODOCreationTemplate, error)
 }
@@ -81,6 +89,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
 	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos", h.admitTODO)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/historical-adoption", h.adoptHistoricalTODOStages)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", h.todoCreationTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}", h.readTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition", h.transitionTODO)
@@ -89,6 +98,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}", h.readTODOAsOf)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history", h.readTODOHistory)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content", h.editTODOContent)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate", h.migrateTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
@@ -253,6 +263,25 @@ func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, value, err)
 }
 
+func (h *Handler) adoptHistoricalTODOStages(w http.ResponseWriter, r *http.Request) {
+	adopter, ok := h.service.(historicalTODOStageAdopter)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input HistoricalTODOAdoptionRequest
+	if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		return
+	}
+	projectID := strings.TrimSpace(r.PathValue("projectID"))
+	if input.ProjectID != projectID {
+		h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+		return
+	}
+	value, err := adopter.AdoptHistoricalTODOStages(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
 func (h *Handler) todoCreationTemplate(w http.ResponseWriter, r *http.Request) {
 	reader, ok := h.service.(todoCreationTemplateReader)
 	if !ok {
@@ -398,6 +427,24 @@ func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) migrateTODOContent(w http.ResponseWriter, r *http.Request) {
+	migrator, ok := h.service.(todoContentMigrator)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOContentMigrationRequest
+	if !h.decodeLimit(w, r, &input, maxRequestBody) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identities", ErrConflict))
+		return
+	}
+	value, err := migrator.MigrateTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

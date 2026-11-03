@@ -110,7 +110,7 @@ describe("single root Project experience", () => {
   it("reads a Planning Backlog TODO from its exact Mongo revision without approval or Reader", async () => {
     const registryRoadmap = roadmap("builder");
     registryRoadmap.backlog.todos.push({ id: "schema-study", title: "Schema study", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Inspect schema", objective_state: "complete", next_step: "Review fields", next_step_state: "complete", ...verifiedStage("Planning") } as typeof registryRoadmap.backlog.todos[number]);
-    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: "a".repeat(64), todo: { id: "schema-study", project_id: "builder", revision: 0, title: "Schema study", objective: "Inspect schema", next_exact_step: "Review fields", stage: "Planning", sections: [{ key: "objective", title: "Objective", body_markdown: "Inspect the typed schema fields.", position: 0 }] } };
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: "a".repeat(64), todo: { id: "schema-study", project_id: "builder", revision: 0, title: "Schema study", objective: "Inspect schema", next_exact_step: "Review fields", stage: "Planning", content: { schema_version: 2, context: "Typed contract context", scope: { included: ["typed fields"], excluded: [] }, criteria: [{ id: "criterion-one", text: "Typed criterion body" }], validation_scenarios: [], implementation_plan: [], decisions: [], risks: [], references: [], architecture: { decision: "Keep schema validation at the registry boundary.", rationale: "One canonical contract owner.", protection: "Reject malformed versions before persistence." } }, sections: [{ key: "objective", title: "Legacy", body_markdown: "Do not use the legacy section when typed content is available.", position: 0 }] } };
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ diagnostic: "Reader unavailable" }) };
@@ -120,7 +120,12 @@ describe("single root Project experience", () => {
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=todo&todo_id=schema-study");
     render(<Projects />);
-    expect(await screen.findByText("Inspect the typed schema fields.")).toBeInTheDocument();
+    expect(await screen.findByText("Typed contract context")).toBeInTheDocument();
+    expect(await screen.findByText("Keep schema validation at the registry boundary.")).toBeInTheDocument();
+    expect(screen.getByText("Typed criterion body")).toBeInTheDocument();
+    expect(screen.getByText("Do not use the legacy section when typed content is available.")).not.toBeVisible();
+    fireEvent.click(screen.getByText("Show preserved v1 sections"));
+    expect(screen.getByText("Do not use the legacy section when typed content is available.")).toBeInTheDocument();
     const exactCall = fetcher.mock.calls.map(([input]) => new URL(String(input), location.origin)).find((url) => url.searchParams.has("todo_id"));
     expect(exactCall?.searchParams.get("todo_revision")).toBe("0");
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);

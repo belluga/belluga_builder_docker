@@ -72,7 +72,8 @@ func mongoBornTODOFixture() TODORecord {
 	record.NextExactStep = "Review the approved section contract."
 	record.Stage = "Planning"
 	record.StageVerification = ""
-	record.Sections = []TODOSection{{Key: "analysis", Title: "Analysis", BodyMarkdown: "Bounded analysis contract.", Position: 0, Ownership: "contract"}}
+	record.Sections = []TODOSection{}
+	record.Content = &TODOContent{SchemaVersion: todoContentSchemaVersion}
 	return record
 }
 
@@ -153,7 +154,7 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/internal/v1/companies/belluga-solutions/projects/builder/todos/template", nil)
 	response := httptest.NewRecorder()
 	NewHandler(service).ServeHTTP(response, request)
-	if response.Code != http.StatusOK || service.companyID != "belluga-solutions" || service.projectID != "builder" || !strings.Contains(response.Body.String(), `"schema_version":"builder-todo-creation-v1"`) {
+	if response.Code != http.StatusOK || service.companyID != "belluga-solutions" || service.projectID != "builder" || !strings.Contains(response.Body.String(), `"schema_version":"builder-todo-creation-v2"`) {
 		t.Fatalf("Project creation template response = %d %s; company=%q project=%q", response.Code, response.Body.String(), service.companyID, service.projectID)
 	}
 }
@@ -524,7 +525,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 
 	editedFlowTODO := admitImportedTODO("builder-mongo-imported-edited-flow", 5)
 	flowRead, err := store.ReadTODO(ctx, "company-a", "builder", editedFlowTODO.ID, nil)
-	if err != nil || flowRead.ContentRevision != nil || flowRead.TODO.Source.Foundation != "builder" {
+	if err != nil || flowRead.ContentRevision == nil || *flowRead.ContentRevision != 0 || !validSourceDigest(flowRead.ContentDigest) || flowRead.TODO.Content != nil || flowRead.TODO.Source.Foundation != "builder" {
 		t.Fatalf("unmodified imported TODO read = %+v, %v", flowRead, err)
 	}
 	flowContent := contentFromTODO(flowRead.TODO)
@@ -599,6 +600,8 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("Mongo Project creation template = %+v, %v", creationTemplate, err)
 	}
 	mongoBorn := mongoBornTODOFixture()
+	completeMongoBornContent := validTODOContent()
+	mongoBorn.Content = &completeMongoBornContent
 	setTODOValidator(TODOCollectionValidatorBeforeCreation())
 	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: historyValidatorBeforeContentDigest(TODOContentVersionsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatalf("set pre-creation content-version validator: %v", err)
@@ -618,7 +621,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("Mongo-born Planning baseline lacks its Mongo creation proof: %+v, %v", mongoCreationEvent, err)
 	}
 	mongoRead, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
-	if err != nil || mongoRead.TODO.Stage != "Planning" || mongoRead.TODO.StageVerification != "verified" || mongoRead.TODO.Source.Kind != "mongo-content-revision" || mongoRead.TODO.Source.Path != "" || mongoRead.TODO.ReleaseID != "" || mongoRead.TODO.Position != nil || mongoRead.ContentRevision == nil || *mongoRead.ContentRevision != 0 || mongoRead.ContentDigest != mongoAdmission.ContentDigest {
+	if err != nil || mongoRead.TODO.Stage != "Planning" || mongoRead.TODO.StageVerification != "verified" || mongoRead.TODO.Source.Kind != "mongo-content-revision" || mongoRead.TODO.Source.Path != "" || mongoRead.TODO.ReleaseID != "" || mongoRead.TODO.Position != nil || mongoRead.ContentRevision == nil || *mongoRead.ContentRevision != 0 || mongoRead.ContentDigest != mongoAdmission.ContentDigest || mongoRead.TODO.Content == nil || mongoRead.TODO.Content.Context != completeMongoBornContent.Context {
 		t.Fatalf("Mongo-born Planning detail = %+v, %v", mongoRead, err)
 	}
 	var backlogRoadmap struct {
@@ -745,6 +748,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	updatedMongoContent := contentFromTODO(currentMongoRead.TODO)
 	updatedMongoContent.Title += " revised"
+	updatedMongoContent.Context += " Updated typed context."
 	fourMongoRevision := int64(4)
 	contentEdit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &fourMongoRevision, OperationID: "mongo-content-edit-001", Content: updatedMongoContent, Reason: "Change authored contract content"})
 	if err != nil || contentEdit.Revision != 5 || contentEdit.ContentRevision == nil || *contentEdit.ContentRevision != 5 || !validSourceDigest(contentEdit.ContentDigest) {
@@ -768,7 +772,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("content edit did not record its Planning transition: %+v, %v", editHistory, err)
 	}
 	reviewComparison, err := store.CompareTODOHistory(ctx, "company-a", "builder", mongoBorn.ID, 4, 5)
-	if err != nil || !reflect.DeepEqual(reviewComparison.Changed, []string{"stage", "title", "verified_transition_ref"}) {
+	if err != nil || !reflect.DeepEqual(reviewComparison.Changed, []string{"context", "stage", "title", "verified_transition_ref"}) {
 		t.Fatalf("reviewed-to-revised comparison = %+v, %v", reviewComparison, err)
 	}
 	var editedMongoVersion TODOContentVersion
@@ -1118,7 +1122,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: planning}); err != nil {
 		t.Fatalf("create Planning regression TODO: %v", err)
 	}
-	planningContent := contentFromTODO(planning)
+	planningContent := TODOAuthoredContent{TODOContent: validTODOContent(), Title: planning.Title, Objective: planning.Objective, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
 	planningContent.Objective = "Refined while still in Planning"
 	zeroPlanning := int64(0)
 	if _, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &zeroPlanning, OperationID: "planning-edit-001", Content: planningContent, Reason: "Refine before approval"}); err != nil {
