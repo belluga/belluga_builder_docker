@@ -59,15 +59,17 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 const maxSnapshotReferenceBytes = 128 << 10
 
 type projectDocument struct {
-	ObjectID              bson.ObjectID `bson:"_id,omitempty"`
-	ID                    string        `bson:"id"`
-	Name                  string        `bson:"name"`
-	CompanyID             string        `bson:"company_id"`
-	Binding               Binding       `bson:"binding"`
-	RegisteredAt          time.Time     `bson:"registered_at"`
-	PreparationState      string        `bson:"preparation_state"`
-	PreparationDiagnostic string        `bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint   string        `bson:"snapshot_fingerprint,omitempty"`
+	ObjectID              bson.ObjectID     `bson:"_id,omitempty"`
+	ID                    string            `bson:"id"`
+	Name                  string            `bson:"name"`
+	CompanyID             string            `bson:"company_id"`
+	RoadmapRevision       int64             `bson:"roadmap_revision,omitempty"`
+	RoadmapLastOperation  *roadmapOperation `bson:"roadmap_last_operation,omitempty"`
+	Binding               Binding           `bson:"binding"`
+	RegisteredAt          time.Time         `bson:"registered_at"`
+	PreparationState      string            `bson:"preparation_state"`
+	PreparationDiagnostic string            `bson:"preparation_diagnostic,omitempty"`
+	SnapshotFingerprint   string            `bson:"snapshot_fingerprint,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -105,7 +107,8 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 	}
 	document := projectDocument{
 		ObjectID: objectID, ID: project.ID, Name: project.Name, CompanyID: project.CompanyID,
-		RegisteredAt: time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
+		RoadmapRevision: project.RoadmapRevision,
+		RegisteredAt:    time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
 		PreparationDiagnostic: project.PreparationDiagnostic, SnapshotFingerprint: project.SnapshotFingerprint,
 	}
 	if project.Binding == nil || !validBinding(*project.Binding) {
@@ -122,6 +125,7 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 func (p projectDocument) toAPI() Project {
 	return Project{
 		ID: p.ID, Name: p.Name, CompanyID: p.CompanyID,
+		RoadmapRevision:  p.RoadmapRevision,
 		Binding:          &p.Binding,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
@@ -509,6 +513,10 @@ func (m *MongoStore) UpdateLifecycleControl(ctx context.Context, revision int64,
 }
 
 func (m *MongoStore) Roadmap(ctx context.Context, id, companyID string) (json.RawMessage, error) {
+	return m.readRoadmap(ctx, id, companyID, true)
+}
+
+func (m *MongoStore) readRoadmap(ctx context.Context, id, companyID string, retry bool) (json.RawMessage, error) {
 	if !validID(id) || !validID(companyID) {
 		return nil, ErrInvalid
 	}
@@ -561,7 +569,17 @@ func (m *MongoStore) Roadmap(ctx context.Context, id, companyID string) (json.Ra
 	if err != nil {
 		return nil, err
 	}
-	return projectRoadmap(id, epics, releases, todos)
+	latest, err := m.Project(ctx, companyID, id)
+	if err != nil {
+		return nil, err
+	}
+	if latest.RoadmapRevision != project.RoadmapRevision {
+		if retry {
+			return m.readRoadmap(ctx, id, companyID, false)
+		}
+		return nil, ErrConflict
+	}
+	return projectRoadmap(id, project.RoadmapRevision, epics, releases, todos)
 }
 
 func (m *MongoStore) ResolveTenant(ctx context.Context, request TenantRequest) (TenantResolution, error) {
@@ -697,7 +715,7 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 func sanitizeProject(project Project) Project { project.Binding = nil; return project }
 func sanitizeCompany(company Company) Company { company.DatabaseName = ""; return company }
 func normalizeMongoError(err error) error {
-	if errors.Is(err, ErrInvalid) || errors.Is(err, ErrConflict) {
+	if errors.Is(err, ErrInvalid) || errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
 		return err
 	}
 	var write mongo.WriteException

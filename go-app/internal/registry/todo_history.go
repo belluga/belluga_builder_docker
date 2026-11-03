@@ -171,7 +171,7 @@ type TODOHistoryPreflightReport struct {
 func contentFromTODO(record TODORecord) TODOAuthoredContent {
 	sections := make([]TODOSection, 0, len(record.Sections))
 	for _, section := range record.Sections {
-		if sectionOwnership(section) == "contract" && !historyRenderOnlySection(section.Key, section.Title) {
+		if sectionOwnership(section) == "contract" && !historyRecordSection(section.Key, section.Title) && !historyRenderOnlySection(section.Key, section.Title) {
 			section.Ownership = "contract"
 			section.Position = len(sections)
 			sections = append(sections, section)
@@ -974,13 +974,33 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	storedContent := withContractOwnership(request.Content)
+	contentDigest, err := todoContentRevisionDigest(record.ProjectID, record.ID, nextRevision, storedContent)
+	if err != nil {
+		return TODOContentEditResponse{}, ErrInvalid
+	}
+	reopensPlanning := record.Source.Kind == "mongo-content-revision" && record.Stage == "Implementation-Approval-Pending"
+	var planningProof *TODOProofReference
+	if reopensPlanning {
+		planningProof = &TODOProofReference{
+			Kind: "planning-stage", Source: "mongo-content-revision",
+			Reference:    fmt.Sprintf("%s/%s/content/%d", record.ProjectID, record.ID, nextRevision),
+			SourceDigest: contentDigest, VerificationState: "verified",
+		}
+	}
 	operation := TODOOperationState{ID: request.OperationID, Kind: "content-edit", RequestDigest: digest, ResultRevision: nextRevision}
 	setFields := bson.D{{Key: "title", Value: request.Content.Title}, {Key: "objective", Value: request.Content.Objective}, {Key: "sections", Value: updatedSections}, {Key: "diff_expectation", Value: request.Content.DiffExpectation}, {Key: "affected_files", Value: request.Content.AffectedFiles}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
-	if invalidatesContentApproval(record) {
+	if reopensPlanning {
+		setFields = append(setFields,
+			bson.E{Key: "stage", Value: "Planning"},
+			bson.E{Key: "stage_verification", Value: "verified"},
+			bson.E{Key: "verified_transition_ref", Value: planningProof},
+		)
+	} else if invalidatesContentApproval(record) {
 		setFields = append(setFields, bson.E{Key: "stage_verification", Value: "unverified"})
 	}
 	update := bson.D{{Key: "$set", Value: setFields}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
-	if invalidatesContentApproval(record) {
+	if !reopensPlanning && invalidatesContentApproval(record) {
 		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}})
 	}
 	session, err := m.client.StartSession()
@@ -996,18 +1016,18 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		if result.MatchedCount != 1 {
 			return nil, &todoRevisionConflict{Revision: nextRevision}
 		}
-		storedContent := withContractOwnership(request.Content)
-		contentDigest, digestErr := todoContentRevisionDigest(record.ProjectID, record.ID, nextRevision, storedContent)
-		if digestErr != nil {
-			return nil, ErrInvalid
-		}
 		version := TODOContentVersion{ObjectID: bson.NewObjectID(), ProjectID: record.ProjectID, TODOID: record.ID, Revision: nextRevision, Digest: contentDigest, Content: storedContent}
 		if _, err := database.Collection(todoContentVersionsCollection).InsertOne(txCtx, version); err != nil {
 			return nil, normalizeMongoError(err)
 		}
 		contentRevision := nextRevision
 		changes := TODOHistoryChanges{}
-		if invalidatesContentApproval(record) {
+		if reopensPlanning {
+			planning, verified := "Planning", "verified"
+			changes.Stage = &planning
+			changes.StageVerification = &verified
+			changes.VerifiedTransitionRef = planningProof
+		} else if invalidatesContentApproval(record) {
 			unverified := "unverified"
 			changes.StageVerification = &unverified
 			changes.ClearVerifiedTransitionRef = true
@@ -1023,11 +1043,6 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	}
 	response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: nextRevision}
 	if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
-		storedContent := withContractOwnership(request.Content)
-		contentDigest, digestErr := todoContentRevisionDigest(record.ProjectID, record.ID, nextRevision, storedContent)
-		if digestErr != nil {
-			return TODOContentEditResponse{}, ErrInvalid
-		}
 		contentRevision := nextRevision
 		response.ContentRevision, response.ContentDigest = &contentRevision, contentDigest
 	}
@@ -1072,6 +1087,9 @@ func validateNewAuthoredContent(content TODOAuthoredContent) error {
 	for i, section := range content.Sections {
 		if section.Ownership != "contract" {
 			return todoTeach(fmt.Sprintf("content.sections[%d].ownership", i), "explicitly classify every authored edit section as contract", ErrInvalid)
+		}
+		if historyRecordSection(section.Key, section.Title) || historyRenderOnlySection(section.Key, section.Title) {
+			return todoTeach(fmt.Sprintf("content.sections[%d]", i), "omit record-owned sections from authored content; they are retained separately", ErrInvalid)
 		}
 	}
 	return nil

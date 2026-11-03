@@ -54,6 +54,10 @@ type todoRecordMutationService interface {
 	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
 }
 
+type roadmapChangeService interface {
+	ChangeRoadmap(context.Context, string, string, RoadmapChange) (RoadmapChangeResult, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -65,6 +69,14 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/lifecycle-control", h.lifecycleControl)
 	mux.HandleFunc("PUT /internal/v1/lifecycle-control", h.updateLifecycleControl)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap", h.roadmap)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics", h.roadmapChange("create-epic"))
+	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}", h.roadmapChange("edit-epic"))
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/order", h.roadmapChange("order-epics"))
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}", h.roadmapChange("delete-epic"))
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases", h.roadmapChange("create-release"))
+	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("edit-release"))
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order", h.roadmapChange("order-releases"))
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("delete-release"))
 	mux.HandleFunc("GET /internal/v1/tenants/resolve", h.resolveTenant)
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
 	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
@@ -82,6 +94,49 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
 	return mux
+}
+
+func (h *Handler) roadmapChange(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		service, ok := h.service.(roadmapChangeService)
+		if !ok {
+			h.writeError(w, ErrUnavailable)
+			return
+		}
+		var input RoadmapChange
+		if !h.decodeLimit(w, r, &input, maxRequestBody) {
+			return
+		}
+		projectID := strings.TrimSpace(r.PathValue("projectID"))
+		if input.ProjectID != projectID {
+			h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+			return
+		}
+		if epicID := r.PathValue("epicID"); epicID != "" {
+			if action == "edit-epic" || action == "delete-epic" {
+				if input.ID != "" && input.ID != epicID {
+					h.writeError(w, todoTeach("id", "match the Epic path identity", ErrConflict))
+					return
+				}
+				input.ID = epicID
+			} else {
+				if input.EpicID != "" && input.EpicID != epicID {
+					h.writeError(w, todoTeach("epic_id", "match the Epic path identity", ErrConflict))
+					return
+				}
+				input.EpicID = epicID
+			}
+		}
+		if releaseID := r.PathValue("releaseID"); releaseID != "" {
+			if input.ID != "" && input.ID != releaseID {
+				h.writeError(w, todoTeach("id", "match the Release path identity", ErrConflict))
+				return
+			}
+			input.ID = releaseID
+		}
+		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
+		h.respond(w, value, err)
+	}
 }
 
 type errorResponse struct {

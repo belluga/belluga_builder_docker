@@ -155,6 +155,13 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		} else if err := validateTODOProjectMembership(txCtx, database, companyID, projectID); err != nil {
 			return nil, err
 		}
+		var project projectDocument
+		if err := database.Collection(projectsCollection).FindOne(txCtx, bson.D{{Key: "id", Value: projectID}, {Key: "company_id", Value: companyID}}).Decode(&project); err != nil {
+			return nil, ErrUnavailable
+		}
+		if err := bumpRoadmapRevision(txCtx, database, companyID, projectID, project.RoadmapRevision); err != nil {
+			return nil, err
+		}
 		var existing TODORecord
 		findErr := collection.FindOne(txCtx, bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: record.ID}}).Decode(&existing)
 		if findErr == nil {
