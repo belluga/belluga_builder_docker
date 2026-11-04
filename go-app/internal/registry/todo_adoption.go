@@ -9,7 +9,6 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
-	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 // HistoricalTODOAdoptionRequest is a separately governed acceptance of
@@ -51,10 +50,23 @@ type TODOHistoricalAdoptionPermission struct {
 	Decision string
 }
 
+type TODOAdministrativePermission struct {
+	Allowed  bool
+	Decision string
+}
+
+// authorizeTODOAdministrativeOperation is the pre-IAM seam shared by private,
+// explicitly audited TODO administration routes. Keep operation intent
+// explicit so a future policy can distinguish these actions.
+func authorizeTODOAdministrativeOperation(_ context.Context, _ string, _ string, _ string) TODOAdministrativePermission {
+	return TODOAdministrativePermission{Allowed: true, Decision: "pre-iam-private-api-allow-all"}
+}
+
 // canAdoptHistoricalTODO is the private pre-IAM permission seam. Its explicit
 // company, project, and operation intent inputs are the future policy boundary.
-func canAdoptHistoricalTODO(_ context.Context, _ string, _ string, _ string) TODOHistoricalAdoptionPermission {
-	return TODOHistoricalAdoptionPermission{Allowed: true, Decision: "pre-iam-private-api-allow-all"}
+func canAdoptHistoricalTODO(ctx context.Context, companyID, projectID, intent string) TODOHistoricalAdoptionPermission {
+	permission := authorizeTODOAdministrativeOperation(ctx, companyID, projectID, intent)
+	return TODOHistoricalAdoptionPermission{Allowed: permission.Allowed, Decision: permission.Decision}
 }
 
 func validateHistoricalTODOAdoption(request HistoricalTODOAdoptionRequest) error {
@@ -133,7 +145,19 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 			if record.Revision != item.ExpectedRevision {
 				return HistoricalTODOAdoptionResponse{}, &todoRevisionConflict{Revision: record.Revision}
 			}
-			if err := validateHistoricalTODOAdoptionTarget(record, item); err != nil {
+			contentRevision, contentDigest, contentRef, authorityErr := requireCurrentTypedTODOStageAuthority(ctx, database, record)
+			if authorityErr != nil {
+				return HistoricalTODOAdoptionResponse{}, authorityErr
+			}
+			var migration TODOHistoryEvent
+			migrationErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: request.ProjectID}, {Key: "todo_id", Value: item.TODOID}, {Key: "kind", Value: todoContentMigrationEventKind}}).Decode(&migration)
+			if errors.Is(migrationErr, mongo.ErrNoDocuments) {
+				return HistoricalTODOAdoptionResponse{}, todoTeach("items[].todo_id", "use historical adoption only for a TODO with a governed Mongo content-migration event; newly authored TODOs use ordinary stage verification and transitions", ErrConflict)
+			}
+			if migrationErr != nil {
+				return HistoricalTODOAdoptionResponse{}, ErrUnavailable
+			}
+			if err := validateHistoricalTODOAdoptionTarget(record, item, contentRef, contentDigest); err != nil {
 				return HistoricalTODOAdoptionResponse{}, err
 			}
 			if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
@@ -142,18 +166,8 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 			if err := requireTODOHistoryBaseline(ctx, database, record); err != nil {
 				return HistoricalTODOAdoptionResponse{}, err
 			}
-			var contentVersion TODOContentVersion
-			if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: request.ProjectID}, {Key: "todo_id", Value: item.TODOID}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&contentVersion); err != nil {
-				if errors.Is(err, mongo.ErrNoDocuments) {
-					return HistoricalTODOAdoptionResponse{}, todoTeach("history.content_version", "have an exact immutable content revision before historical adoption", ErrConflict)
-				}
-				return HistoricalTODOAdoptionResponse{}, ErrUnavailable
-			}
-			if contentVersion.Revision < 0 || contentVersion.Revision > record.Revision {
-				return HistoricalTODOAdoptionResponse{}, todoTeach("history.content_version.revision", "be nonnegative and not exceed the TODO aggregate revision before historical adoption", ErrConflict)
-			}
 			records[i] = record
-			contentRevisions[i] = contentVersion.Revision
+			contentRevisions[i] = contentRevision
 		}
 	}
 	if existingEvents != 0 && existingEvents != len(request.Items) {
@@ -172,7 +186,7 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 		for i, item := range request.Items {
 			record := records[i]
 			nextRevision := record.Revision + 1
-			proof := TODOProofReference{Kind: "historical-adoption", Source: todoHistoricalSourceName(record.Source), Reference: item.SourceReference, SourceDigest: item.SourceDigest, VerificationState: "verified"}
+			proof := TODOProofReference{Kind: "historical-adoption", Source: "mongo-content-revision", Reference: item.SourceReference, SourceDigest: item.SourceDigest, VerificationState: "verified"}
 			operation := TODOOperationState{ID: request.OperationID, Kind: "historical-adoption", RequestDigest: digest, ResultRevision: nextRevision}
 			update := bson.D{{Key: "$set", Value: bson.D{{Key: "stage", Value: item.RequestedStage}, {Key: "stage_verification", Value: "verified"}, {Key: "verified_transition_ref", Value: proof}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 			result, updateErr := collection.UpdateOne(txCtx, bson.D{{Key: "_id", Value: record.ObjectID}, {Key: "project_id", Value: request.ProjectID}, {Key: "id", Value: item.TODOID}, {Key: "revision", Value: item.ExpectedRevision}}, update)
@@ -200,15 +214,15 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 	return response, nil
 }
 
-func validateHistoricalTODOAdoptionTarget(record TODORecord, item HistoricalTODOAdoptionItem) error {
-	if record.Source.Kind == "mongo-content-revision" || todoHistoricalSourceName(record.Source) == "" || !validSourceDigest(record.Source.Digest) {
-		return todoTeach("todo.source", "refer to an existing immutable non-Mongo source for historical adoption", ErrConflict)
+func validateHistoricalTODOAdoptionTarget(record TODORecord, item HistoricalTODOAdoptionItem, currentReference, currentDigest string) error {
+	if record.Source.Kind != "mongo-content-revision" || record.Content == nil || record.Content.SchemaVersion != todoContentSchemaVersion {
+		return todoTeach("todo.content", "have exact current typed Mongo v2 content before historical stage adoption", ErrConflict)
 	}
 	if record.StageVerification == "verified" || record.VerifiedTransitionRef != nil {
 		return todoTeach("todo.stage_verification", "be unverified and have no prior verified stage reference before historical adoption", ErrConflict)
 	}
-	if todoHistoricalSourceReference(record.Source) != item.SourceReference || record.Source.Digest != item.SourceDigest {
-		return todoTeach("items[].source_reference/source_digest", "match the exact immutable source already admitted for this TODO", ErrConflict)
+	if currentReference != item.SourceReference || currentDigest != item.SourceDigest {
+		return todoTeach("items[].source_reference/source_digest", "match this TODO's exact current immutable typed Mongo v2 content revision and digest", ErrConflict)
 	}
 	return nil
 }

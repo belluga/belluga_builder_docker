@@ -54,8 +54,8 @@ func TestHistoricalAdoptionValidatesPinnedBooraPilotSourceWithoutStageInference(
 		t.Fatalf("pinned source reference = %q; want canonical source identity %q (original Git repository: %s)", request.Items[0].SourceReference, want, historicalPilotGitRepo)
 	}
 	record := TODORecord{ID: historicalPilotTODOID, ProjectID: "boora", Source: source, Stage: "Planning", StageVerification: "unverified"}
-	if err := validateHistoricalTODOAdoptionTarget(record, request.Items[0]); err != nil {
-		t.Fatalf("pinned legacy target rejected: %v", err)
+	if err := validateHistoricalTODOAdoptionTarget(record, request.Items[0], request.Items[0].SourceReference, request.Items[0].SourceDigest); err == nil {
+		t.Fatal("Foundation source was accepted as operational stage authority")
 	}
 	if request.Items[0].RequestedStage != "Local-Implemented" {
 		t.Fatal("pilot stage must be explicitly taken from source evidence, never inferred from the `completed` folder")
@@ -73,7 +73,7 @@ func TestHistoricalAdoptionRequestRejectsMongoBornAndVerifiedTargets(t *testing.
 		"already verified": {ID: item.TODOID, ProjectID: "boora", Source: TODOSource{Foundation: "foundation", Revision: historicalPilotRevision, Path: historicalPilotPath, Digest: item.SourceDigest}, StageVerification: "verified", VerifiedTransitionRef: &TODOProofReference{Kind: "old-proof", Source: "test", Reference: item.SourceReference, SourceDigest: item.SourceDigest, VerificationState: "verified"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateHistoricalTODOAdoptionTarget(record, item); err == nil {
+			if err := validateHistoricalTODOAdoptionTarget(record, item, item.SourceReference, item.SourceDigest); err == nil {
 				t.Fatal("historical adoption accepted a Mongo-born or already verified TODO")
 			}
 		})
@@ -167,9 +167,11 @@ func bsonDValue(document bson.D, key string) any {
 
 func TestHistoricalAdoptionValidatorsRecognizeExactPredecessors(t *testing.T) {
 	for name, validators := range map[string]struct{ current, previous bson.D }{
-		"todo collection":   {TODOCollectionValidator(), TODOCollectionValidatorBeforeHistoricalAdoption()},
-		"history events":    {TODOEventsValidator(), historyValidatorBeforeHistoricalAdoption(TODOEventsValidator())},
-		"migration lineage": {TODOEventsValidator(), historyValidatorBeforeContentMigration(TODOEventsValidator())},
+		"todo collection":                                    {TODOCollectionValidator(), TODOCollectionValidatorBeforeHistoricalAdoption()},
+		"repository identity":                                {TODOCollectionValidator(), TODOCollectionValidatorBeforeRepositoryIdentity()},
+		"history planning and repository identity":           {TODOContentVersionsValidator(), contentVersionsValidatorBeforePlanningAndRepositoryIdentity()},
+		"history events":                                     {TODOEventsValidator(), historyValidatorBeforeHistoricalAdoption(TODOEventsValidator())},
+		"migration lineage":                                  {TODOEventsValidator(), historyValidatorBeforeContentMigration(TODOEventsValidator())},
 		"combined pre-adoption/pre-migration history events": {TODOEventsValidator(), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(TODOEventsValidator()))},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -321,21 +323,15 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("fixture is not a valid stored imported TODO: %v (%+v)", err, admitted)
 	}
 	request := HistoricalTODOAdoptionRequest{ProjectID: "boora", OperationID: "pilot-adopt-001", Reason: "Accept the exact source-recorded Local-Implemented stage as historical state; this is not fresh proof.", HistoricalAcceptance: true, Items: []HistoricalTODOAdoptionItem{{TODOID: record.ID, ExpectedRevision: 0, RequestedStage: "Local-Implemented", SourceReference: todoHistoricalSourceReference(source), SourceDigest: source.Digest}}}
-	first, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request)
-	if err != nil || len(first.Results) != 1 || first.Results[0].Revision != 1 || first.Results[0].Stage != "Local-Implemented" {
-		t.Fatalf("historical pilot adoption = %+v, %v", first, err)
-	}
-	second, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request)
-	if err != nil || !second.NoOp || len(second.Results) != 1 || !second.Results[0].NoOp {
-		t.Fatalf("historical pilot retry = %+v, %v", second, err)
+	if _, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "source/content_revision") {
+		t.Fatalf("v1 Foundation subject was accepted for historical stage adoption: %v", err)
 	}
 	read, err := store.ReadTODO(ctx, "belluga-solutions", "boora", record.ID, nil)
-	if err != nil || read.TODO.Stage != "Local-Implemented" || read.TODO.StageVerification != "verified" || read.TODO.Source.Digest != source.Digest || read.TODO.VerifiedTransitionRef == nil || read.TODO.VerifiedTransitionRef.Kind != "historical-adoption" || len(read.TODO.ProofReferences) != 0 || len(read.TODO.ImplementationCommits) != 0 {
-		t.Fatalf("historical pilot readback = %+v, %v", read, err)
+	if err != nil || read.TODO.Stage != "Planning" || read.TODO.Revision != 0 || read.TODO.StageVerification != "unverified" || read.TODO.VerifiedTransitionRef != nil {
+		t.Fatalf("refused v1 historical adoption changed operational state: %+v, %v", read.TODO, err)
 	}
-	var event TODOHistoryEvent
-	if err := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: "historical-adoption"}}).Decode(&event); err != nil || event.ProofReference == nil || event.ProofReference.SourceDigest != source.Digest || event.Reason != request.Reason || event.PermissionDecision != "pre-iam-private-api-allow-all" || event.ActorClaim != nil || event.ContentRevision == nil || *event.ContentRevision != 0 || event.OccurredAt.IsZero() {
-		t.Fatalf("historical adoption event = %+v, %v", event, err)
+	if count, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: "historical-adoption"}}); err != nil || count != 0 {
+		t.Fatalf("refused v1 adoption wrote %d historical events: %v", count, err)
 	}
 	// Ordinary content edits cannot convert a v1 record; the governed migration
 	// preserves the reviewed operational stage and immutable source bytes.
@@ -360,12 +356,12 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		DiffExpectation: oldVersion.Content.DiffExpectation,
 		AffectedFiles:   oldVersion.Content.AffectedFiles,
 	}
-	editRevision := int64(1)
+	editRevision := int64(0)
 	if _, err := store.EditTODOContent(ctx, "belluga-solutions", TODOContentEditRequest{ProjectID: "boora", TODOID: record.ID, ExpectedRevision: &editRevision, OperationID: "pilot-content-edit-001", Content: converted, Reason: "Test that ordinary edits cannot convert an imported v1 contract"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("ordinary v1-to-v2 content edit was not rejected: %v", err)
 	}
 	unchanged, err := store.ReadTODO(ctx, "belluga-solutions", "boora", record.ID, nil)
-	if err != nil || unchanged.TODO.Revision != 1 || unchanged.TODO.Stage != "Local-Implemented" || unchanged.TODO.StageVerification != "verified" || unchanged.TODO.VerifiedTransitionRef == nil {
+	if err != nil || unchanged.TODO.Revision != 0 || unchanged.TODO.Stage != "Planning" || unchanged.TODO.StageVerification != "unverified" || unchanged.TODO.VerifiedTransitionRef != nil {
 		t.Fatalf("rejected ordinary edit changed aggregate or proof: %+v, %v", unchanged, err)
 	}
 	oldVersion, err = store.ReadTODOAsOf(ctx, "belluga-solutions", "boora", record.ID, 0)
@@ -378,7 +374,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 	}
 	migrationRequest := TODOContentMigrationRequest{ProjectID: "boora", TODOID: record.ID, ExpectedRevision: &editRevision, ExpectedContentRevision: 0, ExpectedContentDigest: sourceVersion.Digest, ExpectedSourceReference: todoHistoricalSourceReference(source), ExpectedSourceDigest: source.Digest, OperationID: "pilot-content-migration-001", Reason: "Convert the owner-reviewed typed contract while preserving the historical state and source", ReviewedAcceptance: todoContentMigrationAcceptance, Content: converted}
 	staleRequest := migrationRequest
-	staleRevision := int64(0)
+	staleRevision := int64(1)
 	staleRequest.ExpectedRevision = &staleRevision
 	staleRequest.OperationID = "pilot-content-migration-stale-revision"
 	if _, err := store.MigrateTODOContent(ctx, "belluga-solutions", staleRequest); !errors.Is(err, ErrConflict) {
@@ -407,7 +403,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("restore isolated baseline after negative case: %v", err)
 	}
 	unchangedAfterRejectedMigrations, err := store.ReadTODO(ctx, "belluga-solutions", "boora", record.ID, nil)
-	if err != nil || unchangedAfterRejectedMigrations.TODO.Revision != 1 || unchangedAfterRejectedMigrations.TODO.Stage != "Local-Implemented" {
+	if err != nil || unchangedAfterRejectedMigrations.TODO.Revision != 0 || unchangedAfterRejectedMigrations.TODO.Stage != "Planning" {
 		t.Fatalf("rejected migrations changed aggregate state: %+v, %v", unchangedAfterRejectedMigrations.TODO, err)
 	}
 	migrationCount, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: todoContentMigrationEventKind}})
@@ -418,25 +414,61 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("governed content migration: %v", err)
 	}
 	convertedRead, err := store.ReadTODO(ctx, "belluga-solutions", "boora", record.ID, nil)
-	if err != nil || convertedRead.TODO.Revision != 2 || convertedRead.TODO.Stage != "Local-Implemented" || convertedRead.TODO.StageVerification != "verified" || convertedRead.TODO.VerifiedTransitionRef == nil || convertedRead.TODO.Content == nil || convertedRead.TODO.Content.SchemaVersion != todoContentSchemaVersion {
-		t.Fatalf("governed migration did not preserve current proof and expose v2: %+v, %v", convertedRead, err)
+	if err != nil || convertedRead.TODO.Revision != 1 || convertedRead.TODO.Stage != "Planning" || convertedRead.TODO.StageVerification != "unverified" || convertedRead.TODO.VerifiedTransitionRef != nil || convertedRead.TODO.Content == nil || convertedRead.TODO.Content.SchemaVersion != todoContentSchemaVersion || convertedRead.TODO.Source.Kind != "mongo-content-revision" {
+		t.Fatalf("governed migration did not expose v2 without authorizing a stage: %+v, %v", convertedRead, err)
+	}
+	fresh := mongoBornTODOFixture()
+	fresh.ID, fresh.ProjectID, fresh.ReleaseID, fresh.Position = "mongo-born-adoption-negative", "boora", "r-01", intPointer(1)
+	if _, err := store.AdmitTODO(ctx, "belluga-solutions", "boora", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: fresh}); err != nil {
+		t.Fatalf("admit current Mongo-born TODO: %v", err)
+	}
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx,
+		bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: fresh.ID}},
+		bson.D{{Key: "$set", Value: bson.D{{Key: "stage_verification", Value: "unverified"}}}, {Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}}}); err != nil {
+		t.Fatalf("prepare unverified Mongo-born adoption negative: %v", err)
+	}
+	freshRead, err := store.ReadTODO(ctx, "belluga-solutions", "boora", fresh.ID, nil)
+	if err != nil || freshRead.TODO.StageVerification != "unverified" {
+		t.Fatalf("read unverified Mongo-born negative: %+v, %v", freshRead.TODO, err)
+	}
+	freshAdoption := HistoricalTODOAdoptionRequest{ProjectID: "boora", OperationID: "reject-mongo-born-adoption", Reason: "A newly authored TODO must not bypass ordinary verification", HistoricalAcceptance: true, Items: []HistoricalTODOAdoptionItem{{TODOID: fresh.ID, ExpectedRevision: freshRead.TODORevision, RequestedStage: "Local-Implemented", SourceReference: freshRead.TODO.Source.Ref, SourceDigest: freshRead.ContentDigest}}}
+	if _, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", freshAdoption); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "content-migration event") {
+		t.Fatalf("Mongo-born unverified TODO entered historical adoption: %v", err)
+	}
+	v2Adoption := request
+	v2Adoption.OperationID = "pilot-adopt-v2-subject"
+	v2Adoption.Items = append([]HistoricalTODOAdoptionItem(nil), request.Items...)
+	v2Adoption.Items[0].ExpectedRevision = convertedRead.TODO.Revision
+	v2Adoption.Items[0].SourceReference = convertedRead.TODO.Source.Ref
+	v2Adoption.Items[0].SourceDigest = convertedRead.ContentDigest
+	first, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", v2Adoption)
+	if err != nil || len(first.Results) != 1 || first.Results[0].Revision != 2 || first.Results[0].Stage != "Local-Implemented" {
+		t.Fatalf("v2-subject historical adoption = %+v, %v", first, err)
+	}
+	second, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", v2Adoption)
+	if err != nil || !second.NoOp || len(second.Results) != 1 || !second.Results[0].NoOp {
+		t.Fatalf("v2-subject historical adoption retry = %+v, %v", second, err)
+	}
+	convertedRead, err = store.ReadTODO(ctx, "belluga-solutions", "boora", record.ID, nil)
+	if err != nil || convertedRead.TODO.Revision != 2 || convertedRead.TODO.Stage != "Local-Implemented" || convertedRead.TODO.StageVerification != "verified" || convertedRead.TODO.VerifiedTransitionRef == nil || convertedRead.TODO.VerifiedTransitionRef.Kind != "historical-adoption" || convertedRead.TODO.VerifiedTransitionRef.SourceDigest != convertedRead.ContentDigest {
+		t.Fatalf("v2-subject adoption readback = %+v, %v", convertedRead, err)
+	}
+	var adoptionEvent TODOHistoryEvent
+	if err := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: "historical-adoption"}}).Decode(&adoptionEvent); err != nil || adoptionEvent.ProofReference == nil || adoptionEvent.ProofReference.SourceDigest != convertedRead.ContentDigest || adoptionEvent.ContentRevision == nil || *adoptionEvent.ContentRevision != 1 || adoptionEvent.Reason != v2Adoption.Reason || adoptionEvent.PermissionDecision != "pre-iam-private-api-allow-all" || adoptionEvent.OccurredAt.IsZero() {
+		t.Fatalf("v2 historical adoption event = %+v, %v", adoptionEvent, err)
 	}
 	var migrationEvent TODOHistoryEvent
 	if err := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: todoContentMigrationEventKind}}).Decode(&migrationEvent); err != nil || migrationEvent.FromContentRevision == nil || *migrationEvent.FromContentRevision != 0 || migrationEvent.FromContentDigest != sourceVersion.Digest || migrationEvent.ToContentDigest != convertedRead.ContentDigest || migrationEvent.ReviewedAcceptance != todoContentMigrationAcceptance || migrationEvent.PermissionDecision != "pre-iam-private-api-allow-all" || migrationEvent.OccurredAt.IsZero() {
 		t.Fatalf("governed migration lineage event = %+v, %v", migrationEvent, err)
 	}
-	// Model the active TODO's frozen owner proof. The reviewed migration event is
-	// the sole permitted bridge from that exact approved v1 digest to its v2
-	// target; the local-delivery validator must progress beyond approval and
-	// fail only at the missing delivery artifact.
+	// A migration event must not carry v1 approval authority into v2 delivery.
 	activeProof := TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: fmt.Sprintf("boora/%s/content/0/revision/1", record.ID), SourceDigest: sourceVersion.Digest, VerificationState: "verified"}
 	activeRecord := convertedRead.TODO
 	activeRecord.Stage, activeRecord.StageVerification, activeRecord.VerifiedTransitionRef = "In-Progress", "verified", &activeProof
-	if err := requireApprovedCurrentContentOrMigration(ctx, database, activeRecord, convertedRead.ContentDigest); err != nil {
-		t.Fatalf("reviewed conversion did not bridge exact frozen approval to its target: %v", err)
+	if err := requireApprovedCurrentContent(activeRecord, convertedRead.ContentDigest); err == nil {
+		t.Fatal("migration-carried v1 approval authorized a new v2 stage")
 	}
-	// Exercise the actual guarded transition using an equivalent current
-	// Mongo-born In-Progress aggregate and the immutable v1 approval digest.
+	// The v2 delivery edge must reject the former v1 approval digest.
 	activeMongoSource := TODOSource{Kind: "mongo-content-revision", Ref: fmt.Sprintf("boora/%s/content/0", record.ID), Digest: sourceVersion.Digest}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}, bson.D{{Key: "$set", Value: bson.D{
 		{Key: "source", Value: activeMongoSource}, {Key: "stage", Value: "In-Progress"}, {Key: "stage_verification", Value: "verified"}, {Key: "verified_transition_ref", Value: activeProof},
@@ -444,17 +476,16 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("prepare isolated migrated In-Progress aggregate: %v", err)
 	}
 	closeout, closeoutErr := store.TransitionTODO(ctx, "belluga-solutions", TODOActionRequest{ProjectID: "boora", TODOID: record.ID, ExpectedRevision: int64Pointer(activeRecord.Revision), OperationID: "pilot-reviewed-conversion-closeout", RequestedStage: "Local-Implemented"})
-	if closeoutErr == nil || strings.Contains(closeoutErr.Error(), "approval/content_revision") || !strings.Contains(closeoutErr.Error(), "local_proof") {
-		t.Fatalf("reviewed migration did not pass approval guard and reach delivery evidence guard: %+v, %v", closeout, closeoutErr)
+	if closeoutErr == nil || !strings.Contains(closeoutErr.Error(), "approval/content_revision") {
+		t.Fatalf("v2 delivery accepted the prior v1 approval: %+v, %v", closeout, closeoutErr)
 	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}, bson.D{{Key: "$set", Value: bson.D{
 		{Key: "source", Value: convertedRead.TODO.Source}, {Key: "stage", Value: convertedRead.TODO.Stage}, {Key: "stage_verification", Value: convertedRead.TODO.StageVerification}, {Key: "verified_transition_ref", Value: convertedRead.TODO.VerifiedTransitionRef},
 	}}}); err != nil {
 		t.Fatalf("restore historical adoption pilot after isolated transition guard: %v", err)
 	}
-	// Exercise both approval-bound lifecycle edges with the exact frozen v1
-	// owner approval. Only the migration event above can bridge that digest.
-	approval := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: sourceVersion.Digest, VerificationState: "verified"}
+	// Exercise both lifecycle edges with approval of the current v2 digest.
+	approval := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: convertedRead.ContentDigest, VerificationState: "verified"}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}, bson.D{{Key: "$set", Value: bson.D{
 		{Key: "source", Value: activeMongoSource}, {Key: "stage", Value: "Implementation-Approval-Pending"}, {Key: "stage_verification", Value: "verified"}, {Key: "verified_transition_ref", Value: approval},
 	}}}); err != nil {
@@ -499,7 +530,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 	if _, err := store.MigrateTODOContent(ctx, "belluga-solutions", changedMigrationRetry); !errors.Is(err, ErrConflict) {
 		t.Fatalf("migration operation ID accepted changed reviewed acceptance: %v", err)
 	}
-	third, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request)
+	third, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", v2Adoption)
 	if err != nil || !third.NoOp || len(third.Results) != 1 || !third.Results[0].NoOp {
 		t.Fatalf("historical adoption retry after later mutation = %+v, %v", third, err)
 	}

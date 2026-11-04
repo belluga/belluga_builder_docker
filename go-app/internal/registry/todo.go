@@ -126,6 +126,7 @@ type TODOProofReference struct {
 	Reference         string `json:"ref" bson:"ref"`
 	SourceDigest      string `json:"source_digest" bson:"source_digest"`
 	VerificationState string `json:"verification_state" bson:"verification_state"`
+	Outcome           string `json:"outcome,omitempty" bson:"outcome,omitempty"`
 }
 
 type TODORepositoryScope struct {
@@ -282,7 +283,7 @@ func validateTODORecord(record TODORecord, source selectedTODOSourceContract) er
 		seenSections[section.Title] = true
 	}
 	for _, proof := range append(append([]TODOProofReference{}, record.ProofReferences...), record.WaiverReferences...) {
-		if strings.TrimSpace(proof.Kind) == "" || strings.TrimSpace(proof.Source) == "" || strings.TrimSpace(proof.Reference) == "" || !validSourceDigest(proof.SourceDigest) || proof.VerificationState != "unverified" {
+		if strings.TrimSpace(proof.Kind) == "" || strings.TrimSpace(proof.Source) == "" || strings.TrimSpace(proof.Reference) == "" || !validSourceDigest(proof.SourceDigest) || proof.VerificationState != "unverified" || !validReviewOutcome(proof.Outcome) {
 			return todoTeach("todos["+record.ID+"].proof_refs/waiver_refs", "use bounded references with source digests and verification_state unverified at import", ErrInvalid)
 		}
 	}
@@ -424,6 +425,7 @@ func verifiedTransitionSchema() bson.D {
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"kind", "source", "ref", "source_digest", "verification_state"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "kind", Value: nonemptyStringSchema()}, {Key: "source", Value: nonemptyStringSchema()}, {Key: "ref", Value: nonemptyStringSchema()},
 		{Key: "source_digest", Value: nonemptyStringSchema()}, {Key: "verification_state", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"verified"}}}},
+		{Key: "outcome", Value: reviewOutcomeSchema()},
 	}}}
 }
 
@@ -433,7 +435,7 @@ func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
 		kinds = append(kinds, "content-edit")
 	}
 	if allowRecordEvents {
-		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit")
+		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver")
 	}
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"id", "kind", "request_digest", "result_revision"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: kinds}}},
@@ -492,9 +494,37 @@ func proofArraySchema() bson.D {
 			{Key: "kind", Value: nonemptyStringSchema()}, {Key: "source", Value: nonemptyStringSchema()},
 			{Key: "ref", Value: nonemptyStringSchema()}, {Key: "source_digest", Value: nonemptyStringSchema()},
 			{Key: "verification_state", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"unverified", "verified", "rejected"}}}},
+			{Key: "outcome", Value: reviewOutcomeSchema()},
 		}},
 	}
 	return bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: maxTODOProofs}, {Key: "items", Value: proof}}
+}
+
+func reviewOutcomeSchema() bson.D {
+	return bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"go", "no-go", "waived"}}}
+}
+
+func validReviewOutcome(value string) bool {
+	return value == "" || value == "go" || value == "no-go" || value == "waived"
+}
+
+func todoCollectionValidatorWithoutReviewOutcome(validator bson.D) bson.D {
+	raw, err := bson.Marshal(validator)
+	if err != nil {
+		return nil
+	}
+	var clone bson.D
+	if bson.Unmarshal(raw, &clone) != nil {
+		return nil
+	}
+	for _, field := range []string{"proof_refs", "waiver_refs"} {
+		clone = withoutBSONFieldsAtPath(clone, []string{"$jsonSchema", "properties", field, "items", "properties"}, "outcome")
+	}
+	return withoutBSONFieldsAtPath(clone, []string{"$jsonSchema", "properties", "verified_transition_ref", "properties"}, "outcome")
+}
+
+func TODOCollectionValidatorBeforeReviewOutcome() bson.D {
+	return todoCollectionValidatorWithoutReviewOutcome(TODOCollectionValidator())
 }
 
 func diffArraySchema() bson.D {

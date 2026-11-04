@@ -23,6 +23,56 @@ type TODOContent struct {
 	References          []TODOContentReference    `json:"references,omitempty" bson:"references,omitempty"`
 	LegacyContext       []TODOLegacyContext       `json:"legacy_context,omitempty" bson:"legacy_context,omitempty"`
 	Architecture        *TODOArchitectureDecision `json:"architecture,omitempty" bson:"architecture,omitempty"`
+	Planning            *TODOPlanning             `json:"planning,omitempty" bson:"planning,omitempty"`
+}
+
+// Planning records declared inputs and human review references; it does not
+// assert that the referenced review is correct or independently verified.
+type TODOPlanning struct {
+	Complexity    string                   `json:"complexity" bson:"complexity"`
+	AuditTriggers *TODOAuditTriggers       `json:"audit_triggers,omitempty" bson:"audit_triggers,omitempty"`
+	Impact        TODOPlanningImpact       `json:"impact" bson:"impact"`
+	Assumptions   []TODOPlanningAssumption `json:"assumptions" bson:"assumptions"`
+	Reviews       []TODOPlanningReview     `json:"reviews" bson:"reviews"`
+}
+
+// Pointers distinguish an explicit negative declaration from an absent input.
+type TODOAuditTriggers struct {
+	BlastRadius                 string `json:"blast_radius" bson:"blast_radius"`
+	ArchitectureApplicability   string `json:"architecture_applicability" bson:"architecture_applicability"`
+	BehavioralChangeOrBugfix    *bool  `json:"behavioral_change_or_bugfix,omitempty" bson:"behavioral_change_or_bugfix,omitempty"`
+	ChangesPublicContract       *bool  `json:"changes_public_contract,omitempty" bson:"changes_public_contract,omitempty"`
+	TouchesAuthOrTenant         *bool  `json:"touches_auth_or_tenant,omitempty" bson:"touches_auth_or_tenant,omitempty"`
+	TouchesRuntimeOrInfra       *bool  `json:"touches_runtime_or_infra,omitempty" bson:"touches_runtime_or_infra,omitempty"`
+	TouchesTests                *bool  `json:"touches_tests,omitempty" bson:"touches_tests,omitempty"`
+	CriticalUserJourney         *bool  `json:"critical_user_journey,omitempty" bson:"critical_user_journey,omitempty"`
+	ReleaseOrPromotionCritical  *bool  `json:"release_or_promotion_critical,omitempty" bson:"release_or_promotion_critical,omitempty"`
+	HighSeverityPlanReviewIssue *bool  `json:"high_severity_plan_review_issue,omitempty" bson:"high_severity_plan_review_issue,omitempty"`
+	ExplicitThreeLaneRequest    *bool  `json:"explicit_three_lane_request,omitempty" bson:"explicit_three_lane_request,omitempty"`
+}
+
+type TODOPlanningImpact struct {
+	CrossModule      bool `json:"cross_module" bson:"cross_module"`
+	PublicContract   bool `json:"public_contract" bson:"public_contract"`
+	RuntimeSensitive bool `json:"runtime_sensitive" bson:"runtime_sensitive"`
+	HighSeverity     bool `json:"high_severity" bson:"high_severity"`
+}
+
+type TODOPlanningAssumption struct {
+	ID        string                `json:"id" bson:"id"`
+	Status    string                `json:"status" bson:"status"`
+	Statement string                `json:"statement" bson:"statement"`
+	CodeRefs  []TODOPlanningCodeRef `json:"code_refs" bson:"code_refs"`
+}
+
+type TODOPlanningCodeRef struct {
+	RepositoryID string `json:"repository_id" bson:"repository_id"`
+	Path         string `json:"path" bson:"path"`
+}
+
+type TODOPlanningReview struct {
+	Kind      string `json:"kind" bson:"kind"`
+	Reference string `json:"reference" bson:"reference"`
 }
 
 type TODOContentScope struct {

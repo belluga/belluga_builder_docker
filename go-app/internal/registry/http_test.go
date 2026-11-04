@@ -121,30 +121,15 @@ func (s *testSelectedTODOImporter) ImportSelectedTODOs(_ context.Context, reques
 	return ValidateSelectedTODOImport(request)
 }
 
-func TestSelectedTODOImportRouteReturnsActionableTeach(t *testing.T) {
+func TestLegacySelectedTODOImportRoutesTeachWithoutWrites(t *testing.T) {
 	service := &testSelectedTODOImporter{testService: &testService{}}
-	validBody, err := json.Marshal(validSelectedTODORequest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(validBody)))
-	validResponse := httptest.NewRecorder()
-	NewHandler(service).ServeHTTP(validResponse, validRequest)
-	if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), `"imported":4`) || service.calls != 1 {
-		t.Fatalf("valid import response = %d %s; calls=%d", validResponse.Code, validResponse.Body.String(), service.calls)
-	}
-
-	invalidRequestData := validSelectedTODORequest()
-	invalidRequestData.TODOs[0].Stage = "Invented"
-	invalidBody, err := json.Marshal(invalidRequestData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invalidRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(invalidBody)))
-	invalidResponse := httptest.NewRecorder()
-	NewHandler(service).ServeHTTP(invalidResponse, invalidRequest)
-	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), `"teach":"TEACH:`) || !strings.Contains(invalidResponse.Body.String(), "stage") || service.calls != 2 {
-		t.Fatalf("invalid import response = %d %s; calls=%d", invalidResponse.Code, invalidResponse.Body.String(), service.calls)
+	for _, path := range []string{"/internal/v1/todos/import", "/internal/v1/todos/admit-builder-r08"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH:`) || service.calls != 0 {
+			t.Fatalf("legacy import route %s response = %d %s; calls=%d", path, response.Code, response.Body.String(), service.calls)
+		}
 	}
 }
 

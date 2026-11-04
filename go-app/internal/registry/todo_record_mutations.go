@@ -93,6 +93,11 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 	if record.Revision != *request.ExpectedRevision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
+	if record.Content != nil {
+		if err := requireNoTODOContentDowngrade(record.Content.SchemaVersion, 1); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOContentEditResponse{}, err
 	}
@@ -205,6 +210,16 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	if current.Content != nil && current.Content.SchemaVersion == todoContentSchemaVersion {
+		for _, commit := range commits {
+			if foundationScope(commit.Repository) {
+				return TODOContentEditResponse{}, todoTeach("implementation_commits.repository", "omit Foundation commits from current v2 TODO evidence", ErrConflict)
+			}
+		}
+		if (current.Stage == "Local-Implemented" || current.Stage == "Promotion-Lane" || current.Stage == "Completed") && !reflect.DeepEqual(current.ImplementationCommits, commits) {
+			return TODOContentEditResponse{}, todoTeach("implementation_commits", "retain the exact commits bound to the verified local delivery", ErrConflict)
+		}
+	}
 	if err := preserveVerifiedEvidence(current.ProofReferences, proofs, "proof_refs"); err != nil {
 		return TODOContentEditResponse{}, err
 	}
@@ -285,12 +300,12 @@ func (m *MongoStore) EditTODOPlacement(ctx context.Context, companyID string, re
 		})
 }
 
-func placementReopensPlanning(record TODORecord, nextRelease string) bool {
-	if record.Source.Kind != "mongo-content-revision" || record.ReleaseID == nextRelease {
+func placementReopensPlanning(record TODORecord, nextRelease string, nextPosition *int) bool {
+	if (record.Source.Kind != "mongo-content-revision" && (record.Content == nil || record.Content.SchemaVersion != todoContentSchemaVersion)) || record.ReleaseID == nextRelease && reflect.DeepEqual(record.Position, nextPosition) {
 		return false
 	}
 	switch record.Stage {
-	case "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress":
+	case "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane":
 		return true
 	default:
 		return false
@@ -361,6 +376,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if (placement.Detach || placement.Action == "detach") && record.ReleaseID == "" && record.Position == nil || !(placement.Detach || placement.Action == "detach") && record.ReleaseID == placement.ReleaseID && record.Position != nil && *record.Position == placement.Position {
 			return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
 		}
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion && record.Stage == "Completed" {
+			return TODOContentEditResponse{}, todoTeach("release_id/position", "retain the completed placement; create a separately reviewed TODO for new work", ErrConflict)
+		}
 	}
 	newChanges, err := changes(record)
 	if err != nil {
@@ -378,11 +396,32 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	set = append(set, extra(record)...)
 	if kind == "placement-edit" {
 		placement := request.(TODOPlacementEditRequest)
+		if record.Source.Kind != "mongo-content-revision" {
+			content, contentErr := m.contentAtRevision(ctx, database, projectID, todoID, record.Revision)
+			if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
+				return TODOContentEditResponse{}, contentErr
+			}
+			if content.SchemaVersion == todoContentSchemaVersion {
+				record.Content = &content.TODOContent
+			}
+		}
 		nextRelease := placement.ReleaseID
+		nextPosition := &placement.Position
 		if placement.Detach || placement.Action == "detach" {
 			nextRelease = ""
+			nextPosition = nil
 		}
-		if placementReopensPlanning(record, nextRelease) {
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion {
+			retained := make([]TODOProofReference, 0, len(record.ProofReferences))
+			for _, ref := range record.ProofReferences {
+				if ref.Source != "human-review" || !isTODOAuditDeliveryKind(ref.Kind) && !strings.HasPrefix(ref.Kind, "planning_review_") {
+					retained = append(retained, ref)
+				}
+			}
+			set = append(set, bson.E{Key: "proof_refs", Value: retained})
+			newChanges.ProofReferences = &retained
+		}
+		if placementReopensPlanning(record, nextRelease, nextPosition) {
 			_, contentDigest, contentRef, available, subjectErr := currentTODOContentSubject(ctx, database, record)
 			if subjectErr != nil {
 				return TODOContentEditResponse{}, subjectErr

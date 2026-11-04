@@ -28,6 +28,51 @@ func TestMVPRepositoryComesFromApprovedMongoDiffScope(t *testing.T) {
 	}
 }
 
+func TestMVPClaimsAllowPACEDOnlyWithoutInventingBuilderCommit(t *testing.T) {
+	commit := strings.Repeat("a", 40)
+	todo := TODORecord{ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
+	builder, paced, foundation, err := mvpImplementationClaims(todo)
+	if err != nil || len(builder) != 0 || len(foundation) != 0 || len(paced) != 1 || paced[0] != commit {
+		t.Fatalf("PACED-only claims = %v %v %v, %v", builder, paced, foundation, err)
+	}
+}
+
+func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
+	todo := TODORecord{Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ImplementationCommits: []TODOCommitReference{{Repository: "belluga_builder_foundation_documentation", Commit: strings.Repeat("a", 40)}}}
+	if _, _, _, err := mvpImplementationClaims(todo); err == nil || !strings.Contains(err.Error(), "implementation_commits.repository") {
+		t.Fatalf("Foundation claim accepted or wrong TEACH: %v", err)
+	}
+	todo.Content = nil
+	if _, _, _, err := mvpImplementationClaims(todo); err != nil {
+		t.Fatalf("historical Foundation claim changed: %v", err)
+	}
+}
+
+func TestMVPProductionRequiresReaderToConfirmPACEDClaims(t *testing.T) {
+	commit, root, digest := strings.Repeat("a", 40), strings.Repeat("d", 40), sourceHash([]byte("contract"))
+	local := TODOProofReference{Kind: "remote-local-delivery", VerificationState: "verified", SourceDigest: digest}
+	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
+	confirmed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := remoteProductionResult{CompanyID: "company-a", ProjectID: "builder", TODOID: todo.ID, DeploymentID: 17, Environment: "production", RootSHA: root, ModulePath: "project", CommitSHA: root, Outcome: "verified", ProjectMode: "mvp", ReaderSHA: strings.Repeat("e", 40)}
+		if confirmed {
+			response.PACEDCommits = []string{commit}
+		}
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
+	claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
+	request := TODOActionRequest{ProofReferences: []TODOProofReference{claim}}
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
+		t.Fatal("unconfirmed PACED commits accepted")
+	}
+	confirmed = true
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err != nil {
+		t.Fatalf("confirmed PACED-only proof: %v", err)
+	}
+}
+
 func TestRestoredLocalProofRequiresExactDeliveredContract(t *testing.T) {
 	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "verified"}
 	commits := []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: strings.Repeat("a", 40), SourceDigest: proof.SourceDigest, VerificationState: "verified"}}
@@ -74,17 +119,17 @@ func TestMVPCompletionRequiresReaderVerifiedDeploymentAndCurrentContent(t *testi
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
 	request := TODOActionRequest{ProofReferences: []TODOProofReference{{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}}}
-	proof, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request)
+	proof, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, "")
 	if err != nil || proof.Kind != "production-deployment" || proof.VerificationState != "verified" {
 		t.Fatalf("verified MVP completion = %+v, %v", proof, err)
 	}
 	request.ProofReferences[0].SourceDigest = "sha256:" + strings.Repeat("c", 64)
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request); err == nil {
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
 		t.Fatal("stale content claim accepted")
 	}
 	request.ProofReferences[0].SourceDigest = digest
 	todo.StageVerification = "unverified"
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request); err == nil {
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
 		t.Fatal("unverified local delivery accepted")
 	}
 }
@@ -157,27 +202,20 @@ func TestMongoBornAdjacentStartRequiresCurrentApproval(t *testing.T) {
 	}
 }
 
-func TestMongoBornReviewedMigrationPreservesApprovalAcrossAdjacentEdges(t *testing.T) {
+func TestMongoBornMigrationCannotCarryApprovalAcrossStageEdges(t *testing.T) {
 	oldDigest := "sha256:" + strings.Repeat("a", 64)
 	currentDigest := "sha256:" + strings.Repeat("b", 64)
 	approval := TODOProofReference{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: oldDigest, VerificationState: "verified"}
 	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: 7, Stage: "Implementation-Approval-Pending", StageVerification: "verified", VerifiedTransitionRef: &approval}
 	request := TODOActionRequest{RequestedStage: "Ready-for-Implementation"}
-	proof, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true)
-	if !ok || proof != approval {
-		t.Fatalf("reviewed migration did not preserve the exact frozen approval on Ready edge: %+v, %t", proof, ok)
+	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true); ok {
+		t.Fatal("migration-carried owner approval authorized a new stage")
 	}
 
 	record.Stage = "Ready-for-Implementation"
 	request.RequestedStage = "In-Progress"
-	proof, ok = mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true)
-	want := TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: "builder/todo-a/content/7/revision/8", SourceDigest: currentDigest, VerificationState: "verified"}
-	if !ok || proof != want {
-		t.Fatalf("reviewed migration did not permit the adjacent work-start edge: %+v, %t; want %+v", proof, ok, want)
-	}
-
 	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", false); ok {
-		t.Fatal("unverified migration lineage authorized the work-start edge")
+		t.Fatal("unverified migration lineage authorized a new stage")
 	}
 	record.VerifiedTransitionRef.SourceDigest = currentDigest
 	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true); ok {
@@ -186,6 +224,23 @@ func TestMongoBornReviewedMigrationPreservesApprovalAcrossAdjacentEdges(t *testi
 	request.ProofReferences = []TODOProofReference{{Kind: "owner-approval"}}
 	if _, ok := mongoBornMigrationTransitionProof(record, request, currentDigest, "builder/todo-a/content/7", true); ok {
 		t.Fatal("migration continuity accepted caller-supplied replacement approval")
+	}
+}
+
+func TestStageAuthorityRequiresTypedMongoV2RegardlessOfTODOIdentity(t *testing.T) {
+	v2 := &TODOContent{SchemaVersion: todoContentSchemaVersion}
+	for _, record := range []TODORecord{
+		{ID: "builder-r-08-selected", Source: TODOSource{Foundation: "foundation", Digest: "sha256:" + strings.Repeat("a", 64)}, Content: v2},
+		{ID: "edited-v1", Source: TODOSource{Foundation: "foundation", Digest: "sha256:" + strings.Repeat("a", 64)}, Content: &TODOContent{SchemaVersion: 1}},
+		{ID: "imported-v1", Source: TODOSource{Foundation: "foundation", Digest: "sha256:" + strings.Repeat("a", 64)}},
+		{ID: "mongo-v1", Source: TODOSource{Kind: "mongo-content-revision"}, Content: &TODOContent{SchemaVersion: 1}},
+	} {
+		if hasTypedMongoTODOStageAuthority(record) {
+			t.Fatalf("non-v2 TODO %q had stage authority", record.ID)
+		}
+	}
+	if !hasTypedMongoTODOStageAuthority(TODORecord{ID: "new-v2", Source: TODOSource{Kind: "mongo-content-revision"}, Content: v2}) {
+		t.Fatal("current typed Mongo v2 TODO lacks stage authority")
 	}
 }
 
@@ -480,6 +535,33 @@ func TestSelectedLocalProofRequiresExactMatrixRun(t *testing.T) {
 	seal()
 	if _, err := store.validateLocalProof(id, result); err == nil {
 		t.Fatal("changed test input was accepted")
+	}
+}
+
+func TestLocalProofSubjectRejectsStaleOrForeignPreflight(t *testing.T) {
+	position, revision := 2, int64(7)
+	digest := sourceHash([]byte("current content"))
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: revision, ReleaseID: "r-10", Position: &position}
+	valid := LocalProofResult{SchemaVersion: "builder-local-proof-result-v2", CompanyID: "company-a", ProjectID: "builder", TODOID: "todo-a", TODORevision: &revision, ContentDigest: digest, ReleaseID: "r-10", Position: &position}
+	if err := validateLocalProofSubject(context.Background(), nil, "company-a", record, digest, &valid); err != nil {
+		t.Fatalf("matching subject rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*LocalProofResult){
+		"old runner":      func(p *LocalProofResult) { p.SchemaVersion = "builder-local-proof-result-v1" },
+		"company":         func(p *LocalProofResult) { p.CompanyID = "company-b" },
+		"project":         func(p *LocalProofResult) { p.ProjectID = "other" },
+		"digest":          func(p *LocalProofResult) { p.ContentDigest = sourceHash([]byte("old")) },
+		"release":         func(p *LocalProofResult) { p.ReleaseID = "r-09" },
+		"position":        func(p *LocalProofResult) { p.Position = intPointer(3) },
+		"future revision": func(p *LocalProofResult) { p.TODORevision = int64Pointer(8) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := valid
+			mutate(&candidate)
+			if err := validateLocalProofSubject(context.Background(), nil, "company-a", record, digest, &candidate); err == nil || !strings.Contains(err.Error(), "local_proof") {
+				t.Fatalf("wrong subject accepted: %v", err)
+			}
+		})
 	}
 }
 

@@ -55,6 +55,7 @@ type todoHistoryService interface {
 	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
 	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
 	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
+	GrantTODOReviewWaiver(context.Context, string, TODOReviewWaiverRequest) (TODOContentEditResponse, error)
 }
 
 type todoRecordMutationService interface {
@@ -152,6 +153,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content", h.editTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate", h.migrateTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/review-waivers", h.grantTODOReviewWaiver)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
@@ -320,31 +322,11 @@ func (h *Handler) resolveTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) importSelectedTODOs(w http.ResponseWriter, r *http.Request) {
-	importer, ok := h.service.(selectedTODOImporter)
-	if !ok {
-		h.writeError(w, ErrUnavailable)
-		return
-	}
-	var input SelectedTODOImportRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
-		return
-	}
-	report, err := importer.ImportSelectedTODOs(r.Context(), input)
-	h.respond(w, report, err)
+	h.writeError(w, todoTeach("route", "use typed Mongo v2 TODO content admission; this Foundation selected-ID import route is disabled and performs no writes", ErrConflict))
 }
 
 func (h *Handler) admitAdditionalTODOs(w http.ResponseWriter, r *http.Request) {
-	admitter, ok := h.service.(additionalTODOAdmitter)
-	if !ok {
-		h.writeError(w, ErrUnavailable)
-		return
-	}
-	var input SelectedTODOImportRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
-		return
-	}
-	report, err := admitter.AdmitAdditionalTODOs(r.Context(), input)
-	h.respond(w, report, err)
+	h.writeError(w, todoTeach("route", "use typed Mongo v2 TODO content admission; this selected-ID import route is disabled and performs no writes", ErrConflict))
 }
 
 func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
@@ -579,6 +561,24 @@ func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOEvidence(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) grantTODOReviewWaiver(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOReviewWaiverRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identities", ErrConflict))
+		return
+	}
+	value, err := service.GrantTODOReviewWaiver(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

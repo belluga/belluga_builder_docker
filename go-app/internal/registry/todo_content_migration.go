@@ -123,6 +123,8 @@ func (m *MongoStore) MigrateTODOContent(ctx context.Context, companyID string, r
 		update := bson.D{{Key: "$set", Value: bson.D{
 			{Key: "title", Value: content.Title},
 			{Key: "objective", Value: content.Objective},
+			{Key: "diff_expectation", Value: content.DiffExpectation},
+			{Key: "affected_files", Value: content.AffectedFiles},
 			{Key: "last_operation", Value: operation},
 			{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())},
 		}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}

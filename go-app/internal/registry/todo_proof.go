@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, todo TODORecord, request TODOActionRequest) (TODOProofReference, error) {
+func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, todo TODORecord, request TODOActionRequest, projectDockerRepository string) (TODOProofReference, error) {
 	if todo.ReleaseID == "" || todo.Stage != "Local-Implemented" || todo.StageVerification != "verified" || todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.VerificationState != "verified" || containsTODOString(todo.Qualifiers, "Blocked") {
 		return TODOProofReference{}, todoTeach("stage/release_id", "complete only a verified, unblocked Local-Implemented TODO assigned to a Release", ErrConflict)
 	}
@@ -30,7 +30,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		return TODOProofReference{}, todoTeach("proof_refs.ref", "use a positive exact GitHub production Deployment ID", ErrConflict)
 	}
 	contentDigest := todo.Source.Digest
-	if todo.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(todo) {
+	if usesTypedMongoAuthority(todo) || usesImportedTODOContentStageProof(todo) {
 		company, companyErr := m.company(ctx, companyID)
 		if companyErr != nil {
 			return TODOProofReference{}, companyErr
@@ -46,6 +46,16 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	if claim.Kind != "mvp-deployment-claim" || claim.Source != "github-deployment" || claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
 		return TODOProofReference{}, todoTeach("proof_refs", "bind the MVP Deployment claim to this TODO's current immutable content digest", ErrConflict)
 	}
+	if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
+		if todo.VerifiedTransitionRef.Kind != "remote-local-delivery" || todo.VerifiedTransitionRef.Source != "private-reader-and-paced-runner" || len(todo.ImplementationCommits) == 0 {
+			return TODOProofReference{}, todoTeach("local_proof", "require a current v2 local delivery verified by the private Reader and PACED runner", ErrConflict)
+		}
+		for _, implementation := range todo.ImplementationCommits {
+			if implementation.SourceDigest != contentDigest {
+				return TODOProofReference{}, todoTeach("implementation_commits.source_digest", "bind every locally verified implementation commit to the current Mongo content digest", ErrConflict)
+			}
+		}
+	}
 	if m.proofReaderURL == "" || m.proofHTTPClient == nil || m.proofReaderToken == "" {
 		return TODOProofReference{}, todoTeach("production_proof", "configure the private Reader proof route before Completed", ErrUnavailable)
 	}
@@ -57,9 +67,18 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		"company_id": {companyID}, "project_id": {todo.ProjectID}, "todo_id": {todo.ID},
 		"deployment_id": {parts[0]}, "root_sha": {parts[1]}, "module_path": {"project"}, "commit_sha": {parts[1]}, "project_mode": {"mvp"},
 	}
-	if todo.Source.Kind == "mongo-content-revision" {
-		if repositoryID := mvpApprovedDockerRepository(todo); repositoryID != "" {
+	if usesTypedMongoAuthority(todo) {
+		repositoryID := mvpApprovedDockerRepository(todo)
+		if repositoryID == "" && validGitRepositoryID(projectDockerRepository) {
+			repositoryID = projectDockerRepository
+		}
+		if repositoryID != "" {
 			query.Set("docker_repository_id", repositoryID)
+		} else if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
+			return TODOProofReference{}, todoTeach("project.docker_repository_id", "register a Docker deployment repository or include an approved Builder implementation scope before production proof", ErrConflict)
+		}
+		if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
+			query.Set("todo_authority", "mongo-v2")
 		}
 	}
 	if len(builderCommits) > 0 {
@@ -67,6 +86,18 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	}
 	if len(pacedCommits) > 0 {
 		query.Set("paced_commits", strings.Join(pacedCommits, ","))
+		if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
+			for _, scope := range todo.DiffExpectation {
+				if (scope.Repository == "PACED" || scope.Repository == "delphi-ai") && validGitRepositoryID(scope.RepositoryID) && validDeliveryBranch(scope.DeliveryBranch) {
+					query.Set("paced_repository_id", scope.RepositoryID)
+					query.Set("paced_branch", scope.DeliveryBranch)
+					break
+				}
+			}
+			if query.Get("paced_repository_id") == "" {
+				return TODOProofReference{}, todoTeach("diff_expectation.repository_id/delivery_branch", "provide the approved PACED repository and branch before production proof", ErrConflict)
+			}
+		}
 	}
 	if len(foundationCommits) > 0 {
 		query.Set("foundation_commits", strings.Join(foundationCommits, ","))
@@ -95,7 +126,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		return TODOProofReference{}, todoTeach("production_proof", "obtain verified MVP publication evidence from the private Reader", ErrConflict)
 	}
 	var verified remoteProductionResult
-	if json.Unmarshal(data, &verified) != nil || verified.CompanyID != companyID || verified.ProjectID != todo.ProjectID || verified.TODOID != todo.ID || verified.DeploymentID != deploymentID || verified.RootSHA != parts[1] || verified.Environment != "production" || verified.ModulePath != "project" || verified.CommitSHA != parts[1] || verified.Outcome != "verified" || verified.ProjectMode != "mvp" || !validGitCommit(verified.ReaderSHA) || !equalCommitClaims(verified.ProjectCommits, builderCommits) || !equalCommitClaims(verified.FoundationCommits, foundationCommits) {
+	if json.Unmarshal(data, &verified) != nil || verified.CompanyID != companyID || verified.ProjectID != todo.ProjectID || verified.TODOID != todo.ID || verified.DeploymentID != deploymentID || verified.RootSHA != parts[1] || verified.Environment != "production" || verified.ModulePath != "project" || verified.CommitSHA != parts[1] || verified.Outcome != "verified" || verified.ProjectMode != "mvp" || !validGitCommit(verified.ReaderSHA) || !equalCommitClaims(verified.ProjectCommits, builderCommits) || !equalCommitClaims(verified.PACEDCommits, pacedCommits) || !equalCommitClaims(verified.FoundationCommits, foundationCommits) {
 		return TODOProofReference{}, todoTeach("production_proof", "match every selected implementation commit and the exact served MVP Deployment", ErrConflict)
 	}
 	evidence, _ := json.Marshal(struct {
@@ -109,7 +140,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 }
 
 func mvpApprovedDockerRepository(todo TODORecord) string {
-	if todo.Source.Kind != "mongo-content-revision" {
+	if !usesTypedMongoAuthority(todo) {
 		return ""
 	}
 	for _, scope := range todo.DiffExpectation {
@@ -149,6 +180,9 @@ func mvpImplementationClaims(todo TODORecord) ([]string, []string, []string, err
 			return nil, nil, nil, todoTeach("implementation_commits.repository", "use the registered Builder, PACED or Foundation source for this MVP release", ErrConflict)
 		}
 	}
+	if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion && len(foundationCommits) > 0 {
+		return nil, nil, nil, todoTeach("implementation_commits.repository", "omit Foundation commits from current v2 TODO evidence", ErrConflict)
+	}
 	if len(builderCommits) == 0 && len(pacedCommits) == 0 && len(foundationCommits) == 0 && (todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.Kind != "local-run-accepted") {
 		return nil, nil, nil, todoTeach("implementation_commits", "link attributable implementation commits, or retain a previously accepted local run for this historical TODO", ErrConflict)
 	}
@@ -172,6 +206,7 @@ type remoteProductionResult struct {
 	Outcome           string   `json:"outcome"`
 	ProjectMode       string   `json:"project_mode"`
 	ProjectCommits    []string `json:"project_commits,omitempty"`
+	PACEDCommits      []string `json:"paced_commits,omitempty"`
 	FoundationCommits []string `json:"foundation_commits,omitempty"`
 	ReaderSHA         string   `json:"reader_sha,omitempty"`
 }

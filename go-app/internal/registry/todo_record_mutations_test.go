@@ -41,27 +41,32 @@ func TestSectionOwnershipNormalizationRequiresExactTextAndExplicitClassification
 	}
 }
 
-func TestMongoPlacementReopensOnlyUnfinishedApprovalOnReleaseChange(t *testing.T) {
+func TestMongoPlacementReopensOnlyUnfinishedApprovalOnPlacementChange(t *testing.T) {
 	for _, tc := range []struct {
 		stage, currentRelease, nextRelease string
-		want bool
+		want                               bool
 	}{
 		{"Implementation-Approval-Pending", "r-09", "r-10", true},
 		{"Ready-for-Implementation", "r-09", "r-10", true},
 		{"In-Progress", "r-09", "r-10", true},
 		{"In-Progress", "r-09", "r-09", false},
 		{"Planning", "r-09", "r-10", false},
-		{"Local-Implemented", "r-09", "r-10", false},
+		{"Local-Implemented", "r-09", "r-10", true},
+		{"Promotion-Lane", "r-09", "r-10", true},
 		{"Completed", "r-09", "r-10", false},
 	} {
 		record := TODORecord{Stage: tc.stage, ReleaseID: tc.currentRelease, Source: TODOSource{Kind: "mongo-content-revision"}}
-		if got := placementReopensPlanning(record, tc.nextRelease); got != tc.want {
+		if got := placementReopensPlanning(record, tc.nextRelease, nil); got != tc.want {
 			t.Errorf("%s %s → %s: got %t, want %t", tc.stage, tc.currentRelease, tc.nextRelease, got, tc.want)
 		}
 		record.Source.Kind = ""
-		if placementReopensPlanning(record, tc.nextRelease) {
+		if placementReopensPlanning(record, tc.nextRelease, nil) {
 			t.Error("historical Foundation stage unexpectedly reopened")
 		}
+	}
+	record := TODORecord{Stage: "In-Progress", ReleaseID: "r-09", Position: intPointer(1), Source: TODOSource{Kind: "mongo-content-revision"}}
+	if !placementReopensPlanning(record, "r-09", intPointer(2)) {
+		t.Fatal("changing position retained approval for the old placement")
 	}
 }
 

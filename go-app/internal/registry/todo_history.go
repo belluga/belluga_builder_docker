@@ -569,12 +569,16 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 	if !bsonValidatorEqual(actualValidator.Document(), validator) {
 		prior := historyValidatorBeforeOwnership(validator)
 		priorV2 := historyValidatorBeforeSchemaV2(validator)
+		beforeRepositoryIdentity := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforePlanningAndRepositoryIdentity())
+		beforeAuditTriggers := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeAuditTriggers())
 		beforeDigest := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentDigest(validator))
 		beforePlacement := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeClearPlacement(validator))
 		beforeAdoption := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeHistoricalAdoption(validator))
 		beforeContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(validator))
+		beforeReviewOutcome := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewOutcome(validator))
+		beforeReviewWaiver := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewWaiver(validator))
 		beforeAdoptionAndContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)))
-		if !bsonValidatorEqual(actualValidator.Document(), prior) && !bsonValidatorEqual(actualValidator.Document(), priorV2) && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration {
+		if !bsonValidatorEqual(actualValidator.Document(), prior) && !bsonValidatorEqual(actualValidator.Document(), priorV2) && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
 		if !beforeDigest && !beforePlacement {
@@ -772,10 +776,10 @@ func scanLegacyHistoryOwnership(ctx context.Context, database *mongo.Database, n
 			}
 		} else {
 			var event TODOHistoryEvent
-			if cursor.Decode(&event) != nil || event.ObjectID.IsZero() || !validID(event.ProjectID) || !validID(event.TODOID) || event.Revision < 0 || !containsTODOString([]string{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind}, event.Kind) || !todoOperationIDPattern.MatchString(event.OperationID) || !validSourceDigest(event.RequestDigest) {
+			if cursor.Decode(&event) != nil || event.ObjectID.IsZero() || !validID(event.ProjectID) || !validID(event.TODOID) || event.Revision < 0 || !containsTODOString([]string{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"}, event.Kind) || !todoOperationIDPattern.MatchString(event.OperationID) || !validSourceDigest(event.RequestDigest) {
 				return todoTeach(name+".existing_records", "pass the typed immutable event contract before additive ownership validator upgrade", ErrConflict)
 			}
-			if event.Kind == "historical-adoption" && (event.PermissionDecision != "pre-iam-private-api-allow-all" || event.ActorClaim != nil) {
+			if (event.Kind == "historical-adoption" || event.Kind == "review-waiver-granted") && (event.PermissionDecision != "pre-iam-private-api-allow-all" || event.ActorClaim != nil) {
 				return todoTeach(name+".existing_records", "record the explicit pre-IAM permission decision without inventing an authenticated actor", ErrConflict)
 			}
 			for _, section := range derefSections(event.Changes.RecordSections) {
@@ -1001,6 +1005,9 @@ func (m *MongoStore) CompareTODOHistory(ctx context.Context, companyID, projectI
 	if !reflect.DeepEqual(from.Content.Architecture, to.Content.Architecture) {
 		changed = append(changed, "architecture")
 	}
+	if !reflect.DeepEqual(from.Content.Planning, to.Content.Planning) {
+		changed = append(changed, "planning")
+	}
 	if from.State.Stage != to.State.Stage {
 		changed = append(changed, "stage")
 	}
@@ -1067,7 +1074,7 @@ func (m *MongoStore) EditTODOContent(ctx context.Context, companyID string, requ
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
-	return m.writeTODOContent(ctx, database, collection, companyID, record, request, digest, "content_changed")
+	return m.writeTODOContent(ctx, database, collection, companyID, record, request, digest, "content_changed", true)
 }
 
 func (m *MongoStore) RestoreTODOContent(ctx context.Context, companyID string, request TODOContentRestoreRequest) (TODOContentEditResponse, error) {
@@ -1111,10 +1118,10 @@ func (m *MongoStore) RestoreTODOContent(ctx context.Context, companyID string, r
 	if err != nil {
 		return TODOContentEditResponse{}, ErrInvalid
 	}
-	return m.writeTODOContent(ctx, database, collection, companyID, record, edit, digest, "content_changed")
+	return m.writeTODOContent(ctx, database, collection, companyID, record, edit, digest, "content_changed", false)
 }
 
-func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, request TODOContentEditRequest, digest, eventKind string) (TODOContentEditResponse, error) {
+func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, request TODOContentEditRequest, digest, eventKind string, preserveArchived bool) (TODOContentEditResponse, error) {
 	var prior TODOHistoryEvent
 	findErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "operation_id", Value: request.OperationID}}).Decode(&prior)
 	if findErr == nil {
@@ -1158,7 +1165,13 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if request.Content.SchemaVersion == todoContentSchemaVersion && current.SchemaVersion != todoContentSchemaVersion {
 		return TODOContentEditResponse{}, todoTeach("content.schema_version", "use the digest-bound historical content migration operation to convert an admitted v1 TODO", ErrConflict)
 	}
+	if err := requireNoTODOContentDowngrade(current.SchemaVersion, request.Content.SchemaVersion); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	requestedContent := withContractOwnership(request.Content)
+	if preserveArchived && requestedContent.SchemaVersion == todoContentSchemaVersion && current.SchemaVersion == todoContentSchemaVersion {
+		requestedContent.LegacyContext = current.LegacyContext
+	}
 	if reflect.DeepEqual(current, requestedContent) {
 		response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: record.Revision, NoOp: true}
 		if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
@@ -1258,12 +1271,21 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	return response, nil
 }
 
+func requireNoTODOContentDowngrade(current, next int) error {
+	if current == todoContentSchemaVersion && next != todoContentSchemaVersion {
+		return todoTeach("content.schema_version", "retain the current v2 Mongo contract; historical v1 content is archive only", ErrConflict)
+	}
+	return nil
+}
+
 func validateAuthoredContent(content TODOAuthoredContent) error {
 	if content.SchemaVersion == todoContentSchemaVersion {
 		if content.Sections != nil || !validName(content.Title) || !validSummaryField(content.Objective, 1024) || content.DiffExpectation == nil || content.AffectedFiles == nil {
 			return todoTeach("content", "provide schema-v2 typed fields and bounded envelope fields", ErrInvalid)
 		}
-		if err := validateTODOContent(content.TODOContent, true, false); err != nil {
+		operationalContent := content.TODOContent
+		operationalContent.LegacyContext = nil
+		if err := validateTODOContent(operationalContent, false, false); err != nil {
 			return err
 		}
 		return validateAuthoredEnvelope(content)
@@ -1611,6 +1633,23 @@ func TODOContentVersionsValidator() bson.D {
 	}}}
 }
 
+// This exact deployed predecessor preceded both planning metadata and the
+// two approved repository identity fields. It is accepted only for a
+// scan-before-collMod migration; old content bytes remain unchanged.
+func contentVersionsValidatorBeforePlanningAndRepositoryIdentity() bson.D {
+	v1 := withoutBSONFieldsAtPath(TODOAuthoredContentV1Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	v2 = withoutBSONFieldsAtPath(v2, []string{"properties"}, "planning")
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{v1, v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+func contentVersionsValidatorBeforeAuditTriggers() bson.D {
+	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "planning", "properties"}, "audit_triggers")
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
 func TODOAuthoredContentValidator() bson.D {
 	v1Schema := TODOAuthoredContentV1Validator()
 	v2Schema := TODOAuthoredContentV2Validator()
@@ -1672,6 +1711,23 @@ func TODOContentSchemaValidator() bson.D {
 	stringArray := func(maxItems, maxLength int) bson.D {
 		return bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: maxItems}, {Key: "items", Value: text(maxLength)}}
 	}
+	object := func(required bson.A, properties bson.D) bson.D {
+		return bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: required}, {Key: "properties", Value: properties}}
+	}
+	array := func(max int, items bson.D) bson.D {
+		return bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: max}, {Key: "items", Value: items}}
+	}
+	boolean := bson.D{{Key: "bsonType", Value: "bool"}}
+	impact := object(bson.A{"cross_module", "public_contract", "runtime_sensitive", "high_severity"}, bson.D{{Key: "cross_module", Value: boolean}, {Key: "public_contract", Value: boolean}, {Key: "runtime_sensitive", Value: boolean}, {Key: "high_severity", Value: boolean}})
+	codeRef := object(bson.A{"repository_id", "path"}, bson.D{{Key: "repository_id", Value: text(2048)}, {Key: "path", Value: text(2048)}})
+	assumption := object(bson.A{"id", "status", "statement", "code_refs"}, bson.D{{Key: "id", Value: id}, {Key: "status", Value: text(16)}, {Key: "statement", Value: text(2048)}, {Key: "code_refs", Value: array(32, codeRef)}})
+	review := object(bson.A{"kind", "reference"}, bson.D{{Key: "kind", Value: text(32)}, {Key: "reference", Value: text(2048)}})
+	auditProperties := bson.D{{Key: "blast_radius", Value: text(16)}, {Key: "architecture_applicability", Value: text(16)}}
+	for _, name := range []string{"behavioral_change_or_bugfix", "changes_public_contract", "touches_auth_or_tenant", "touches_runtime_or_infra", "touches_tests", "critical_user_journey", "release_or_promotion_critical", "high_severity_plan_review_issue", "explicit_three_lane_request"} {
+		auditProperties = append(auditProperties, bson.E{Key: name, Value: boolean})
+	}
+	audit := bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: auditProperties}}
+	planning := object(bson.A{"complexity", "impact", "assumptions", "reviews"}, bson.D{{Key: "complexity", Value: text(16)}, {Key: "audit_triggers", Value: audit}, {Key: "impact", Value: impact}, {Key: "assumptions", Value: array(64, assumption)}, {Key: "reviews", Value: array(32, review)}})
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false},
 		{Key: "required", Value: bson.A{"schema_version"}},
 		{Key: "properties", Value: bson.D{
@@ -1686,6 +1742,7 @@ func TODOContentSchemaValidator() bson.D {
 			{Key: "references", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 64}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"kind", "ref"}}, {Key: "properties", Value: bson.D{{Key: "kind", Value: text(2048)}, {Key: "ref", Value: text(2048)}}}}}}},
 			{Key: "legacy_context", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 128}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"source_revision", "section_position", "ownership", "title", "body", "digest"}}, {Key: "properties", Value: bson.D{{Key: "source_revision", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "section_position", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "minimum", Value: 0}}}, {Key: "ownership", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"contract"}}}}, {Key: "title", Value: text(2048)}, {Key: "body", Value: text(64 << 10)}, {Key: "digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}}}}}}}},
 			{Key: "architecture", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"decision", "rationale", "protection"}}, {Key: "properties", Value: bson.D{{Key: "decision", Value: text(2048)}, {Key: "rationale", Value: text(2048)}, {Key: "protection", Value: text(2048)}}}}},
+			{Key: "planning", Value: planning},
 		}},
 	}
 }
@@ -1700,7 +1757,7 @@ func TODOEventsValidator() bson.D {
 			{Key: "project_id", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 			{Key: "todo_id", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 			{Key: "revision", Value: bson.D{{Key: "bsonType", Value: "long"}, {Key: "minimum", Value: 0}}},
-			{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind}}}},
+			{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"}}}},
 			{Key: "occurred_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
 			{Key: "operation_id", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "minLength", Value: 1}, {Key: "maxLength", Value: 128}}},
 			{Key: "request_digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}},
@@ -1752,7 +1809,86 @@ func TODOProofReferenceValidator() bson.D {
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"kind", "source", "ref", "source_digest", "verification_state"}}, {Key: "properties", Value: bson.D{
 		{Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "source", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "ref", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 		{Key: "source_digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}}, {Key: "verification_state", Value: bson.D{{Key: "enum", Value: bson.A{"unverified", "verified"}}}},
+		{Key: "outcome", Value: reviewOutcomeSchema()},
 	}}}
+}
+
+func historyValidatorBeforeReviewOutcome(value bson.D) bson.D {
+	raw, err := bson.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var clone bson.D
+	if bson.Unmarshal(raw, &clone) != nil {
+		return nil
+	}
+	for _, itemPath := range [][]string{
+		{"$jsonSchema", "properties", "proof_reference", "properties"},
+		{"$jsonSchema", "properties", "changes", "properties", "proof_refs", "items", "properties"},
+		{"$jsonSchema", "properties", "changes", "properties", "waiver_refs", "items", "properties"},
+		{"$jsonSchema", "properties", "changes", "properties", "verified_transition_ref", "properties"},
+	} {
+		clone = withoutBSONFieldsAtPath(clone, itemPath, "outcome")
+	}
+	return clone
+}
+
+func historyValidatorBeforeReviewWaiver(value bson.D) bson.D {
+	raw, err := bson.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var clone bson.D
+	if bson.Unmarshal(raw, &clone) != nil {
+		return nil
+	}
+	for i := range clone {
+		if clone[i].Key != "$jsonSchema" {
+			continue
+		}
+		schema, ok := clone[i].Value.(bson.D)
+		if !ok {
+			return nil
+		}
+		for j := range schema {
+			if schema[j].Key != "properties" {
+				continue
+			}
+			properties, ok := schema[j].Value.(bson.D)
+			if !ok {
+				return nil
+			}
+			for k := range properties {
+				if properties[k].Key != "kind" {
+					continue
+				}
+				kind, ok := properties[k].Value.(bson.D)
+				if !ok {
+					return nil
+				}
+				for n := range kind {
+					if kind[n].Key != "enum" {
+						continue
+					}
+					enum, ok := kind[n].Value.(bson.A)
+					if !ok {
+						return nil
+					}
+					filtered := bson.A{}
+					for _, item := range enum {
+						if item != reviewWaiverEventKind {
+							filtered = append(filtered, item)
+						}
+					}
+					kind[n].Value = filtered
+				}
+				properties[k].Value = kind
+			}
+			schema[j].Value = properties
+		}
+		clone[i].Value = schema
+	}
+	return clone
 }
 
 func TODOActorClaimValidator() bson.D {

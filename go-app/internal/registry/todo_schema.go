@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -115,7 +116,19 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	if bsonValidatorEqual(actual, TODOCollectionValidator()) {
 		return nil
 	}
-	if !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeNextStepEdit()) && !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeContentMigration()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeHistoricalAdoption()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
+	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeRepositoryIdentity(), TODOCollectionValidatorBeforeReviewWaiver(), TODOCollectionValidatorBeforeNextStepEdit(), priorTODOCollectionValidator(),
+		TODOCollectionValidatorBeforeContentMigration(), TODOCollectionValidatorBeforeHistoricalAdoption(), TODOCollectionValidatorBeforeOwnership(),
+		TODOCollectionValidatorBeforeRecordEvents(), TODOCollectionValidatorBeforeCreation(),
+	}
+	recognized := bsonValidatorEqual(actual, TODOCollectionValidatorBeforeReviewOutcome())
+	for _, predecessor := range predecessors {
+		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
+			recognized = true
+			break
+		}
+	}
+	if !recognized {
 		return todoTeach("todos.validator", "match the canonical schema or a recognized strict/error predecessor", ErrConflict)
 	}
 	cursor, err := database.Collection(todosCollection).Find(ctx, bson.D{})
@@ -152,6 +165,66 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	return verifyTODOCollection(ctx, database)
 }
 
+// TODOCollectionValidatorBeforeRepositoryIdentity is the deployed strict
+// predecessor that did not allow the approved repository and delivery branch
+// on a diff scope. No other fields or validation rules are relaxed.
+func TODOCollectionValidatorBeforeRepositoryIdentity() bson.D {
+	raw, err := bson.Marshal(TODOCollectionValidator())
+	if err != nil {
+		return nil
+	}
+	var clone bson.D
+	if bson.Unmarshal(raw, &clone) != nil {
+		return nil
+	}
+	return withoutBSONFieldsAtPath(clone, []string{"$jsonSchema", "properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+}
+
+func withoutBSONFieldsAtPath(document bson.D, path []string, fields ...string) bson.D {
+	if len(path) == 0 {
+		filtered := make(bson.D, 0, len(document))
+		for _, element := range document {
+			if !slices.Contains(fields, element.Key) {
+				filtered = append(filtered, element)
+			}
+		}
+		return filtered
+	}
+	for i := range document {
+		if document[i].Key == path[0] {
+			child, ok := document[i].Value.(bson.D)
+			if !ok {
+				return nil
+			}
+			document[i].Value = withoutBSONFieldsAtPath(child, path[1:], fields...)
+			return document
+		}
+	}
+	return nil
+}
+
+func replaceBSONValueAtPath(document bson.D, path []string, value any) bson.D {
+	if len(path) == 0 {
+		return nil
+	}
+	for i := range document {
+		if document[i].Key != path[0] {
+			continue
+		}
+		if len(path) == 1 {
+			document[i].Value = value
+			return document
+		}
+		child, ok := document[i].Value.(bson.D)
+		if !ok {
+			return nil
+		}
+		document[i].Value = replaceBSONValueAtPath(child, path[1:], value)
+		return document
+	}
+	return nil
+}
+
 // TODOCollectionValidatorBeforeHistoricalAdoption is the exact strict
 // predecessor whose last-operation enum did not yet include this private
 // server-owned mutation. Existing records are scanned before collMod.
@@ -165,6 +238,10 @@ func TODOCollectionValidatorBeforeContentMigration() bson.D {
 
 func TODOCollectionValidatorBeforeNextStepEdit() bson.D {
 	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
+}
+
+func TODOCollectionValidatorBeforeReviewWaiver() bson.D {
+	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit"})
 }
 
 func todoCollectionValidatorWithOperationKinds(kinds bson.A) bson.D {
