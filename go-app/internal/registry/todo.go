@@ -130,6 +130,8 @@ type TODOProofReference struct {
 
 type TODORepositoryScope struct {
 	Repository       string   `json:"repository" bson:"repository"`
+	RepositoryID     string   `json:"repository_id,omitempty" bson:"repository_id,omitempty"`
+	DeliveryBranch   string   `json:"delivery_branch,omitempty" bson:"delivery_branch,omitempty"`
 	Baseline         string   `json:"baseline" bson:"baseline"`
 	ExpectedPaths    []string `json:"expected_paths" bson:"expected_paths"`
 	NotExpectedPaths []string `json:"not_expected_paths" bson:"not_expected_paths"`
@@ -502,6 +504,7 @@ func diffArraySchema() bson.D {
 		{Key: "additionalProperties", Value: false},
 		{Key: "properties", Value: bson.D{
 			{Key: "repository", Value: nonemptyStringSchema()}, {Key: "baseline", Value: nonemptyStringSchema()},
+			{Key: "repository_id", Value: nonemptyStringSchema()}, {Key: "delivery_branch", Value: nonemptyStringSchema()},
 			{Key: "expected_paths", Value: stringArraySchema()}, {Key: "not_expected_paths", Value: stringArraySchema()},
 		}},
 	}

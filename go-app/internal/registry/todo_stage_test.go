@@ -12,6 +12,22 @@ import (
 	"time"
 )
 
+func TestMVPRepositoryComesFromApprovedMongoDiffScope(t *testing.T) {
+	todo := TODORecord{Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker"}}}
+	if got := mvpApprovedDockerRepository(todo); got != "belluga/belluga_builder_docker" {
+		t.Fatalf("approved production repository = %q", got)
+	}
+	todo.DiffExpectation[0].RepositoryID = ""
+	if got := mvpApprovedDockerRepository(todo); got != "" {
+		t.Fatalf("missing approval produced repository %q", got)
+	}
+	todo.Source.Kind = ""
+	todo.DiffExpectation[0].RepositoryID = "belluga/belluga_builder_docker"
+	if got := mvpApprovedDockerRepository(todo); got != "" {
+		t.Fatalf("historical import fabricated approved Mongo repository %q", got)
+	}
+}
+
 func TestRestoredLocalProofRequiresExactDeliveredContract(t *testing.T) {
 	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "verified"}
 	commits := []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: strings.Repeat("a", 40), SourceDigest: proof.SourceDigest, VerificationState: "verified"}}

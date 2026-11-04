@@ -57,6 +57,11 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		"company_id": {companyID}, "project_id": {todo.ProjectID}, "todo_id": {todo.ID},
 		"deployment_id": {parts[0]}, "root_sha": {parts[1]}, "module_path": {"project"}, "commit_sha": {parts[1]}, "project_mode": {"mvp"},
 	}
+	if todo.Source.Kind == "mongo-content-revision" {
+		if repositoryID := mvpApprovedDockerRepository(todo); repositoryID != "" {
+			query.Set("docker_repository_id", repositoryID)
+		}
+	}
 	if len(builderCommits) > 0 {
 		query.Set("project_commits", strings.Join(builderCommits, ","))
 	}
@@ -101,6 +106,18 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	}{verified, contentDigest, todo.VerifiedTransitionRef.SourceDigest, pacedCommits})
 	hash := sha256.Sum256(evidence)
 	return TODOProofReference{Kind: "production-deployment", Source: "private-reader", Reference: claim.Reference, SourceDigest: "sha256:" + hex.EncodeToString(hash[:]), VerificationState: "verified"}, nil
+}
+
+func mvpApprovedDockerRepository(todo TODORecord) string {
+	if todo.Source.Kind != "mongo-content-revision" {
+		return ""
+	}
+	for _, scope := range todo.DiffExpectation {
+		if scope.Repository == "Builder" && validGitRepositoryID(scope.RepositoryID) {
+			return scope.RepositoryID
+		}
+	}
+	return ""
 }
 
 func equalCommitClaims(a, b []string) bool {

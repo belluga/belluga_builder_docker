@@ -285,6 +285,18 @@ func (m *MongoStore) EditTODOPlacement(ctx context.Context, companyID string, re
 		})
 }
 
+func placementReopensPlanning(record TODORecord, nextRelease string) bool {
+	if record.Source.Kind != "mongo-content-revision" || record.ReleaseID == nextRelease {
+		return false
+	}
+	switch record.Stage {
+	case "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress":
+		return true
+	default:
+		return false
+	}
+}
+
 func validRecordMutationIdentity(projectID, todoID string, expected *int64, operationID, reason string) bool {
 	return validID(projectID) && validID(todoID) && expected != nil && *expected >= 0 && *expected < math.MaxInt64 && todoOperationIDPattern.MatchString(operationID) && validSummaryField(reason, 512)
 }
@@ -364,6 +376,26 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	operation := TODOOperationState{ID: operationID, Kind: kind, RequestDigest: digest, ResultRevision: next}
 	set := append(bson.D{}, fields...)
 	set = append(set, extra(record)...)
+	if kind == "placement-edit" {
+		placement := request.(TODOPlacementEditRequest)
+		nextRelease := placement.ReleaseID
+		if placement.Detach || placement.Action == "detach" {
+			nextRelease = ""
+		}
+		if placementReopensPlanning(record, nextRelease) {
+			_, contentDigest, contentRef, available, subjectErr := currentTODOContentSubject(ctx, database, record)
+			if subjectErr != nil {
+				return TODOContentEditResponse{}, subjectErr
+			}
+			if !available || !validSourceDigest(contentDigest) {
+				return TODOContentEditResponse{}, todoTeach("content_revision", "resolve the current immutable Mongo content before changing approved Release membership", ErrConflict)
+			}
+			planning, verified, work := "Planning", "verified", "planning"
+			proof := TODOProofReference{Kind: "planning-stage", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: contentDigest, VerificationState: verified}
+			set = append(set, bson.E{Key: "stage", Value: planning}, bson.E{Key: "stage_verification", Value: verified}, bson.E{Key: "work_state", Value: work}, bson.E{Key: "verified_transition_ref", Value: proof})
+			newChanges.Stage, newChanges.StageVerification, newChanges.WorkState, newChanges.VerifiedTransitionRef = &planning, &verified, &work, &proof
+		}
+	}
 	set = append(set, bson.E{Key: "last_operation", Value: operation}, bson.E{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())})
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	if kind == "placement-edit" {
@@ -395,10 +427,6 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		}
 		if result.MatchedCount != 1 {
 			return nil, &todoRevisionConflict{Revision: next}
-		}
-		newChanges, err := changes(record)
-		if err != nil {
-			return nil, err
 		}
 		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, TODOID: todoID, Revision: next, Kind: eventKind, OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: newChanges, Reason: reason}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {

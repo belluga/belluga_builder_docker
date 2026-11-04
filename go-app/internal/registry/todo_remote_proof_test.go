@@ -71,6 +71,25 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 	}
 }
 
+func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("repository") != "belluga/belluga_builder_docker" || q.Get("branch") != "r-10-rc" {
+			t.Errorf("proof target = %s @ %s", q.Get("repository"), q.Get("branch"))
+		}
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	digest := sourceHash([]byte("approved Mongo content"))
+	todo := TODORecord{ID: "mongo-only", ProjectID: "builder", ReleaseID: "r-10", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "r-10-rc", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
+	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
+	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+		t.Fatalf("Foundation-free proof = %+v, %v", proof, err)
+	}
+}
+
 func TestFoundationOnlyDeliveryUsesPublishedMainCommit(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

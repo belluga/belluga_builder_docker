@@ -172,7 +172,7 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
 	}
 	parts := strings.SplitN(foundationRepositoryID, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+	if todo.Source.Kind != "mongo-content-revision" && (len(parts) != 2 || parts[0] == "" || parts[1] == "") {
 		return TODOProofReference{}, todoTeach("remote_proof", "use the registered Project Foundation repository owner", ErrConflict)
 	}
 	foundationOnly := len(todo.DiffExpectation) > 0
@@ -190,9 +190,21 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 		if foundationScope(scope.Repository) && !foundationOnly {
 			continue
 		}
-		branch, ok := implementationBranch(todo.ProjectID, todo.ReleaseID, scope.Repository)
-		if !ok {
-			return TODOProofReference{}, todoTeach("diff_expectation.repository", "configure the remote release branch for this implementing repository", ErrConflict)
+		branch, repository := scope.DeliveryBranch, scope.RepositoryID
+		if todo.Source.Kind == "mongo-content-revision" {
+			if !validGitRepositoryID(repository) || !validDeliveryBranch(branch) {
+				return TODOProofReference{}, todoTeach("diff_expectation.repository_id/delivery_branch", "publish an exact approved owner/repository and destination branch for each implementing repository", ErrConflict)
+			}
+		} else {
+			var ok bool
+			branch, ok = implementationBranch(todo.ProjectID, todo.ReleaseID, scope.Repository)
+			if !ok {
+				return TODOProofReference{}, todoTeach("diff_expectation.repository", "configure the remote release branch for this implementing repository", ErrConflict)
+			}
+			repository = parts[0] + "/" + canonicalImplementationLabel(scope.Repository)
+			if foundationScope(scope.Repository) {
+				repository = foundationRepositoryID
+			}
 		}
 		claims := 0
 		for _, claim := range todo.ImplementationCommits {
@@ -202,10 +214,6 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 			claims++
 			if !validGitCommit(claim.Commit) || claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
 				return TODOProofReference{}, todoTeach("implementation_commits", "bind each full commit SHA to the approved current TODO content revision", ErrConflict)
-			}
-			repository := parts[0] + "/" + canonicalImplementationLabel(scope.Repository)
-			if foundationScope(scope.Repository) {
-				repository = foundationRepositoryID
 			}
 			result, err := m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit)
 			if err != nil {
@@ -244,6 +252,23 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 		kind, source = "foundation-publication", "private-reader"
 	}
 	return TODOProofReference{Kind: kind, Source: source, Reference: strings.Join(claims, ";"), SourceDigest: sourceHash(data), VerificationState: "verified"}, nil
+}
+
+func validGitRepositoryID(value string) bool {
+	parts := strings.Split(value, "/")
+	if len(parts) != 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".") || !branchPattern.MatchString(part) || strings.Contains(part, "/") || strings.Contains(part, "..") {
+			return false
+		}
+	}
+	return true
+}
+
+func validDeliveryBranch(value string) bool {
+	return value != "" && !strings.HasPrefix(value, "/") && !strings.HasSuffix(value, "/") && !strings.Contains(value, "..") && branchPattern.MatchString(value)
 }
 
 func foundationScope(repository string) bool {

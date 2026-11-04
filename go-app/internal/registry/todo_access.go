@@ -334,7 +334,7 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			return TODOProofReference{}, contentErr
 		}
 		if content.SchemaVersion == todoContentSchemaVersion {
-			if err := ValidateTODOContent(content.TODOContent, false); err != nil {
+			if err := validateMongoPlanningContract(record, content); err != nil {
 				return TODOProofReference{}, err
 			}
 		}
@@ -342,9 +342,6 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 	if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
 		if err := requireApprovedCurrentContentOrMigration(ctx, m.client.Database(company.DatabaseName), record, contentDigest); err != nil {
 			return TODOProofReference{}, err
-		}
-		if project.Binding == nil {
-			return TODOProofReference{}, todoTeach("project.binding", "register the Project Foundation repository before remote delivery proof", ErrConflict)
 		}
 		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
 			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run and remotely verified implementation commits", ErrConflict)
@@ -360,13 +357,13 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			if request.LocalProof != nil {
 				return TODOProofReference{}, todoTeach("local_proof", "Foundation-only delivery uses its published revision, not a code run", ErrConflict)
 			}
-			return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, TODOProofReference{})
+			return m.verifyRemoteLocalDelivery(ctx, companyID, "", record, contentDigest, TODOProofReference{})
 		}
 		local, err := m.validateLocalProof(record.ID, request.LocalProof)
 		if err != nil {
 			return TODOProofReference{}, err
 		}
-		return m.verifyRemoteLocalDelivery(ctx, companyID, project.Binding.RepositoryID, record, contentDigest, local)
+		return m.verifyRemoteLocalDelivery(ctx, companyID, "", record, contentDigest, local)
 	}
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
 }

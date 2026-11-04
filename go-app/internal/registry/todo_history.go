@@ -1306,6 +1306,9 @@ func validateAuthoredEnvelope(content TODOAuthoredContent) error {
 		if !validName(scope.Repository) || strings.TrimSpace(scope.Baseline) == "" || scope.ExpectedPaths == nil || scope.NotExpectedPaths == nil {
 			return todoTeach("content.diff_expectation", "contain valid repository scopes and explicit path arrays", ErrInvalid)
 		}
+		if (scope.RepositoryID == "") != (scope.DeliveryBranch == "") || scope.RepositoryID != "" && (!validGitRepositoryID(scope.RepositoryID) || !validDeliveryBranch(scope.DeliveryBranch)) {
+			return todoTeach("content.diff_expectation.repository_id/delivery_branch", "provide both an exact owner/repository and safe destination branch, or omit both before proof", ErrInvalid)
+		}
 		for _, p := range append(append([]string{}, scope.ExpectedPaths...), scope.NotExpectedPaths...) {
 			if !validRepositoryPattern(p) {
 				return todoTeach("content.diff_expectation.paths", "use repository-relative valid patterns", ErrInvalid)
@@ -1739,6 +1742,7 @@ func historyScopeArraySchema() bson.D {
 		{Key: "required", Value: bson.A{"repository", "baseline", "expected_paths", "not_expected_paths"}},
 		{Key: "properties", Value: bson.D{
 			{Key: "repository", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "baseline", Value: bson.D{{Key: "bsonType", Value: "string"}}},
+			{Key: "repository_id", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "delivery_branch", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 			{Key: "expected_paths", Value: historyStringArraySchema()}, {Key: "not_expected_paths", Value: historyStringArraySchema()},
 		}},
 	}}}

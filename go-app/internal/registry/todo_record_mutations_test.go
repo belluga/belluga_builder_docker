@@ -41,6 +41,30 @@ func TestSectionOwnershipNormalizationRequiresExactTextAndExplicitClassification
 	}
 }
 
+func TestMongoPlacementReopensOnlyUnfinishedApprovalOnReleaseChange(t *testing.T) {
+	for _, tc := range []struct {
+		stage, currentRelease, nextRelease string
+		want bool
+	}{
+		{"Implementation-Approval-Pending", "r-09", "r-10", true},
+		{"Ready-for-Implementation", "r-09", "r-10", true},
+		{"In-Progress", "r-09", "r-10", true},
+		{"In-Progress", "r-09", "r-09", false},
+		{"Planning", "r-09", "r-10", false},
+		{"Local-Implemented", "r-09", "r-10", false},
+		{"Completed", "r-09", "r-10", false},
+	} {
+		record := TODORecord{Stage: tc.stage, ReleaseID: tc.currentRelease, Source: TODOSource{Kind: "mongo-content-revision"}}
+		if got := placementReopensPlanning(record, tc.nextRelease); got != tc.want {
+			t.Errorf("%s %s → %s: got %t, want %t", tc.stage, tc.currentRelease, tc.nextRelease, got, tc.want)
+		}
+		record.Source.Kind = ""
+		if placementReopensPlanning(record, tc.nextRelease) {
+			t.Error("historical Foundation stage unexpectedly reopened")
+		}
+	}
+}
+
 type recordMutationHTTPService struct {
 	*testService
 	called  string
