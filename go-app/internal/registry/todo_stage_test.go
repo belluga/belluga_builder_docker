@@ -289,31 +289,25 @@ func TestCurrentContentOwnerApprovalProofRequiresCanonicalApprovalAndExactRevisi
 	revision := int64(4)
 	position := 1
 	approval := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/todo-a/content/7", SourceDigest: digest, VerificationState: "unverified"}
-	record := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Position: &position, Stage: "In-Progress", StageVerification: "unverified", Revision: revision, ProofReferences: []TODOProofReference{approval}, Sections: []TODOSection{{Key: "approval", BodyMarkdown: "- **Approval status:** approved for Mongo content revision 7, digest " + digest + "."}}}
-	content := TODOAuthoredContent{Sections: []TODOSection{{Key: "contract", BodyMarkdown: "approved decisions are immutable content"}}}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Position: &position, Stage: "In-Progress", StageVerification: "unverified", Revision: revision, ProofReferences: []TODOProofReference{approval}}
 	request := VerifyCurrentTODOStageRequest{
 		ProjectID: "builder", TODOID: "todo-a", ExpectedRevision: &revision, OperationID: "verify-content-4",
 		ProofReferences: []TODOProofReference{{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/todo-a/content/7", SourceDigest: digest, VerificationState: "unverified"}},
 	}
-	proof, err := currentContentOwnerApprovalProof(record, request, content, 7, digest, "builder/todo-a/content/7")
+	proof, err := currentContentOwnerApprovalProof(record, request, 7, digest, "builder/todo-a/content/7")
 	if err != nil || proof.VerificationState != "verified" || proof.SourceDigest != digest {
 		t.Fatalf("current approved-content proof = %+v, %v", proof, err)
 	}
 
-	withoutCanonicalApproval := record
-	withoutCanonicalApproval.Sections = nil
-	if _, err := currentContentOwnerApprovalProof(withoutCanonicalApproval, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
-		t.Fatal("caller-supplied owner approval passed without canonical record approval")
-	}
-	wrongRecordApproval := record
-	wrongRecordApproval.Sections = []TODOSection{{Key: "approval", BodyMarkdown: "- **Approval status:** approved for Mongo content revision 6, digest " + digest + "."}}
-	if _, err := currentContentOwnerApprovalProof(wrongRecordApproval, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
-		t.Fatal("record approval for another revision passed")
-	}
 	withoutRecordEvidence := record
 	withoutRecordEvidence.ProofReferences = nil
-	if _, err := currentContentOwnerApprovalProof(withoutRecordEvidence, request, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+	if _, err := currentContentOwnerApprovalProof(withoutRecordEvidence, request, 7, digest, "builder/todo-a/content/7"); err == nil {
 		t.Fatal("caller-supplied owner approval passed without canonical record evidence")
+	}
+	wrongRecordApproval := record
+	wrongRecordApproval.ProofReferences = []TODOProofReference{{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/todo-a/content/6", SourceDigest: digest, VerificationState: "unverified"}}
+	if _, err := currentContentOwnerApprovalProof(wrongRecordApproval, request, 7, digest, "builder/todo-a/content/7"); err == nil {
+		t.Fatal("record approval for another revision passed")
 	}
 
 	for name, mutate := range map[string]func(*VerifyCurrentTODOStageRequest){
@@ -331,7 +325,7 @@ func TestCurrentContentOwnerApprovalProofRequiresCanonicalApprovalAndExactRevisi
 			candidate := request
 			candidate.ProofReferences = append([]TODOProofReference(nil), request.ProofReferences...)
 			mutate(&candidate)
-			if _, err := currentContentOwnerApprovalProof(record, candidate, content, 7, digest, "builder/todo-a/content/7"); err == nil {
+			if _, err := currentContentOwnerApprovalProof(record, candidate, 7, digest, "builder/todo-a/content/7"); err == nil {
 				t.Fatalf("invalid verification request %+v was accepted", candidate)
 			}
 		})

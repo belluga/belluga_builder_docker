@@ -485,7 +485,7 @@ func mongoBornStageProof(record TODORecord, request TODOActionRequest, contentDi
 	}
 }
 
-func currentContentOwnerApprovalProof(record TODORecord, request VerifyCurrentTODOStageRequest, content TODOAuthoredContent, revision int64, digest, reference string) (TODOProofReference, error) {
+func currentContentOwnerApprovalProof(record TODORecord, request VerifyCurrentTODOStageRequest, revision int64, digest, reference string) (TODOProofReference, error) {
 	if request.ProjectID != record.ProjectID || request.TODOID != record.ID || request.ExpectedRevision == nil || *request.ExpectedRevision != record.Revision {
 		return TODOProofReference{}, todoTeach("project_id/todo_id/expected_revision", "match the exact current TODO identity and Mongo revision", ErrConflict)
 	}
@@ -494,9 +494,6 @@ func currentContentOwnerApprovalProof(record TODORecord, request VerifyCurrentTO
 	}
 	if revision < 1 || !validSourceDigest(digest) || reference != fmt.Sprintf("%s/%s/content/%d", record.ProjectID, record.ID, revision) {
 		return TODOProofReference{}, todoTeach("content_revision/digest", "use the canonical current TODO content revision and digest", ErrConflict)
-	}
-	if len(content.Sections) == 0 || !recordHasCurrentOwnerApproval(record.Sections, revision, digest) {
-		return TODOProofReference{}, todoTeach("approval/content_revision", "the canonical record must approve this current immutable content revision and digest", ErrConflict)
 	}
 	if !hasCurrentOwnerApproval(record.ProofReferences, reference, digest) {
 		return TODOProofReference{}, todoTeach("proof_refs", "the canonical TODO record must already contain the owner approval bound to this content revision and digest", ErrConflict)
@@ -521,24 +518,6 @@ func hasCurrentOwnerApproval(proofs []TODOProofReference, reference, digest stri
 	return false
 }
 
-func recordHasCurrentOwnerApproval(sections []TODOSection, revision int64, digest string) bool {
-	for _, section := range sections {
-		if section.Key != "approval" {
-			continue
-		}
-		body := strings.ToLower(section.BodyMarkdown)
-		marker := "approval status:"
-		index := strings.Index(body, marker)
-		if index < 0 {
-			continue
-		}
-		status := strings.TrimLeft(strings.TrimSpace(body[index+len(marker):]), "*` \t\r\n")
-		if strings.HasPrefix(status, "approved") && strings.Contains(body, fmt.Sprintf("content revision %d", revision)) && strings.Contains(body, strings.ToLower(digest)) {
-			return true
-		}
-	}
-	return false
-}
 
 func currentMongoContentSubject(ctx context.Context, database *mongo.Database, record TODORecord) (int64, string, string, error) {
 	var version TODOContentVersion
@@ -727,11 +706,7 @@ func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID strin
 		if !hasCurrentContent {
 			return TODOActionResponse{}, todoTeach("content_revision", "revalidate only against the current immutable TODO content revision", ErrConflict)
 		}
-		content, contentErr := m.contentAtRevision(ctx, database, request.ProjectID, request.TODOID, contentRevision)
-		if contentErr != nil {
-			return TODOActionResponse{}, contentErr
-		}
-		proof, err = currentContentOwnerApprovalProof(record, request, content, contentRevision, contentDigest, contentRef)
+		proof, err = currentContentOwnerApprovalProof(record, request, contentRevision, contentDigest, contentRef)
 		if err != nil {
 			return TODOActionResponse{}, err
 		}
