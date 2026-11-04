@@ -637,9 +637,12 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &stale, OperationID: "stale-local-delivery", RequestedStage: "Local-Implemented", LocalProof: result}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stale local revision accepted: %v", err)
 	}
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-delivery", RequestedStage: "Local-Implemented", LocalProof: result}); err != nil {
-		t.Fatalf("local delivery: %v", err)
+	localRequest := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-delivery", RequestedStage: "Local-Implemented", LocalProof: result}
+	localCompetitor := localRequest
+	if projectID == "builder" {
+		localCompetitor.OperationID = "competing-local-delivery"
 	}
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, localRequest, localCompetitor)
 	revision++
 	beforeMove, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
 	if err != nil {
@@ -760,8 +763,81 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "wrong-production-digest", RequestedStage: "Completed", ProofReferences: []TODOProofReference{wrongDeployment}}); err == nil || !strings.Contains(err.Error(), "proof_refs") {
 		t.Fatalf("stale production digest accepted or wrong TEACH: %v", err)
 	}
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}); err != nil {
-		t.Fatalf("production delivery: %v", err)
+	completedRequest := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}
+	completedCompetitor := completedRequest
+	if projectID == "no-foundation" {
+		completedCompetitor.OperationID = "competing-production-delivery"
+	}
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, completedRequest, completedCompetitor)
+}
+
+func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, first, second TODOActionRequest) {
+	t.Helper()
+	type outcome struct {
+		operationID string
+		err         error
+	}
+	start := make(chan struct{})
+	results := make(chan outcome, 2)
+	for _, request := range []TODOActionRequest{first, second} {
+		go func(request TODOActionRequest) {
+			<-start
+			_, err := store.TransitionTODO(ctx, "company-a", request)
+			results <- outcome{operationID: request.OperationID, err: err}
+		}(request)
+	}
+	close(start)
+	var winningOperation string
+	successes, conflicts := 0, 0
+	for range 2 {
+		result := <-results
+		switch {
+		case result.err == nil:
+			successes++
+			winningOperation = result.operationID
+		case errors.Is(result.err, ErrConflict):
+			conflicts++
+		default:
+			t.Fatalf("concurrent %s transition: %v", first.RequestedStage, result.err)
+		}
+	}
+	if first.OperationID == second.OperationID {
+		if successes < 1 || successes+conflicts != 2 {
+			t.Fatalf("same-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
+		}
+	} else if successes != 1 || conflicts != 1 {
+		t.Fatalf("competing-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
+	}
+	current, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+	if err != nil || current.TODORevision != revision+1 || current.TODO.Stage != first.RequestedStage || current.TODO.StageVerification != "verified" {
+		t.Fatalf("concurrent %s left wrong aggregate: %+v, %v", first.RequestedStage, current, err)
+	}
+	company, err := store.company(ctx, "company-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry := first
+	if winningOperation == second.OperationID {
+		retry = second
+	}
+	if _, err := store.TransitionTODO(ctx, "company-a", retry); err != nil {
+		t.Fatalf("exact %s retry: %v", first.RequestedStage, err)
+	}
+	if first.OperationID != second.OperationID {
+		loser := second
+		if winningOperation == second.OperationID {
+			loser = first
+		}
+		if _, err := store.TransitionTODO(ctx, "company-a", loser); !errors.Is(err, ErrConflict) {
+			t.Fatalf("losing %s key did not conflict: %v", first.RequestedStage, err)
+		}
+	}
+	eventsAfterRetry, err := store.client.Database(company.DatabaseName).Collection(todoEventsCollection).CountDocuments(ctx, bson.D{
+		{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID},
+		{Key: "operation_id", Value: bson.D{{Key: "$in", Value: bson.A{first.OperationID, second.OperationID}}}},
+	})
+	if err != nil || eventsAfterRetry != 1 {
+		t.Fatalf("retry of %s wrote %d events: %v", first.RequestedStage, eventsAfterRetry, err)
 	}
 }
 
