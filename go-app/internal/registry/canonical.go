@@ -637,6 +637,7 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 		}
 		if item.family == FamilyEndpoint {
 			idx = append(idx, mongo.IndexModel{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "payload.method", Value: 1}, {Key: "payload.route", Value: 1}, {Key: "payload.host_scope", Value: 1}}, Options: options.Index().SetName("endpoint_method_route_host_unique").SetUnique(true)})
+			idx = append(idx, mongo.IndexModel{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "payload.module_id", Value: 1}, {Key: "id", Value: 1}}, Options: options.Index().SetName("endpoint_module_navigation")})
 		}
 		if _, err := db.Collection(item.name).Indexes().CreateMany(ctx, idx); err != nil {
 			return err

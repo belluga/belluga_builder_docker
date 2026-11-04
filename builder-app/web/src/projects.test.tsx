@@ -242,7 +242,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
     expect(detailCalls()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
     expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
     expect(detailCalls()).toBe(1);
@@ -672,7 +672,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Design System");
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
   });
   it("keeps the approved Overview narrative primary and links the Landing separately", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -702,7 +702,7 @@ describe("single root Project experience", () => {
     render(<Projects />);
     expect(await screen.findByText("Problem evidence")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByText("Conhecimento canônico pending")).toBeInTheDocument();
+    expect(await screen.findByText("Documentação ainda não iniciada")).toBeInTheDocument();
   });
   it("does not substitute portfolio text for a missing admitted Overview", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -1005,7 +1005,7 @@ describe("single root Project experience", () => {
     mockFetch([{ path: "modules/legacy.md", url: legacyURL }], { ok: true, body: "# Legacy content" });
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
-    expect(await screen.findByText("Conhecimento canônico pending")).toBeInTheDocument();
+    expect(await screen.findByText("Documentação ainda não iniciada")).toBeInTheDocument();
     expect(screen.queryByText("Legacy content")).not.toBeInTheDocument();
     expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === legacyURL)).toBe(false);
   });

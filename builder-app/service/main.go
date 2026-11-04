@@ -86,6 +86,7 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
 	mux.HandleFunc("/api/roadmap", consumer.apiHandler)
 	mux.HandleFunc("/api/knowledge", consumer.knowledgeAPIHandler)
+	mux.HandleFunc("/api/knowledge/index", consumer.knowledgeIndexAPIHandler)
 	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))

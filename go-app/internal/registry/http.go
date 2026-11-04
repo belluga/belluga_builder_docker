@@ -92,12 +92,17 @@ type canonicalKnowledgeReader interface {
 	CompareCanonicalHistory(context.Context, string, string, CanonicalFamily, string, int64, int64) (CanonicalComparison, error)
 }
 
+type canonicalIndexReader interface {
+	CanonicalIndex(context.Context, string, string, CanonicalIndexQuery) (CanonicalIndexPage, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template", h.canonicalTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest", h.canonicalManifest)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index", h.canonicalIndex)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}", h.canonicalEntity)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}", h.canonicalEndpoint)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}", h.canonicalDecision)
@@ -643,6 +648,43 @@ func (h *Handler) canonicalManifest(w http.ResponseWriter, r *http.Request) {
 	}
 	value, err := service.CanonicalManifest(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), r.URL.Query().Get("generation_id"))
 	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalIndex(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalIndexReader)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	if len(q) > 7 {
+		h.writeError(w, ErrInvalid)
+		return
+	}
+	for key, values := range q {
+		if len(values) != 1 || key != "family" && key != "module_id" && key != "method" && key != "q" && key != "limit" && key != "cursor" && key != "decisions_only" {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+	}
+	query := CanonicalIndexQuery{Family: CanonicalFamily(q.Get("family")), ModuleID: q.Get("module_id"), Method: q.Get("method"), Q: q.Get("q"), Cursor: q.Get("cursor")}
+	if value := q.Get("decisions_only"); value != "" {
+		if value != "true" {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+		query.DecisionsOnly = true
+	}
+	if value := q.Get("limit"); value != "" {
+		var err error
+		query.Limit, err = strconv.Atoi(value)
+		if err != nil {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+	}
+	page, err := service.CanonicalIndex(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), query)
+	h.respond(w, page, err)
 }
 
 func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {

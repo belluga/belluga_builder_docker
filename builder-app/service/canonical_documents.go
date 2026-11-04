@@ -64,7 +64,11 @@ func (p *registeredPreview) knowledgeGet(r *http.Request, path string) ([]byte, 
 	if err != nil || u.Scheme != "http" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
 		return nil, 0, errors.New("Registry URL invalid")
 	}
-	u.Path = path
+	parts := strings.SplitN(path, "?", 2)
+	u.Path = parts[0]
+	if len(parts) == 2 {
+		u.RawQuery = parts[1]
+	}
 	request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, u.String(), nil)
 	if err != nil {
 		return nil, 0, err
@@ -215,6 +219,84 @@ func (p *registeredPreview) knowledgeAPIHandler(w http.ResponseWriter, r *http.R
 		}
 	}
 	writeJSON(w, 200, manifest)
+}
+
+func (p *registeredPreview) knowledgeIndexAPIHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	q := r.URL.Query()
+	companyID, companyOK := oneQueryValue(q, "company_id")
+	projectID, projectOK := oneQueryValue(q, "project_id")
+	if r.Method != http.MethodGet || r.ContentLength != 0 || len(r.URL.RawQuery) > 3500 || !companyOK || !projectOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || len(q) > 9 {
+		knowledgeError(w, 400, "canonical_request_invalid", "TEACH: Informe Company e Project válidos uma única vez.")
+		return
+	}
+	for key, values := range q {
+		if len(values) != 1 || key != "company_id" && key != "project_id" && key != "family" && key != "module_id" && key != "method" && key != "q" && key != "limit" && key != "cursor" && key != "decisions_only" {
+			knowledgeError(w, 400, "canonical_request_invalid", "TEACH: Use apenas filtros únicos do índice canônico.")
+			return
+		}
+	}
+	if family := q.Get("family"); family != "" && !knowledgeFamilies[family] || q.Get("module_id") != "" && !knowledgeID.MatchString(q.Get("module_id")) || len(q.Get("q")) > 120 || len(q.Get("cursor")) > 2048 {
+		knowledgeError(w, 400, "canonical_request_invalid", "TEACH: Corrija família, módulo, busca ou cursor do índice.")
+		return
+	}
+	if value := q.Get("decisions_only"); value != "" && value != "true" {
+		knowledgeError(w, 400, "canonical_request_invalid", "TEACH: decisions_only aceita apenas true.")
+		return
+	}
+	catalog, err := p.knowledgeCatalog(r)
+	if err != nil {
+		knowledgeError(w, 503, "canonical_unavailable", "TEACH: Verifique a Registry API e tente novamente.")
+		return
+	}
+	registered := false
+	for _, project := range catalog.Projects {
+		if project.ID == projectID && project.CompanyID == companyID {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		knowledgeError(w, 404, "project_not_found", "TEACH: Selecione um Project registrado nesta Company.")
+		return
+	}
+	internal := url.Values{}
+	for _, key := range []string{"family", "module_id", "method", "q", "limit", "cursor", "decisions_only"} {
+		if value := q.Get(key); value != "" {
+			internal.Set(key, value)
+		}
+	}
+	path := "/internal/v1/companies/" + companyID + "/projects/" + projectID + "/knowledge/index"
+	if len(internal) != 0 {
+		path += "?" + internal.Encode()
+	}
+	// knowledgeGet constructs the private URL from an approved path. Query is
+	// copied only from the bounded, validated filter set above.
+	body, status, err := p.knowledgeGet(r, path)
+	if err != nil {
+		knowledgeError(w, 503, "canonical_unavailable", "TEACH: O índice canônico está indisponível.")
+		return
+	}
+	if status != 200 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+		return
+	}
+	var page struct {
+		ProjectID    string            `json:"project_id"`
+		GenerationID string            `json:"generation_id"`
+		WriteEpoch   int64             `json:"write_epoch"`
+		Items        []json.RawMessage `json:"items"`
+		NextCursor   string            `json:"next_cursor"`
+	}
+	if json.Unmarshal(body, &page) != nil || page.ProjectID != projectID || !knowledgeID.MatchString(page.GenerationID) || page.Items == nil || len(page.Items) > 100 || len(page.NextCursor) > 2048 {
+		knowledgeError(w, 503, "canonical_response_invalid", "TEACH: O índice retornou identidade ou página inválida; recarregue Documents.")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, _ = w.Write(body)
 }
 
 func validKnowledgeDigest(digest string) bool {

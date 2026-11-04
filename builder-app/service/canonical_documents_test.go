@@ -15,8 +15,10 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 	status := http.StatusOK
 	var value any = manifest
 	var paths []string
+	var lastQuery string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
+		lastQuery = r.URL.RawQuery
 		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "" {
 			t.Error("public credentials or mutation reached Registry")
 		}
@@ -63,6 +65,19 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 		response := read("/api/knowledge?company_id=belluga&project_id=builder&family=project_mandate&record_id=mandate")
 		if response.Code != 200 || !strings.Contains(response.Body.String(), "Canonical product purpose") || !strings.Contains(response.Body.String(), `"revision":2`) || paths[len(paths)-1] != "/internal/v1/companies/belluga/projects/builder/knowledge/project_mandate/mandate" {
 			t.Fatalf("record: %d %s", response.Code, response.Body.String())
+		}
+	})
+	t.Run("bounded index forwards only Project-scoped filters", func(t *testing.T) {
+		value = map[string]any{"project_id": "builder", "generation_id": "launch", "write_epoch": 4, "items": []any{map[string]any{"family": "module", "id": "knowledge-viewer", "revision": 2, "content_digest": digest}}}
+		response := read("/api/knowledge/index?company_id=belluga&project_id=builder&family=module&q=viewer&limit=25")
+		if response.Code != 200 || paths[len(paths)-1] != "/internal/v1/companies/belluga/projects/builder/knowledge/index" || lastQuery != "family=module&limit=25&q=viewer" || !strings.Contains(response.Body.String(), "knowledge-viewer") {
+			t.Fatalf("index: %d %s path=%s query=%s", response.Code, response.Body.String(), paths[len(paths)-1], lastQuery)
+		}
+		before := len(paths)
+		for _, query := range []string{"family=other", "family=module&family=policy", "source=https://example.invalid"} {
+			if response := read("/api/knowledge/index?company_id=belluga&project_id=builder&" + query); response.Code != 400 || len(paths) != before {
+				t.Fatalf("invalid index selector reached Registry: %s status=%d", query, response.Code)
+			}
 		}
 	})
 	t.Run("pending is explicit and cannot reveal inactive draft", func(t *testing.T) {

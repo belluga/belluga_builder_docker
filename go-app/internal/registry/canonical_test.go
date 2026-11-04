@@ -75,7 +75,9 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 		})
 	}
 	record := CanonicalRecord{ID: "hidden", ProjectID: "builder", GenerationID: "g1", Revision: 1, Deleted: true, Payload: json.RawMessage(`{"purpose":"Hidden","scope":["web"]}`)}
-	if err := validateCanonicalRecord("builder", "g1", FamilyMandate, record); !errors.Is(err, ErrInvalid) { t.Fatalf("content write accepted tombstone: %v", err) }
+	if err := validateCanonicalRecord("builder", "g1", FamilyMandate, record); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("content write accepted tombstone: %v", err)
+	}
 }
 
 func TestCanonicalDigestNormalizesJSONObjectOrder(t *testing.T) {
@@ -277,6 +279,21 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	if repeated, e := store.ActivateCanonical(ctx, "company-canonical", "builder", "g1", "activate-1", "owner"); e != nil || !repeated.Active {
 		t.Fatalf("idempotent activation=%+v, %v", repeated, e)
+	}
+	index, err := store.CanonicalIndex(ctx, "company-canonical", "builder", CanonicalIndexQuery{Limit: 2})
+	if err != nil || len(index.Items) != 2 || index.NextCursor == "" {
+		t.Fatalf("bounded canonical index=%+v, %v", index, err)
+	}
+	second, err := store.CanonicalIndex(ctx, "company-canonical", "builder", CanonicalIndexQuery{Limit: 2, Cursor: index.NextCursor})
+	if err != nil || len(second.Items) != 2 || second.Items[0].ID == index.Items[0].ID {
+		t.Fatalf("canonical index cursor=%+v, %v", second, err)
+	}
+	decisions, err := store.CanonicalIndex(ctx, "company-canonical", "builder", CanonicalIndexQuery{DecisionsOnly: true, Q: "DEC-ART-01"})
+	if err != nil || len(decisions.Items) != 1 || decisions.Items[0].ID != "projects" || len(decisions.Items[0].Decisions) != 1 {
+		t.Fatalf("decision owner index=%+v, %v", decisions, err)
+	}
+	if _, err := store.CanonicalIndex(ctx, "company-canonical", "builder", CanonicalIndexQuery{Cursor: index.NextCursor, Family: FamilyModule}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cursor must reject changed filters: %v", err)
 	}
 	if _, err := store.ActivateCanonical(ctx, "company-canonical", "builder", "incomplete", "replace-generation", "owner"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("active generation replacement must fail: %v", err)
