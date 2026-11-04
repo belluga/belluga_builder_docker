@@ -26,6 +26,15 @@ type TODOEvidenceEditRequest struct {
 	Reason                string                `json:"reason"`
 }
 
+type TODONextStepEditRequest struct {
+	ProjectID        string `json:"project_id"`
+	TODOID           string `json:"todo_id"`
+	ExpectedRevision *int64 `json:"expected_revision"`
+	OperationID      string `json:"operation_id"`
+	NextExactStep    string `json:"next_exact_step"`
+	Reason           string `json:"reason"`
+}
+
 type TODOPlacementEditRequest struct {
 	ProjectID               string `json:"project_id"`
 	TODOID                  string `json:"todo_id"`
@@ -280,6 +289,17 @@ func validRecordMutationIdentity(projectID, todoID string, expected *int64, oper
 	return validID(projectID) && validID(todoID) && expected != nil && *expected >= 0 && *expected < math.MaxInt64 && todoOperationIDPattern.MatchString(operationID) && validSummaryField(reason, 512)
 }
 
+func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, request TODONextStepEditRequest) (TODOContentEditResponse, error) {
+	if !validRecordMutationIdentity(request.ProjectID, request.TODOID, request.ExpectedRevision, request.OperationID, request.Reason) || !validSummaryField(request.NextExactStep, 512) {
+		return TODOContentEditResponse{}, todoTeach("next_exact_step", "provide a nonempty next step of at most 512 bytes with current TODO revision, operation ID and reason", ErrInvalid)
+	}
+	step := request.NextExactStep
+	return m.writeTODORecordMutation(ctx, companyID, request.ProjectID, request.TODOID, *request.ExpectedRevision, request.OperationID, "next-step-edit", request, request.Reason,
+		bson.D{{Key: "next_exact_step", Value: step}},
+		func(TODORecord) (TODOHistoryChanges, error) { return TODOHistoryChanges{NextExactStep: &step}, nil },
+		func(TODORecord) bson.D { return nil })
+}
+
 func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, projectID, todoID string, expected int64, operationID, kind string, request any, reason string, fields bson.D, changes func(TODORecord) (TODOHistoryChanges, error), extra func(TODORecord) bson.D) (TODOContentEditResponse, error) {
 	project, collection, err := m.selectedTODOCollection(ctx, companyID, projectID, todoID)
 	if err != nil {
@@ -297,10 +317,11 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	eventKind := map[string]string{"evidence-edit": "evidence_changed", "placement-edit": "placement_changed", "next-step-edit": "state_changed"}[kind]
 	var prior TODOHistoryEvent
 	findErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "operation_id", Value: operationID}}).Decode(&prior)
 	if findErr == nil {
-		if prior.Kind != kind || prior.RequestDigest != digest {
+		if prior.Kind != eventKind || prior.RequestDigest != digest {
 			return TODOContentEditResponse{}, todoTeach("operation_id", "not be reused with a different record mutation", ErrConflict)
 		}
 		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: prior.Revision, NoOp: true}, nil
@@ -334,6 +355,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		return TODOContentEditResponse{}, err
 	}
 	if kind == "evidence-edit" && reflect.DeepEqual(newChanges.ProofReferences, ptrProofRefs(record.ProofReferences)) && reflect.DeepEqual(newChanges.WaiverReferences, ptrProofRefs(record.WaiverReferences)) && reflect.DeepEqual(newChanges.ImplementationCommits, ptrCommitRefs(record.ImplementationCommits)) && reflect.DeepEqual(newChanges.RecordSections, ptrTODOSections(recordRecordSections(record))) {
+		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
+	}
+	if kind == "next-step-edit" && newChanges.NextExactStep != nil && *newChanges.NextExactStep == record.NextExactStep {
 		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
 	}
 	next := record.Revision + 1
@@ -376,7 +400,7 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if err != nil {
 			return nil, err
 		}
-		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, TODOID: todoID, Revision: next, Kind: map[string]string{"evidence-edit": "evidence_changed", "placement-edit": "placement_changed"}[kind], OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: newChanges, Reason: reason}
+		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, TODOID: todoID, Revision: next, Kind: eventKind, OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: newChanges, Reason: reason}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {
 			return nil, normalizeMongoError(err)
 		}

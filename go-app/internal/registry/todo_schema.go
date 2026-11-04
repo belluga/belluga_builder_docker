@@ -115,7 +115,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	if bsonValidatorEqual(actual, TODOCollectionValidator()) {
 		return nil
 	}
-	if !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeContentMigration()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeHistoricalAdoption()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
+	if !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeNextStepEdit()) && !bsonValidatorEqual(actual, priorTODOCollectionValidator()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeContentMigration()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeHistoricalAdoption()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeOwnership()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeRecordEvents()) && !bsonValidatorEqual(actual, TODOCollectionValidatorBeforeCreation()) {
 		return todoTeach("todos.validator", "match the canonical schema or a recognized strict/error predecessor", ErrConflict)
 	}
 	cursor, err := database.Collection(todosCollection).Find(ctx, bson.D{})
@@ -161,6 +161,10 @@ func TODOCollectionValidatorBeforeHistoricalAdoption() bson.D {
 
 func TODOCollectionValidatorBeforeContentMigration() bson.D {
 	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption"})
+}
+
+func TODOCollectionValidatorBeforeNextStepEdit() bson.D {
+	return todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
 }
 
 func todoCollectionValidatorWithOperationKinds(kinds bson.A) bson.D {

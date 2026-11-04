@@ -21,7 +21,7 @@ import (
 var todoOperationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 func validTODOOperationKind(value string) bool {
-	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "historical-adoption" || value == "content-migration"
+	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "next-step-edit" || value == "historical-adoption" || value == "content-migration"
 }
 
 type TODOReadResponse struct {

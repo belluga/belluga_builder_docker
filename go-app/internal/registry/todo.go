@@ -431,7 +431,7 @@ func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
 		kinds = append(kinds, "content-edit")
 	}
 	if allowRecordEvents {
-		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration")
+		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit")
 	}
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"id", "kind", "request_digest", "result_revision"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: kinds}}},

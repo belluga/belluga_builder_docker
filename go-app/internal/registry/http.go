@@ -60,6 +60,7 @@ type todoHistoryService interface {
 type todoRecordMutationService interface {
 	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
 	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
+	EditTODONextStep(context.Context, string, TODONextStepEditRequest) (TODOContentEditResponse, error)
 	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
 }
 
@@ -145,6 +146,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate", h.migrateTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
 	return mux
@@ -576,6 +578,24 @@ func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOPlacement(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) editTODONextStep(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRecordMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODONextStepEditRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.EditTODONextStep(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 
