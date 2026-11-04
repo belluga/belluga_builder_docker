@@ -1457,10 +1457,15 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 			admitted[name] = true
 			seen[name] = true
 		}
-		if artifact.State == "available" && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
+		apiOnlyDocuments := registryCutoverEnabled() && artifact.Kind == "documents" && artifact.Entry == "" && len(artifact.Files) == 0
+		if artifact.State == "available" && !apiOnlyDocuments && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
+		// Mongo owns TODOs after the Roadmap cutover, so the old Foundation
+		// todo-sources map cannot validate Prototype related rows. The current
+		// v3 Prototype status observation is checked below; admitted file paths
+		// and asset digests remain checked above.
+		if artifact.Kind == "prototype" && artifact.State == "available" && !registryCutoverEnabled() && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
 			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
 		}
 	}
