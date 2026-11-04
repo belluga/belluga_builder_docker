@@ -78,6 +78,24 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("keeps an unbound Genesis Project selectable without reading snapshots", async () => {
+    const unbound = { id: "accountzz", name: "Accountzz", company_id: "belluga", source_bound: false };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap("accountzz") };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("unbound Project requested a Reader detail");
+      if (url.pathname.startsWith("/snapshot/")) throw new Error("unbound Project requested a snapshot");
+      return { ok: true, json: async () => ({ companies, projects: [...projects, unbound] }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=accountzz&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText(/artefatos publicados estão pendentes/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Abrir Roadmap" }));
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/local-preview?company_id=") || String(input).startsWith("/snapshot/"))).toBe(false);
+  });
+
   it("loads Mongo Roadmap when the Foundation Reader returns unavailable", async () => {
     const registryRoadmap = roadmap("builder");
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {

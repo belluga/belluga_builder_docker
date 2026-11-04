@@ -65,7 +65,9 @@ type projectDocument struct {
 	CompanyID             string            `bson:"company_id"`
 	RoadmapRevision       int64             `bson:"roadmap_revision,omitempty"`
 	RoadmapLastOperation  *roadmapOperation `bson:"roadmap_last_operation,omitempty"`
-	Binding               Binding           `bson:"binding"`
+	Binding               *Binding          `bson:"binding,omitempty"`
+	BindingRevision       int64             `bson:"binding_revision,omitempty"`
+	BindingOperation      string            `bson:"binding_operation,omitempty"`
 	RegisteredAt          time.Time         `bson:"registered_at"`
 	PreparationState      string            `bson:"preparation_state"`
 	PreparationDiagnostic string            `bson:"preparation_diagnostic,omitempty"`
@@ -93,7 +95,7 @@ func preferencesToDocuments(preferences []Preference) ([]preferenceDocument, err
 	result := make([]preferenceDocument, 0, len(preferences))
 	for _, preference := range preferences {
 		declinedAt, err := time.Parse(time.RFC3339Nano, preference.DeclinedAt)
-		if err != nil || !validID(preference.CompanyID) || !validID(preference.ProjectID) || !validBinding(preference.Binding) {
+		if err != nil || !validID(preference.CompanyID) || !validID(preference.ProjectID) || preference.Binding != (Binding{}) && !validBinding(preference.Binding) {
 			return nil, ErrInvalid
 		}
 		result = append(result, preferenceDocument{ObjectID: bson.NewObjectID(), CompanyID: preference.CompanyID, ProjectID: preference.ProjectID, Binding: preference.Binding, DeclinedAt: time.UnixMilli(declinedAt.UnixMilli()).UTC()})
@@ -108,15 +110,15 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 	}
 	document := projectDocument{
 		ObjectID: objectID, ID: project.ID, Name: project.Name, CompanyID: project.CompanyID,
-		RoadmapRevision: project.RoadmapRevision,
-		RegisteredAt:    time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
+		RoadmapRevision: project.RoadmapRevision, BindingRevision: project.BindingRevision,
+		RegisteredAt: time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
 		PreparationDiagnostic: project.PreparationDiagnostic, SnapshotFingerprint: project.SnapshotFingerprint,
 		KnowledgeGenerationID: project.KnowledgeGenerationID,
 	}
-	if project.Binding == nil || !validBinding(*project.Binding) {
+	if project.Binding != nil && !validBinding(*project.Binding) {
 		return projectDocument{}, ErrInvalid
 	}
-	document.Binding = *project.Binding
+	document.Binding = project.Binding
 	encoded, err := bson.Marshal(document)
 	if err != nil || len(encoded) > maxSnapshotReferenceBytes {
 		return projectDocument{}, ErrInvalid
@@ -128,7 +130,8 @@ func (p projectDocument) toAPI() Project {
 	return Project{
 		ID: p.ID, Name: p.Name, CompanyID: p.CompanyID,
 		RoadmapRevision:  p.RoadmapRevision,
-		Binding:          &p.Binding,
+		Binding:          p.Binding,
+		BindingRevision:  p.BindingRevision,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
 		SnapshotFingerprint: p.SnapshotFingerprint, KnowledgeGenerationID: p.KnowledgeGenerationID,
@@ -240,7 +243,7 @@ func (m *MongoStore) Catalog(ctx context.Context) (Catalog, error) {
 		}
 		for projects.Next(ctx) {
 			var record projectDocument
-			if projects.Decode(&record) != nil || record.ObjectID.IsZero() || record.CompanyID != company.ID || !validBinding(record.Binding) {
+			if projects.Decode(&record) != nil || record.ObjectID.IsZero() || record.CompanyID != company.ID || record.Binding != nil && !validBinding(*record.Binding) {
 				projects.Close(ctx)
 				return Catalog{}, ErrUnavailable
 			}
@@ -309,15 +312,19 @@ func (m *MongoStore) Project(ctx context.Context, companyID, id string) (Project
 }
 
 func (m *MongoStore) Register(ctx context.Context, input Registration) (Project, error) {
-	if !validID(input.CompanyID) || !validID(input.ProjectID) || !validName(input.CompanyName) || !validName(input.ProjectName) || !validBinding(input.Binding) {
+	if !validID(input.CompanyID) || !validID(input.ProjectID) || !validName(input.CompanyName) || !validName(input.ProjectName) || input.Binding != (Binding{}) && !validBinding(input.Binding) {
 		return Project{}, ErrInvalid
+	}
+	var binding *Binding
+	if input.Binding != (Binding{}) {
+		binding = &input.Binding
 	}
 	company := Company{ID: input.CompanyID, Name: input.CompanyName, DatabaseName: m.tenantDatabase(input.CompanyID)}
 	company, err := normalizeCompany(company)
 	if err != nil {
 		return Project{}, err
 	}
-	project := Project{ID: input.ProjectID, Name: input.ProjectName, CompanyID: input.CompanyID, Binding: &input.Binding, RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
+	project := Project{ID: input.ProjectID, Name: input.ProjectName, CompanyID: input.CompanyID, Binding: binding, RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
 	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
 	defer cancel()
 	if err := m.ensureTenantIndexes(ctx, company.DatabaseName); err != nil {
@@ -343,29 +350,8 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 	}
 	prior, readErr := m.readProject(ctx, company, project.ID)
 	if readErr == nil {
-		if prior.Binding == nil {
-			return Project{}, ErrUnavailable
-		}
-		if prior.Name != project.Name || *prior.Binding != input.Binding {
-			filter := bson.D{{Key: "id", Value: project.ID}, {Key: "company_id", Value: company.ID}, {Key: "name", Value: prior.Name}, {Key: "binding", Value: *prior.Binding}}
-			fields := bson.M{"name": project.Name, "binding": input.Binding}
-			if *prior.Binding != input.Binding {
-				fields["snapshot_fingerprint"] = ""
-				fields["preparation_state"] = "not_ready"
-				fields["preparation_diagnostic"] = "Source binding changed; reload the published Foundation."
-			}
-			update := bson.M{"$set": fields}
-			result, err := m.client.Database(company.DatabaseName).Collection(projectsCollection).UpdateOne(ctx, filter, update)
-			if err != nil {
-				return Project{}, normalizeMongoError(err)
-			}
-			if result.MatchedCount != 1 {
-				return Project{}, ErrConflict
-			}
-			if err := m.clearPreference(ctx, company, project.ID); err != nil {
-				return Project{}, err
-			}
-			return m.readProject(ctx, company, project.ID)
+		if prior.Name != project.Name || binding != nil && !sameOptionalBinding(prior.Binding, binding) {
+			return Project{}, ErrConflict
 		}
 		if err := m.clearPreference(ctx, company, project.ID); err != nil {
 			return Project{}, err
@@ -380,7 +366,7 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 			return Project{}, normalizeMongoError(err)
 		}
 		current, readErr := m.readProject(ctx, company, project.ID)
-		if readErr != nil || current.Name != project.Name || current.Binding == nil || *current.Binding != input.Binding {
+		if readErr != nil || current.Name != project.Name || binding != nil && !sameOptionalBinding(current.Binding, binding) {
 			return Project{}, ErrConflict
 		}
 		if err := m.clearPreference(ctx, company, project.ID); err != nil {
@@ -394,6 +380,63 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 	return m.readProject(ctx, company, project.ID)
 }
 
+func sameOptionalBinding(a, b *Binding) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// BindFirst changes only a newly registered Genesis Project. A retry of the
+// exact operation is safe; binding correction has a separate authority.
+func (m *MongoStore) BindFirst(ctx context.Context, companyID, id string, input FirstBindingRequest) (Project, error) {
+	if !validID(companyID) || !validID(id) || input.ProjectID != id || input.ExpectedRevision != 0 ||
+		!validID(input.OperationID) || !validBinding(input.Binding) {
+		return Project{}, ErrInvalid
+	}
+	company, err := m.company(ctx, companyID)
+	if err != nil {
+		return Project{}, err
+	}
+	var prior projectDocument
+	collection := m.client.Database(company.DatabaseName).Collection(projectsCollection)
+	if err := collection.FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&prior); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Project{}, ErrNotFound
+		}
+		return Project{}, ErrUnavailable
+	}
+	if prior.CompanyID != companyID || prior.ObjectID.IsZero() || prior.Binding != nil && !validBinding(*prior.Binding) {
+		return Project{}, ErrUnavailable
+	}
+	if prior.Binding != nil {
+		if prior.BindingOperation == input.OperationID && prior.BindingRevision == 1 && *prior.Binding == input.Binding {
+			return prior.toAPI(), nil
+		}
+		return Project{}, ErrConflict
+	}
+	filter := bson.D{{Key: "_id", Value: prior.ObjectID}, {Key: "company_id", Value: companyID},
+		{Key: "binding", Value: bson.M{"$eq": nil}},
+		{Key: "binding_revision", Value: bson.M{"$in": []any{nil, int64(0)}}}}
+	update := bson.M{"$set": bson.M{"binding": input.Binding, "binding_revision": int64(1),
+		"binding_operation": input.OperationID, "preparation_state": "not_ready", "snapshot_fingerprint": ""}}
+	result, err := collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return Project{}, normalizeMongoError(err)
+	}
+	if result.MatchedCount != 1 {
+		current, readErr := m.readProject(ctx, company, id)
+		if readErr == nil && current.Binding != nil && current.BindingRevision == 1 && *current.Binding == input.Binding {
+			var stored projectDocument
+			if collection.FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&stored) == nil && stored.BindingOperation == input.OperationID {
+				return current, nil
+			}
+		}
+		return Project{}, ErrConflict
+	}
+	return m.readProject(ctx, company, id)
+}
+
 func (m *MongoStore) clearPreference(ctx context.Context, company Company, projectID string) error {
 	if _, err := m.client.Database(company.DatabaseName).Collection(preferencesCollection).DeleteOne(ctx, bson.D{{Key: "project_id", Value: projectID}}); err != nil {
 		return ErrUnavailable
@@ -402,7 +445,7 @@ func (m *MongoStore) clearPreference(ctx context.Context, company Company, proje
 }
 
 func (m *MongoStore) Decline(ctx context.Context, companyID, id string, binding Binding) error {
-	if !validID(companyID) || !validID(id) || !validBinding(binding) {
+	if !validID(companyID) || !validID(id) || binding != (Binding{}) && !validBinding(binding) {
 		return ErrInvalid
 	}
 	company, err := m.company(ctx, companyID)
@@ -432,6 +475,27 @@ func (m *MongoStore) Decline(ctx context.Context, companyID, id string, binding 
 		return err
 	}
 	return nil
+}
+
+func (m *MongoStore) Preference(ctx context.Context, companyID, id string) (Preference, error) {
+	if !validID(companyID) || !validID(id) {
+		return Preference{}, ErrInvalid
+	}
+	company, err := m.company(ctx, companyID)
+	if err != nil {
+		return Preference{}, err
+	}
+	var stored preferenceDocument
+	if err := m.client.Database(company.DatabaseName).Collection(preferencesCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: id}}).Decode(&stored); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return Preference{}, ErrNotFound
+		}
+		return Preference{}, ErrUnavailable
+	}
+	if stored.CompanyID != companyID || stored.ProjectID != id || stored.ObjectID.IsZero() || stored.Binding != (Binding{}) && !validBinding(stored.Binding) {
+		return Preference{}, ErrUnavailable
+	}
+	return stored.toAPI(), nil
 }
 
 func (m *MongoStore) UpdateSnapshotReference(ctx context.Context, companyID, id string, input SnapshotReference) (Project, error) {
@@ -652,7 +716,7 @@ func (m *MongoStore) readProject(ctx context.Context, company Company, id string
 		}
 		return Project{}, ErrUnavailable
 	}
-	if stored.ID != id || stored.CompanyID != company.ID || stored.ObjectID.IsZero() || !validBinding(stored.Binding) {
+	if stored.ID != id || stored.CompanyID != company.ID || stored.ObjectID.IsZero() || stored.Binding != nil && !validBinding(*stored.Binding) {
 		return Project{}, ErrUnavailable
 	}
 	return stored.toAPI(), nil

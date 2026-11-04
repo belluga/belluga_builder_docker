@@ -46,6 +46,12 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 			t.Fatalf("catalog: %d %s", response.Code, response.Body.String())
 		}
 	})
+	t.Run("unbound Project detail is pending without reader or snapshot", func(t *testing.T) {
+		response := read("/api/local-preview?company_id=belluga&project_id=builder")
+		if response.Code != 200 || !strings.Contains(response.Body.String(), `"consumer_readiness":"pending"`) || strings.Contains(response.Body.String(), "snapshot_fingerprint") || paths[len(paths)-1] != "/internal/v1/catalog" {
+			t.Fatalf("unbound detail: %d %s", response.Code, response.Body.String())
+		}
+	})
 	t.Run("active manifest is read from Registry without snapshot", func(t *testing.T) {
 		response := read("/api/knowledge?company_id=belluga&project_id=builder")
 		if response.Code != 200 || !strings.Contains(response.Body.String(), digest) || response.Header().Get("Cache-Control") != "no-store" || paths[len(paths)-1] != "/internal/v1/companies/belluga/projects/builder/knowledge/manifest" {

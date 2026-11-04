@@ -97,9 +97,10 @@ func (p *registeredPreview) knowledgeCatalog(r *http.Request) (registrationCatal
 		SchemaVersion string              `json:"schema_version"`
 		Companies     []registeredCompany `json:"companies"`
 		Projects      []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			CompanyID string `json:"company_id"`
+			ID        string           `json:"id"`
+			Name      string           `json:"name"`
+			CompanyID string           `json:"company_id"`
+			Binding   *json.RawMessage `json:"binding"`
 		} `json:"projects"`
 	}
 	if err != nil || status != http.StatusOK || json.Unmarshal(data, &source) != nil || source.SchemaVersion != "1" || source.Companies == nil || source.Projects == nil {
@@ -119,7 +120,7 @@ func (p *registeredPreview) knowledgeCatalog(r *http.Request) (registrationCatal
 			return registrationCatalog{}, errors.New("Registry Project invalid")
 		}
 		projects[key] = true
-		result.Projects = append(result.Projects, catalogProject{ID: project.ID, Name: project.Name, CompanyID: project.CompanyID})
+		result.Projects = append(result.Projects, catalogProject{ID: project.ID, Name: project.Name, CompanyID: project.CompanyID, SourceBound: project.Binding != nil})
 	}
 	return result, nil
 }

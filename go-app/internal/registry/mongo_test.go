@@ -96,7 +96,8 @@ func TestProjectSerializationHasNoPerProjectRoadmapAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacy := projectDocument{ID: "builder", CompanyID: "belluga", Binding: validTestBinding(), RegisteredAt: time.Now().UTC()}
+	legacyBinding := validTestBinding()
+	legacy := projectDocument{ID: "builder", CompanyID: "belluga", Binding: &legacyBinding, RegisteredAt: time.Now().UTC()}
 	encoded, err := bson.Marshal(document)
 	if err != nil {
 		t.Fatal(err)
@@ -282,29 +283,36 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	changedBinding := validTestBinding()
 	changedBinding.DockerRepositoryID = "belluga/docker"
 	updated, err = store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "shared", ProjectName: "Shared", Binding: changedBinding})
-	if err != nil || updated.Binding == nil || *updated.Binding != changedBinding || updated.SnapshotFingerprint != "" || updated.PreparationState != "not_ready" {
-		t.Fatalf("atomic binding refresh = %+v, %v", updated, err)
-	}
-	nextBinding := changedBinding
-	nextBinding.DockerRepositoryID = "belluga/next-docker"
-	store.beforeSnapshotWrite = func() error {
-		_, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "shared", ProjectName: "Shared", Binding: nextBinding})
-		return err
-	}
-	_, err = store.UpdateSnapshotReference(ctx, "company-a", "shared", SnapshotReference{CompanyID: "company-a", BindingDigest: bindingDigest(changedBinding), ExpectedFingerprint: "", Fingerprint: fingerprint, PreparationState: "ready"})
-	store.beforeSnapshotWrite = nil
 	if err != ErrConflict {
-		t.Fatalf("snapshot update crossed a binding change: %v", err)
+		t.Fatalf("registration silently rebound a published source: %+v, %v", updated, err)
 	}
-	current, err := store.Project(ctx, "company-a", "shared")
-	if err != nil || current.Binding == nil || *current.Binding != nextBinding || current.SnapshotFingerprint != "" {
-		t.Fatalf("stale snapshot was attached to new binding: %+v, %v", current, err)
+	genesis, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"})
+	if err != nil || genesis.Binding != nil || genesis.SnapshotFingerprint != "" {
+		t.Fatalf("Genesis registration: %+v, %v", genesis, err)
+	}
+	if retry, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"}); err != nil || retry.Binding != nil {
+		t.Fatalf("Genesis retry: %+v, %v", retry, err)
+	}
+	first := FirstBindingRequest{ProjectID: "genesis", ExpectedRevision: 0, OperationID: "first-binding", Binding: validTestBinding()}
+	bound, err := store.BindFirst(ctx, "company-a", "genesis", first)
+	if err != nil || bound.Binding == nil || bound.BindingRevision != 1 || *bound.Binding != first.Binding {
+		t.Fatalf("first binding: %+v, %v", bound, err)
+	}
+	if retry, err := store.BindFirst(ctx, "company-a", "genesis", first); err != nil || retry.BindingRevision != 1 {
+		t.Fatalf("first binding retry: %+v, %v", retry, err)
+	}
+	first.OperationID = "conflicting-binding"
+	if _, err := store.BindFirst(ctx, "company-a", "genesis", first); err != ErrConflict {
+		t.Fatalf("first binding accepted a new operation: %v", err)
+	}
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"}); err != nil {
+		t.Fatalf("identity retry after binding: %v", err)
 	}
 	if _, err := store.UpdateSnapshotReference(ctx, "company-b", "shared", SnapshotReference{CompanyID: "company-a", BindingDigest: bindingDigest(validTestBinding()), Fingerprint: fingerprint, PreparationState: "ready"}); err != ErrInvalid {
 		t.Fatalf("mismatched snapshot Company: %v", err)
 	}
 	catalog, err := store.Catalog(ctx)
-	if err != nil || len(catalog.Projects) != 4 {
+	if err != nil || len(catalog.Projects) != 5 {
 		t.Fatalf("catalog Projects = %d, %v", len(catalog.Projects), err)
 	}
 	for _, companyID := range []string{"company-a", "company-b"} {

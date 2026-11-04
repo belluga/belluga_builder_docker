@@ -61,6 +61,7 @@ type catalogProject struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
 	CompanyID           string `json:"company_id"`
+	SourceBound         bool   `json:"source_bound"`
 	SnapshotFingerprint string `json:"snapshot_fingerprint,omitempty"`
 }
 type persistedRegistration struct {
@@ -278,7 +279,7 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 		if !validRegistrationID(p.ID) || key != p.ID || !validRegistrationName(p.Name) || !hasCompany(stored.Companies, p.CompanyID) || !validStoredBinding(storedProject.Binding) {
 			return registrationCatalog{}, errors.New("registration project identity invalid")
 		}
-		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID})
+		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID, SourceBound: true})
 	}
 	for key, preference := range stored.Preferences {
 		if !validRegistrationID(key) || key != preference.ProjectID || !validStoredBinding(preference.Binding) || preference.DeclinedAt == "" {
@@ -523,7 +524,13 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"schema_version": "1", "companies": catalog.Companies, "projects": catalog.Projects})
 		return
 	}
-	catalog, err := p.catalog()
+	var catalog registrationCatalog
+	var err error
+	if registryCutoverEnabled() {
+		catalog, err = p.knowledgeCatalog(r)
+	} else {
+		catalog, err = p.catalog()
+	}
 	if err != nil {
 		writeError(w, 503, "registration_state_unavailable")
 		return
@@ -540,6 +547,10 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 	for _, project := range catalog.Projects {
 		if project.ID != projectID || project.CompanyID != companyID {
 			continue
+		}
+		if registryCutoverEnabled() && !project.SourceBound {
+			writeJSON(w, 200, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "pending", "artifacts": []any{}, "diagnostic": "TEACH: This Project is registered without a repository binding. Published artifacts remain pending until a source is explicitly bound."})
+			return
 		}
 		snapshot, fingerprint, e := p.readCurrent(project.ID, project.CompanyID)
 		if e != nil {
