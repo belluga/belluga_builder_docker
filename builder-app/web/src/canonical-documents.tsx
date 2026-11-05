@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import "./canonical-documents.css";
 
@@ -86,6 +86,7 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
   const [indexRead, setIndexRead] = useState<Read<IndexPage>>({ key: "", state: "loading" });
   const [loaded, setLoaded] = useState<IndexItem[]>([]);
   const [cursor, setCursor] = useState("");
+  const pagination = useRef<AbortController | null>(null);
   const [indexEpoch, setIndexEpoch] = useState<number | null>(null);
   const [manifestRead, setManifestRead] = useState<Read<Manifest>>({ key: "", state: "loading" });
   const [recordRead, setRecordRead] = useState<Read<CanonicalRecord>>({ key: "", state: "loading" });
@@ -116,6 +117,8 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
   const filterFamily = moduleSelection ? "endpoint_contract" : tab === "module" ? "module" : tab === "endpoint" ? "endpoint_contract" : tab === "policy" ? "policy" : "";
   const indexKey = `${projectKey}/${manifest?.generation_id || ""}/${tab}/${moduleSelection}/${search}/${attempt}`;
   useEffect(() => {
+    pagination.current?.abort();
+    pagination.current = null;
     if (!manifest?.active || tab === "default" && !search.trim() && !moduleSelection || recordID && !moduleSelection) return;
     const controller = new AbortController();
     setLoaded([]); setCursor(""); setIndexEpoch(null); setIndexRead({ key: indexKey, state: "loading" });
@@ -134,7 +137,7 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
       }
       if (!controller.signal.aborted) { setLoaded(value.items); setCursor(value.next_cursor || ""); setIndexEpoch(value.write_epoch); setIndexRead({ key: indexKey, state: "ready", value }); }
     }).catch(() => { if (!controller.signal.aborted) setIndexRead({ key: indexKey, state: "error" }); });
-    return () => controller.abort();
+    return () => { controller.abort(); pagination.current?.abort(); pagination.current = null; };
   }, [companyID, projectID, manifest, filterFamily, moduleSelection, search, indexKey]);
   useEffect(() => {
     if (!manifest?.active || !validSelection) return;
@@ -153,7 +156,7 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
   }, [companyID, projectID, family, recordID, selectionKey, validSelection, manifest]);
   const retry = <button type="button" onClick={() => setAttempt((current) => current + 1)}>Tentar novamente</button>;
   const heading = <header className="doc-heading"><div><span className="doc-eyebrow">CONHECIMENTO CANÔNICO · PROJECT {projectID.toUpperCase()}</span><h1>Documentação</h1><p>Definições, contratos e decisões no contexto em que foram criados.</p></div>{manifest?.active && <span className="doc-generation">● Geração ativa <small>Leitura por Project · {manifest.generation_id}</small></span>}</header>;
-  const chooseTab = (next: Tab) => { setTab(next); onOverview(); };
+  const chooseTab = (next: Tab) => { pagination.current?.abort(); setTab(next); onOverview(); };
   const link = (entry: Entry, label: string, className = "doc-row", note = "") => {
     const query = new URLSearchParams({ company_id: companyID, project_id: projectID, page: "documents", doc_family: entry.family, doc_id: entry.id });
     const plainNote = note.trim().length <= 180 && !/[\r\n#*`]/.test(note) ? note.trim() : "";
@@ -161,7 +164,10 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
   };
   const select = (event: MouseEvent<HTMLAnchorElement>, entry: Entry, selectedDecision?: string) => { if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) { event.preventDefault(); onSelect(entry.family, entry.id, selectedDecision); } };
   const loadMore = async () => {
-    if (!cursor || !manifest || indexRead.state !== "ready") return;
+    if (!cursor || !manifest || indexRead.state !== "ready" || indexRead.key !== indexKey) return;
+    const controller = new AbortController();
+    pagination.current?.abort();
+    pagination.current = controller;
     setIndexRead({ key: indexKey, state: "loading" });
     try {
       const query = new URLSearchParams({ company_id: companyID, project_id: projectID, limit: "100", cursor });
@@ -169,24 +175,26 @@ export function CanonicalDocuments({ companyID, projectID, family, recordID, dec
       if (moduleSelection) query.set("module_id", moduleSelection);
       if (tab === "decision") query.set("decisions_only", "true");
       if (search.trim()) query.set("q", search.trim());
-      const response = await fetch(`/api/knowledge/index?${query}`);
+      const response = await fetch(`/api/knowledge/index?${query}`, { signal: controller.signal });
       if (!response.ok) throw new Error("Index page unavailable");
       const value = await response.json() as IndexPage;
       if (value.project_id !== projectID || value.generation_id !== manifest.generation_id || value.write_epoch !== indexEpoch || !Array.isArray(value.items) || value.items.length > 100 || value.items.some((item) => !manifest.documents.some((entry) => entry.family === item.family && entry.id === item.id && entry.revision === item.revision && entry.content_digest === item.content_digest))) throw new Error("Index page changed");
-      setLoaded((current) => [...current, ...value.items]); setCursor(value.next_cursor || ""); setIndexRead({ key: indexKey, state: "ready", value });
-    } catch { setIndexRead({ key: indexKey, state: "error" }); }
+      if (!controller.signal.aborted && pagination.current === controller) { setLoaded((current) => [...current, ...value.items]); setCursor(value.next_cursor || ""); setIndexRead({ key: indexKey, state: "ready", value }); }
+    } catch { if (!controller.signal.aborted && pagination.current === controller) setIndexRead({ key: indexKey, state: "error" }); }
+    finally { if (pagination.current === controller) pagination.current = null; }
   };
   if (manifestRead.key !== projectKey || manifestRead.state === "loading") return <div className="doc-experience">{heading}<p role="status">Carregando documentação canônica…</p></div>;
   if (!manifest) return <div className="doc-experience">{heading}<section className="doc-state-panel error"><h2>Não foi possível carregar a documentação</h2><p role="alert">TEACH: Verifique a API do Project e recarregue Documents. Nenhum conteúdo antigo será exibido.</p>{retry}</section></div>;
   if (!manifest.active) return <div className="doc-experience">{heading}<section className="doc-state-panel"><h2>Documentação ainda não iniciada</h2><p role="status">{manifest.teach || "TEACH: Importe e valide uma geração tipada e solicite a ativação explícita deste Project."}</p>{retry}</section></div>;
   const recordState = recordRead.key === selectionKey ? recordRead.state : "loading";
   const counts = (item: Family) => manifest.documents.filter((entry) => entry.family === item).length;
-  const visible: IndexItem[] = tab === "decision" ? loaded.filter((item) => item.decisions?.length) : tab === "foundation" ? manifest.documents.filter((item) => foundationFamilies.includes(item.family)) : loaded;
+  const currentIndex = indexRead.key === indexKey;
+  const visible: IndexItem[] = tab === "decision" ? loaded.filter((item) => item.decisions?.length) : tab === "foundation" ? (search.trim() ? currentIndex ? loaded : [] : manifest.documents).filter((item) => foundationFamilies.includes(item.family)) : loaded;
   const selected = validSelection && recordRead.value && recordState === "ready" ? recordRead.value : undefined;
   const selectedDecision = selected && decisionID && "decisions" in selected.payload ? selected.payload.decisions?.find((item) => item.id === decisionID) : undefined;
   return <div className="documents-page canonical-documents doc-experience">
     {heading}
-    <div className="doc-toolbar"><label className="doc-search"><span aria-hidden="true">⌕</span><span className="sr-only">Buscar na documentação</span><input type="search" value={search} maxLength={120} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar módulo, rota ou decisão" /></label><span>Busque por ID, rota ou responsabilidade</span></div>
+    <div className="doc-toolbar"><label className="doc-search"><span aria-hidden="true">⌕</span><span className="sr-only">Buscar na documentação</span><input type="search" value={search} maxLength={120} onChange={(event) => { pagination.current?.abort(); setSearch(event.target.value); }} placeholder="Buscar módulo, rota ou decisão" /></label><span>Busque por ID, rota ou responsabilidade</span></div>
     <div className="doc-layout"><nav className="doc-families" aria-label="Famílias da documentação"><span className="doc-rail-label">EXPLORAR</span>{([ ["default", "⌂", "Visão geral"], ["foundation", "▤", "Fundamentos"], ["module", "▦", "Módulos"], ["endpoint", "⌁", "Endpoints"], ["decision", "◇", "Decisões"], ["policy", "⚑", "Políticas"] ] as [Tab,string,string][]).map(([id, icon, label]) => <button key={id} type="button" className={tab === id ? "selected" : ""} aria-current={tab === id ? "page" : undefined} onClick={() => chooseTab(id)}><span aria-hidden="true">{icon}</span>{label}</button>)}<p>O Roadmap estratégico é um documento. O Roadmap de entregas fica na navegação principal.</p></nav>
       <div className="doc-content" id="doc-content"><div className="doc-breadcrumb"><button type="button" onClick={() => chooseTab("default")}>{projectID} <span>›</span> Documentação</button>{tab !== "default" && <span>› {tab === "foundation" ? "Fundamentos" : tab === "module" ? "Módulos" : tab === "endpoint" ? "Endpoints" : tab === "decision" ? "Decisões" : "Políticas"}</span>}{recordID && <span>› {recordID}</span>}</div>
         {recordID ? (!validSelection ? <div className="doc-state-panel error" role="alert">TEACH: Link inválido. Selecione uma família e ID da lista atual.</div> : recordState === "loading" ? <p role="status">Loading document…</p> : recordState === "missing" ? <div className="doc-state-panel error" role="alert">TEACH: Documento não encontrado neste Project. Volte à lista atual.</div> : recordState === "error" ? <div className="doc-state-panel error" role="alert">TEACH: A revisão mudou ou a leitura falhou. Recarregue a documentação. {retry}</div> : selected ? <>{decisionID ? selectedDecision ? <article className="canonical-document"><header className="doc-detail-head"><span className="doc-kicker">DECISÃO · OWNER: {family}/{recordID}</span><h2>{selectedDecision.id}</h2><p>{selectedDecision.statement}</p><div className="doc-record-meta"><span>Revisão <strong>{selected.revision}</strong></span><span>Digest <strong>{selected.content_digest}</strong></span></div></header><div className="doc-reading"><StructuredFields value={selectedDecision as StructuredValue} /><button type="button" onClick={() => onSelect(family, recordID)}>← Voltar ao registro proprietário</button></div></article> : <div className="doc-state-panel error" role="alert">TEACH: Decisão não encontrada nesta revisão do owner.</div> : <TypedDocument record={selected} />}{family === "module" && !decisionID && <section className="doc-reading"><div className="doc-section-head"><h3>Endpoints deste módulo</h3></div>{loaded.filter((item) => item.family === "endpoint_contract" && item.module_id === recordID).map((item) => link(item, `${item.method} ${item.route}`))}{!loaded.some((item) => item.family === "endpoint_contract" && item.module_id === recordID) && <div className="doc-empty">Nenhum endpoint carregado para este módulo.</div>}{cursor && <button type="button" className="doc-more" onClick={loadMore}>Carregar mais endpoints</button>}</section>}</> : null) : tab === "default" && !search ? <section><div className="doc-intro"><span className="doc-kicker">VISÃO GERAL</span><h2>Conhecimento em contexto.</h2><p>Comece pelos fundamentos ou entre em um módulo para ver responsabilidade, decisões e endpoints vinculados.</p></div><div className="doc-metrics"><div><strong>{foundationFamilies.reduce((sum, item) => sum + counts(item), 0)}</strong><span>fundamentos</span></div><div><strong>{counts("module")}</strong><span>módulos</span></div><div><strong>{counts("endpoint_contract")}</strong><span>endpoints neste Project</span></div><div><strong>{counts("policy")}</strong><span>políticas</span></div></div><div className="doc-section-head"><h3>Fundamentos</h3><button onClick={() => chooseTab("foundation")}>Ver documentos →</button></div><div className="doc-foundations">{foundationFamilies.map((item, index) => { const entry = manifest.documents.find((value) => value.family === item); return entry && <a key={item} href={`/?${new URLSearchParams({company_id:companyID,project_id:projectID,page:"documents",doc_family:item,doc_id:entry.id})}`} onClick={(event) => select(event, entry)}><small>{String(index+1).padStart(2,"0")} / {families[item].toUpperCase()}</small><strong>{foundationNames[item]}</strong><span>{foundationNotes[item]}</span></a>; })}</div><div className="doc-section-head"><h3>Módulos</h3><button onClick={() => chooseTab("module")}>Explorar módulos →</button></div>{manifest.documents.filter((item) => item.family === "module").slice(0,2).map((entry) => link(entry, entry.id))}<div className="doc-section-head"><h3>Políticas e decisões</h3></div><div className="doc-split-links"><button onClick={() => chooseTab("decision")}>◇ Decisões no registro proprietário →</button><button onClick={() => chooseTab("policy")}>⚑ Explorar políticas →</button></div></section> : <section><div className="doc-intro"><span className="doc-kicker">{tab === "default" ? "RESULTADOS" : tab.toUpperCase()}</span><h2>{tab === "foundation" ? "Fundamentos do Project" : tab === "module" ? "Módulos e responsabilidades" : tab === "endpoint" ? "Contratos de endpoint" : tab === "decision" ? "Decisões no owner" : tab === "policy" ? "Políticas do Project" : "Resultados da busca"}</h2><p>Registros e vínculos derivados da API canônica, sem cópia de conteúdo.</p></div>{indexRead.state === "error" ? <div className="doc-state-panel error" role="alert">TEACH: O índice mudou ou está indisponível. Recarregue a página. {retry}</div> : <>{indexRead.state === "loading" && <p role="status">Buscando registros…</p>}{tab === "decision" ? visible.flatMap((owner) => (owner.decisions || []).map((decision) => { const query = new URLSearchParams({company_id:companyID, project_id:projectID,page:"documents",doc_family:owner.family,doc_id:owner.id,decision_id:decision.id}); return <a className="doc-row" key={`${owner.family}/${owner.id}/${decision.id}`} href={`/?${query}`} onClick={(event) => select(event, owner, decision.id)}><span>◇</span><span><strong>{decision.id}</strong><small>{owner.family}/{owner.id} · {decision.statement}</small></span><b>→</b></a>; })) : visible.map((entry) => link(entry, entry.family === "endpoint_contract" ? `${entry.method} ${entry.route}` : foundationNames[entry.family] || entry.id, "doc-row", entry.purpose || `${entry.family}/${entry.id} · revisão ${entry.revision}`))}{!visible.length && indexRead.state === "ready" && <div className="doc-empty">Nenhum registro encontrado.<small>Revise a busca ou selecione outra família.</small></div>}{cursor && indexRead.state === "ready" && <button type="button" className="doc-more" onClick={loadMore}>Carregar mais registros</button>}</>}</section>}

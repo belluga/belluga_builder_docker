@@ -1,6 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Projects } from "./projects";
+import { CanonicalDocuments } from "./canonical-documents";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const entry = { family: "module", id: "knowledge-viewer", revision: 2, content_digest: digest };
@@ -30,6 +31,41 @@ beforeEach(() => { history.replaceState({}, "", "/"); setup(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("canonical Documents without Foundation", () => {
+  it("uses indexed search results instead of the unfiltered foundation manifest", async () => {
+    const foundation = { ...entry, family: "project_mandate", id: "mandate" };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/knowledge/index") return reply({ project_id: "builder", generation_id: "launch", write_epoch: 1, items: url.searchParams.has("q") ? [] : [foundation] });
+      return reply({ ...manifest, documents: [foundation] });
+    }));
+    render(<CanonicalDocuments companyID="belluga" projectID="builder" family="project_mandate" recordID="" decisionID="" onSelect={() => {}} onOverview={() => {}} />);
+    expect(await screen.findByRole("link", { name: /Mandato do projeto/ })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "absent" } });
+    expect(await screen.findByText("Nenhum registro encontrado.")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /Mandato do projeto/ })).not.toBeInTheDocument();
+  });
+
+  it("ignores a late pagination page after the search changes", async () => {
+    const first = { ...entry, id: "first" };
+    const second = { ...entry, id: "second" };
+    let resolveOldPage!: (value: Reply) => void;
+    const oldPage = new Promise<Reply>((resolve) => { resolveOldPage = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname !== "/api/knowledge/index") return Promise.resolve(reply({ ...manifest, documents: [first, second] }));
+      if (url.searchParams.has("cursor")) return oldPage;
+      return Promise.resolve(reply({ project_id: "builder", generation_id: "launch", write_epoch: 1, items: url.searchParams.has("q") ? [second] : [first], next_cursor: url.searchParams.has("q") ? "" : "next" }));
+    }));
+    render(<CanonicalDocuments companyID="belluga" projectID="builder" family="module" recordID="" decisionID="" onSelect={() => {}} onOverview={() => {}} />);
+    expect(await screen.findByRole("link", { name: /first/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Carregar mais registros" }));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "second" } });
+    expect(await screen.findByRole("link", { name: /second/ })).toBeInTheDocument();
+    await act(async () => resolveOldPage(reply({ project_id: "builder", generation_id: "launch", write_epoch: 1, items: [first], next_cursor: "old-next" })));
+    expect(screen.queryByRole("link", { name: /first/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Carregar mais registros" })).not.toBeInTheDocument();
+  });
+
   it.each(["module", "endpoint_contract", "policy"])("renders %s inventory entries as cards", async (family) => {
     setup((url) => reply(url.searchParams.has("record_id") ? record : { ...manifest, documents: [{ ...entry, family, method: "GET", route: "/projects" }] }));
     open(`&doc_family=${family}`);
