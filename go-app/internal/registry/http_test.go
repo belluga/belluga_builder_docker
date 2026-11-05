@@ -7,7 +7,41 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+type testCanonicalHistoryService struct {
+	*testService
+	canonicalKnowledgeService
+	cursor string
+	limit  int
+	calls  int
+}
+
+func (s *testCanonicalHistoryService) CanonicalHistory(_ context.Context, _, _, cursor string, limit int) (CanonicalHistoryPage, error) {
+	s.calls++
+	s.cursor, s.limit = cursor, limit
+	return CanonicalHistoryPage{Events: []CanonicalEvent{}, NextCursor: "opaque-next"}, nil
+}
+
+func TestCanonicalHistoryRouteUsesOpaqueCursorAndRejectsTimestampPagination(t *testing.T) {
+	service := &testCanonicalHistoryService{testService: &testService{}}
+	cursor := encodeCanonicalHistoryCursor("company-a", "project-a", time.Date(2026, 11, 4, 12, 30, 0, 123000000, time.UTC), bson.NewObjectID())
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/knowledge/history?limit=7&cursor="+cursor, nil))
+	if response.Code != http.StatusOK || service.calls != 1 || service.cursor != cursor || service.limit != 7 || !strings.Contains(response.Body.String(), `"next_cursor":"opaque-next"`) {
+		t.Fatalf("cursor history route status=%d call=%d cursor=%q limit=%d response=%s", response.Code, service.calls, service.cursor, service.limit, response.Body)
+	}
+	for _, query := range []string{"after=2026-11-04T12%3A30%3A00Z", "cursor=invalid/opaque", "cursor=" + cursor + "&cursor=" + cursor, "unused=1"} {
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/knowledge/history?"+query, nil))
+		if response.Code != http.StatusBadRequest || service.calls != 1 {
+			t.Fatalf("invalid history query %q status=%d calls=%d body=%s", query, response.Code, service.calls, response.Body)
+		}
+	}
+}
 
 type testService struct {
 	Service
@@ -121,30 +155,15 @@ func (s *testSelectedTODOImporter) ImportSelectedTODOs(_ context.Context, reques
 	return ValidateSelectedTODOImport(request)
 }
 
-func TestSelectedTODOImportRouteReturnsActionableTeach(t *testing.T) {
+func TestLegacySelectedTODOImportRoutesTeachWithoutWrites(t *testing.T) {
 	service := &testSelectedTODOImporter{testService: &testService{}}
-	validBody, err := json.Marshal(validSelectedTODORequest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	validRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(validBody)))
-	validResponse := httptest.NewRecorder()
-	NewHandler(service).ServeHTTP(validResponse, validRequest)
-	if validResponse.Code != http.StatusOK || !strings.Contains(validResponse.Body.String(), `"imported":4`) || service.calls != 1 {
-		t.Fatalf("valid import response = %d %s; calls=%d", validResponse.Code, validResponse.Body.String(), service.calls)
-	}
-
-	invalidRequestData := validSelectedTODORequest()
-	invalidRequestData.TODOs[0].Stage = "Invented"
-	invalidBody, err := json.Marshal(invalidRequestData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	invalidRequest := httptest.NewRequest(http.MethodPost, "/internal/v1/todos/import", strings.NewReader(string(invalidBody)))
-	invalidResponse := httptest.NewRecorder()
-	NewHandler(service).ServeHTTP(invalidResponse, invalidRequest)
-	if invalidResponse.Code != http.StatusBadRequest || !strings.Contains(invalidResponse.Body.String(), `"teach":"TEACH:`) || !strings.Contains(invalidResponse.Body.String(), "stage") || service.calls != 2 {
-		t.Fatalf("invalid import response = %d %s; calls=%d", invalidResponse.Code, invalidResponse.Body.String(), service.calls)
+	for _, path := range []string{"/internal/v1/todos/import", "/internal/v1/todos/admit-builder-r08"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, request)
+		if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH:`) || service.calls != 0 {
+			t.Fatalf("legacy import route %s response = %d %s; calls=%d", path, response.Code, response.Body.String(), service.calls)
+		}
 	}
 }
 

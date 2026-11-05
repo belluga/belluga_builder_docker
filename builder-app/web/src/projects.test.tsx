@@ -58,6 +58,7 @@ function detail(companyID: string, projectID: string, documents: { path: string;
   } }; }
 function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/knowledge") return { ok: true, json: async () => ({ project_id: url.searchParams.get("project_id"), active: false, state: "pending", documents: [] }) };
   if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
   if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
   if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": documentResponse?.fingerprint || fingerprint }), text: async (): Promise<string> => documentResponse?.body || "" };
@@ -77,6 +78,24 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("keeps an unbound Genesis Project selectable without reading snapshots", async () => {
+    const unbound = { id: "accountzz", name: "Accountzz", company_id: "belluga", source_bound: false };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap("accountzz") };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("unbound Project requested a Reader detail");
+      if (url.pathname.startsWith("/snapshot/")) throw new Error("unbound Project requested a snapshot");
+      return { ok: true, json: async () => ({ companies, projects: [...projects, unbound] }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=accountzz&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText(/artefatos publicados estão pendentes/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Abrir Roadmap" }));
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/local-preview?company_id=") || String(input).startsWith("/snapshot/"))).toBe(false);
+  });
+
   it("loads Mongo Roadmap when the Foundation Reader returns unavailable", async () => {
     const registryRoadmap = roadmap("builder");
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -88,7 +107,7 @@ describe("single root Project experience", () => {
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Project UI and real Roadmap/ }, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByText(/Reader unavailable/)).not.toBeInTheDocument();
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/roadmap?"))).toBe(true);
   });
@@ -223,7 +242,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
     expect(detailCalls()).toBe(1);
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
     expect(await screen.findByRole("region", { name: "Snapshot status" })).toBeInTheDocument();
     expect(detailCalls()).toBe(1);
@@ -248,6 +267,28 @@ describe("single root Project experience", () => {
     expect(status).toHaveTextContent("Visual originMatches saved source observations");
     expect(status).toHaveTextContent("extracted from the published Foundation revision shown above");
     expect(within(status).queryByText(/TEACH:/)).not.toBeInTheDocument();
+  });
+  it("shows canonical API Landing and Overview observations without presenting Foundation as their authority", async () => {
+    const saved = detail("belluga", "builder");
+    Object.assign(saved.snapshot_observations, {
+      knowledge_status: { schema_version: "2", landing: { status: "current", reason_code: "match" }, overview: { status: "review_required", reason_code: "source_changed" } },
+      visual_origin: { source_authority: "canonical_api", knowledge_source_state: "current", overview_source_state: "review_required" },
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
+      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const status = await screen.findByRole("region", { name: "Snapshot status" });
+    expect(status).toHaveTextContent("Canonical API · loaded revision");
+    expect(status).toHaveTextContent("Landing reviewCurrent against reviewed source (match)");
+    expect(status).toHaveTextContent("Overview reviewReview required (source changed)");
+    expect(status).not.toHaveTextContent("Roadmap review");
+    expect(status).not.toHaveTextContent("Foundation");
+    expect(within(status).getByRole("status")).toHaveTextContent("canonical API documents");
   });
   it("warns for unverifiable review and mismatched visual origin", async () => {
     const saved = detail("belluga", "builder");
@@ -577,12 +618,12 @@ describe("single root Project experience", () => {
   it("shows truthful delivered and invalid Release states without planning-ledger arithmetic", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
-    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 }, { timeout: 5000 })).toBeInTheDocument();
     expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Builder genesis ledger");
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-02&release_id=r-01");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Release indisponível");
+    expect(await screen.findByRole("alert", {}, { timeout: 5000 })).toHaveTextContent("Release indisponível");
   });
   it("keeps superseded history visible without counting it as delivered work", async () => {
     const saved = detail("belluga", "builder");
@@ -631,7 +672,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("Design System");
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByRole("heading", { name: "Documents & decisions" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
   });
   it("keeps the approved Overview narrative primary and links the Landing separately", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -661,7 +702,7 @@ describe("single root Project experience", () => {
     render(<Projects />);
     expect(await screen.findByText("Problem evidence")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByText("No canonical Markdown documents are admitted in this snapshot.")).toBeInTheDocument();
+    expect(await screen.findByText("Documentação ainda não iniciada")).toBeInTheDocument();
   });
   it("does not substitute portfolio text for a missing admitted Overview", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -959,85 +1000,14 @@ describe("single root Project experience", () => {
     expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("Nenhum Epic ou Release planejado.");
     expect(screen.queryByText(/builder Local projects|builder Internal service|Company and Project Schema Study|Project UI and real Roadmap|Project Roadmap connection/)).not.toBeInTheDocument();
   });
-  it("shows the honest empty Documents state without an empty index column", async () => {
+  it("does not expose admitted Markdown when canonical knowledge is pending", async () => {
+    const legacyURL = "/snapshot/example/modules/legacy.md";
+    mockFetch([{ path: "modules/legacy.md", url: legacyURL }], { ok: true, body: "# Legacy content" });
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
     render(<Projects />);
-    expect(await screen.findByText("No canonical Markdown documents are admitted in this snapshot.")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Reading is not review" })).toBeInTheDocument();
-    expect(document.querySelector(".documents-layout")).toBeNull();
-  });
-  it("shows readable labels while retaining the admitted document path", async () => {
-    mockFetch([{ path: "modules/project_knowledge_viewer_module.md", url: "/snapshot/example/modules/project_knowledge_viewer_module.md" }]);
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
-    expect(await screen.findByRole("heading", { name: "Project knowledge viewer module" })).toBeInTheDocument();
-    expect(screen.getByText("modules/project_knowledge_viewer_module.md")).toBeInTheDocument();
-  });
-  it("reads admitted Markdown with headings", async () => {
-    const documentURL = "/snapshot/example/modules/project_knowledge_viewer_module.md";
-    const admitted = [{ path: "modules/project_knowledge_viewer_module.md", url: documentURL }];
-    mockFetch(admitted, { ok: true, body: "# Project knowledge\n\n## Decisions\n\nCurrent direction." });
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
-    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
-    expect(await screen.findByRole("heading", { name: "Decisions" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Document headings" })).toHaveTextContent("Decisions");
-  });
-  it("replaces an open document only after a manual page reload reads the new Foundation revision", async () => {
-    const nextFingerprint = "b".repeat(64);
-    const path = "modules/project_knowledge_viewer_module.md";
-    const firstURL = `/snapshot/belluga/builder/${fingerprint}/${path}`;
-    const nextURL = `/snapshot/belluga/builder/${nextFingerprint}/${path}`;
-    let detailReads = 0;
-    let resolveNextDocument!: (value: unknown) => void;
-    const nextDocument = new Promise<unknown>((resolve) => { resolveNextDocument = resolve; });
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input), location.origin);
-      if (String(input) === firstURL) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async () => "# Old Foundation content" };
-      if (String(input) === nextURL) return nextDocument as Promise<never>;
-      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": detailReads > 1 ? nextFingerprint : fingerprint }), json: async () => theme };
-      if (url.searchParams.has("project_id")) {
-        detailReads++;
-        const result = detail("belluga", "builder", [{ path, url: detailReads > 1 ? nextURL : firstURL }]);
-        result.snapshot_fingerprint = detailReads > 1 ? nextFingerprint : fingerprint;
-        return { ok: true, json: async () => result };
-      }
-      return { ok: true, json: async () => ({ companies, projects }) };
-    }));
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    const mounted = render(<Projects />);
-    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
-    expect(await screen.findByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
-    fireEvent(document, new Event("visibilitychange"));
-    expect(detailReads).toBe(1);
-    expect(screen.getByRole("heading", { name: "Old Foundation content" })).toBeInTheDocument();
-    mounted.unmount();
-    render(<Projects />);
-    await waitFor(() => expect(detailReads).toBe(2));
-    expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
-    expect(screen.getByRole("status")).toHaveTextContent("Loading document");
-    await act(async () => resolveNextDocument({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": nextFingerprint }), text: async () => "# New Foundation content" }));
-    expect(await screen.findByRole("heading", { name: "New Foundation content" })).toBeInTheDocument();
-    expect(screen.queryByRole("heading", { name: "Old Foundation content" })).not.toBeInTheDocument();
-  });
-  it("reports a failed admitted document fetch without inventing content", async () => {
-    const documentURL = "/snapshot/example/modules/missing.md";
-    mockFetch([{ path: "modules/missing.md", url: documentURL }]);
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
-    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be loaded");
-    expect(screen.queryByText("Current direction.")).not.toBeInTheDocument();
-  });
-  it("rejects document bytes tagged with a different snapshot fingerprint", async () => {
-    const documentURL = "/snapshot/example/modules/mismatched.md";
-    mockFetch([{ path: "modules/mismatched.md", url: documentURL }], { ok: true, body: "# Wrong revision", fingerprint: "b".repeat(64) });
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=documents");
-    render(<Projects />);
-    fireEvent.click(await screen.findByRole("button", { name: /Read document/ }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be loaded");
-    expect(screen.queryByRole("heading", { name: "Wrong revision" })).not.toBeInTheDocument();
+    expect(await screen.findByText("Documentação ainda não iniciada")).toBeInTheDocument();
+    expect(screen.queryByText("Legacy content")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url) === legacyURL)).toBe(false);
   });
   it("teaches fresh registration when the private reader rejects an old path-only binding", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {

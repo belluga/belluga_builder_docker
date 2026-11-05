@@ -26,6 +26,15 @@ type TODOEvidenceEditRequest struct {
 	Reason                string                `json:"reason"`
 }
 
+type TODONextStepEditRequest struct {
+	ProjectID        string `json:"project_id"`
+	TODOID           string `json:"todo_id"`
+	ExpectedRevision *int64 `json:"expected_revision"`
+	OperationID      string `json:"operation_id"`
+	NextExactStep    string `json:"next_exact_step"`
+	Reason           string `json:"reason"`
+}
+
 type TODOPlacementEditRequest struct {
 	ProjectID               string `json:"project_id"`
 	TODOID                  string `json:"todo_id"`
@@ -83,6 +92,11 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 	}
 	if record.Revision != *request.ExpectedRevision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
+	}
+	if record.Content != nil {
+		if err := requireNoTODOContentDowngrade(record.Content.SchemaVersion, 1); err != nil {
+			return TODOContentEditResponse{}, err
+		}
 	}
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOContentEditResponse{}, err
@@ -196,6 +210,16 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	if current.Content != nil && current.Content.SchemaVersion == todoContentSchemaVersion {
+		for _, commit := range commits {
+			if foundationScope(commit.Repository) {
+				return TODOContentEditResponse{}, todoTeach("implementation_commits.repository", "omit Foundation commits from current v2 TODO evidence", ErrConflict)
+			}
+		}
+		if (current.Stage == "Local-Implemented" || current.Stage == "Promotion-Lane" || current.Stage == "Completed") && !reflect.DeepEqual(current.ImplementationCommits, commits) {
+			return TODOContentEditResponse{}, todoTeach("implementation_commits", "retain the exact commits bound to the verified local delivery", ErrConflict)
+		}
+	}
 	if err := preserveVerifiedEvidence(current.ProofReferences, proofs, "proof_refs"); err != nil {
 		return TODOContentEditResponse{}, err
 	}
@@ -276,8 +300,31 @@ func (m *MongoStore) EditTODOPlacement(ctx context.Context, companyID string, re
 		})
 }
 
+func placementReopensPlanning(record TODORecord, nextRelease string, nextPosition *int) bool {
+	if (record.Source.Kind != "mongo-content-revision" && (record.Content == nil || record.Content.SchemaVersion != todoContentSchemaVersion)) || record.ReleaseID == nextRelease && reflect.DeepEqual(record.Position, nextPosition) {
+		return false
+	}
+	switch record.Stage {
+	case "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane":
+		return true
+	default:
+		return false
+	}
+}
+
 func validRecordMutationIdentity(projectID, todoID string, expected *int64, operationID, reason string) bool {
 	return validID(projectID) && validID(todoID) && expected != nil && *expected >= 0 && *expected < math.MaxInt64 && todoOperationIDPattern.MatchString(operationID) && validSummaryField(reason, 512)
+}
+
+func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, request TODONextStepEditRequest) (TODOContentEditResponse, error) {
+	if !validRecordMutationIdentity(request.ProjectID, request.TODOID, request.ExpectedRevision, request.OperationID, request.Reason) || !validSummaryField(request.NextExactStep, 512) {
+		return TODOContentEditResponse{}, todoTeach("next_exact_step", "provide a nonempty next step of at most 512 bytes with current TODO revision, operation ID and reason", ErrInvalid)
+	}
+	step := request.NextExactStep
+	return m.writeTODORecordMutation(ctx, companyID, request.ProjectID, request.TODOID, *request.ExpectedRevision, request.OperationID, "next-step-edit", request, request.Reason,
+		bson.D{{Key: "next_exact_step", Value: step}},
+		func(TODORecord) (TODOHistoryChanges, error) { return TODOHistoryChanges{NextExactStep: &step}, nil },
+		func(TODORecord) bson.D { return nil })
 }
 
 func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, projectID, todoID string, expected int64, operationID, kind string, request any, reason string, fields bson.D, changes func(TODORecord) (TODOHistoryChanges, error), extra func(TODORecord) bson.D) (TODOContentEditResponse, error) {
@@ -297,10 +344,11 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	eventKind := map[string]string{"evidence-edit": "evidence_changed", "placement-edit": "placement_changed", "next-step-edit": "state_changed"}[kind]
 	var prior TODOHistoryEvent
 	findErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "operation_id", Value: operationID}}).Decode(&prior)
 	if findErr == nil {
-		if prior.Kind != kind || prior.RequestDigest != digest {
+		if prior.Kind != eventKind || prior.RequestDigest != digest {
 			return TODOContentEditResponse{}, todoTeach("operation_id", "not be reused with a different record mutation", ErrConflict)
 		}
 		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: prior.Revision, NoOp: true}, nil
@@ -328,6 +376,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if (placement.Detach || placement.Action == "detach") && record.ReleaseID == "" && record.Position == nil || !(placement.Detach || placement.Action == "detach") && record.ReleaseID == placement.ReleaseID && record.Position != nil && *record.Position == placement.Position {
 			return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
 		}
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion && record.Stage == "Completed" {
+			return TODOContentEditResponse{}, todoTeach("release_id/position", "retain the completed placement; create a separately reviewed TODO for new work", ErrConflict)
+		}
 	}
 	newChanges, err := changes(record)
 	if err != nil {
@@ -336,10 +387,54 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	if kind == "evidence-edit" && reflect.DeepEqual(newChanges.ProofReferences, ptrProofRefs(record.ProofReferences)) && reflect.DeepEqual(newChanges.WaiverReferences, ptrProofRefs(record.WaiverReferences)) && reflect.DeepEqual(newChanges.ImplementationCommits, ptrCommitRefs(record.ImplementationCommits)) && reflect.DeepEqual(newChanges.RecordSections, ptrTODOSections(recordRecordSections(record))) {
 		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
 	}
+	if kind == "next-step-edit" && newChanges.NextExactStep != nil && *newChanges.NextExactStep == record.NextExactStep {
+		return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
+	}
 	next := record.Revision + 1
 	operation := TODOOperationState{ID: operationID, Kind: kind, RequestDigest: digest, ResultRevision: next}
 	set := append(bson.D{}, fields...)
 	set = append(set, extra(record)...)
+	if kind == "placement-edit" {
+		placement := request.(TODOPlacementEditRequest)
+		if record.Source.Kind != "mongo-content-revision" {
+			content, contentErr := m.contentAtRevision(ctx, database, projectID, todoID, record.Revision)
+			if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
+				return TODOContentEditResponse{}, contentErr
+			}
+			if content.SchemaVersion == todoContentSchemaVersion {
+				record.Content = &content.TODOContent
+			}
+		}
+		nextRelease := placement.ReleaseID
+		nextPosition := &placement.Position
+		if placement.Detach || placement.Action == "detach" {
+			nextRelease = ""
+			nextPosition = nil
+		}
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion {
+			retained := make([]TODOProofReference, 0, len(record.ProofReferences))
+			for _, ref := range record.ProofReferences {
+				if ref.Source != "human-review" || !isTODOAuditDeliveryKind(ref.Kind) && !strings.HasPrefix(ref.Kind, "planning_review_") {
+					retained = append(retained, ref)
+				}
+			}
+			set = append(set, bson.E{Key: "proof_refs", Value: retained})
+			newChanges.ProofReferences = &retained
+		}
+		if placementReopensPlanning(record, nextRelease, nextPosition) {
+			_, contentDigest, contentRef, available, subjectErr := currentTODOContentSubject(ctx, database, record)
+			if subjectErr != nil {
+				return TODOContentEditResponse{}, subjectErr
+			}
+			if !available || !validSourceDigest(contentDigest) {
+				return TODOContentEditResponse{}, todoTeach("content_revision", "resolve the current immutable Mongo content before changing approved Release membership", ErrConflict)
+			}
+			planning, verified, work := "Planning", "verified", "planning"
+			proof := TODOProofReference{Kind: "planning-stage", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: contentDigest, VerificationState: verified}
+			set = append(set, bson.E{Key: "stage", Value: planning}, bson.E{Key: "stage_verification", Value: verified}, bson.E{Key: "work_state", Value: work}, bson.E{Key: "verified_transition_ref", Value: proof})
+			newChanges.Stage, newChanges.StageVerification, newChanges.WorkState, newChanges.VerifiedTransitionRef = &planning, &verified, &work, &proof
+		}
+	}
 	set = append(set, bson.E{Key: "last_operation", Value: operation}, bson.E{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())})
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	if kind == "placement-edit" {
@@ -372,11 +467,7 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if result.MatchedCount != 1 {
 			return nil, &todoRevisionConflict{Revision: next}
 		}
-		newChanges, err := changes(record)
-		if err != nil {
-			return nil, err
-		}
-		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, TODOID: todoID, Revision: next, Kind: map[string]string{"evidence-edit": "evidence_changed", "placement-edit": "placement_changed"}[kind], OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: newChanges, Reason: reason}
+		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: projectID, TODOID: todoID, Revision: next, Kind: eventKind, OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: newChanges, Reason: reason}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {
 			return nil, normalizeMongoError(err)
 		}

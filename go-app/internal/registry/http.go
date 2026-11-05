@@ -54,11 +54,13 @@ type todoHistoryService interface {
 	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
 	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
 	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
+	GrantTODOReviewWaiver(context.Context, string, TODOReviewWaiverRequest) (TODOContentEditResponse, error)
 }
 
 type todoRecordMutationService interface {
 	EditTODOEvidence(context.Context, string, TODOEvidenceEditRequest) (TODOContentEditResponse, error)
 	EditTODOPlacement(context.Context, string, TODOPlacementEditRequest) (TODOContentEditResponse, error)
+	EditTODONextStep(context.Context, string, TODONextStepEditRequest) (TODOContentEditResponse, error)
 	NormalizeTODOSectionOwnership(context.Context, string, TODOSectionOwnershipRequest) (TODOContentEditResponse, error)
 }
 
@@ -70,13 +72,55 @@ type releaseInvestigationService interface {
 	ReadReleaseInvestigation(context.Context, string, string, string) (ReleaseInvestigationRead, error)
 }
 
+type canonicalKnowledgeService interface {
+	ImportCanonicalDraft(context.Context, string, CanonicalImport) (CanonicalManifest, error)
+	CanonicalManifest(context.Context, string, string, string) (CanonicalManifest, error)
+	ReadCanonical(context.Context, string, string, CanonicalFamily, string) (CanonicalRecord, error)
+	ReadCanonicalDraft(context.Context, string, string, string, CanonicalFamily, string) (CanonicalRecord, error)
+	CreateCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
+	EditCanonical(context.Context, string, CanonicalMutation) (CanonicalRecord, error)
+	RestoreCanonical(context.Context, string, CanonicalRestoreRequest) (CanonicalRecord, error)
+	DeleteCanonical(context.Context, string, CanonicalDeleteRequest) (CanonicalRecord, error)
+	ActivateCanonical(context.Context, string, string, string, string, string) (CanonicalManifest, error)
+	CanonicalHistory(context.Context, string, string, string, int) (CanonicalHistoryPage, error)
+}
+
+type canonicalKnowledgeReader interface {
+	ReadCanonicalEntity(context.Context, string, string, string) (CanonicalProjection, error)
+	ReadCanonicalDecision(context.Context, string, string, CanonicalFamily, string, string) (CanonicalProjection, error)
+	ReadCanonicalAsOf(context.Context, string, string, CanonicalFamily, string, int64) (CanonicalRecord, error)
+	CompareCanonicalHistory(context.Context, string, string, CanonicalFamily, string, int64, int64) (CanonicalComparison, error)
+}
+
+type canonicalIndexReader interface {
+	CanonicalIndex(context.Context, string, string, CanonicalIndexQuery) (CanonicalIndexPage, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template", h.canonicalTemplate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest", h.canonicalManifest)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index", h.canonicalIndex)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}", h.canonicalEntity)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}", h.canonicalEndpoint)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}", h.canonicalDecision)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare", h.canonicalCompare)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}", h.canonicalAsOf)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts", h.canonicalImport)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate", h.canonicalActivate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalRead)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalEdit)
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalDelete)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}", h.canonicalCreate)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore", h.canonicalRestore)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history", h.canonicalHistory)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}", h.project)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects", h.register)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/preference", h.preference)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/snapshot-reference", h.snapshotReference)
 	mux.HandleFunc("GET /internal/v1/lifecycle-control", h.lifecycleControl)
 	mux.HandleFunc("PUT /internal/v1/lifecycle-control", h.updateLifecycleControl)
@@ -108,7 +152,9 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content", h.editTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate", h.migrateTODOContent)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence", h.editTODOEvidence)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/review-waivers", h.grantTODOReviewWaiver)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement", h.editTODOPlacement)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
 	return mux
@@ -189,9 +235,11 @@ func (h *Handler) releaseInvestigationTemplate(w http.ResponseWriter, r *http.Re
 }
 
 type errorResponse struct {
-	Error        string `json:"error"`
-	Teach        string `json:"teach,omitempty"`
-	TODORevision *int64 `json:"todo_revision,omitempty"`
+	Error        string                    `json:"error"`
+	State        string                    `json:"state,omitempty"`
+	Teach        string                    `json:"teach,omitempty"`
+	TeachDetail  *CanonicalTeachDiagnostic `json:"teach_detail,omitempty"`
+	TODORevision *int64                    `json:"todo_revision,omitempty"`
 }
 
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
@@ -213,6 +261,14 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		h.respond(w, value, err)
 	}
 }
+func (h *Handler) bindFirst(w http.ResponseWriter, r *http.Request) {
+	var input FirstBindingRequest
+	if !h.decode(w, r, &input) {
+		return
+	}
+	value, err := h.service.BindFirst(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
 func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Binding Binding `json:"binding"`
@@ -225,6 +281,10 @@ func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+func (h *Handler) preference(w http.ResponseWriter, r *http.Request) {
+	value, err := h.service.Preference(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
+	h.respond(w, value, err)
 }
 func (h *Handler) snapshotReference(w http.ResponseWriter, r *http.Request) {
 	var input SnapshotReference
@@ -261,31 +321,11 @@ func (h *Handler) resolveTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) importSelectedTODOs(w http.ResponseWriter, r *http.Request) {
-	importer, ok := h.service.(selectedTODOImporter)
-	if !ok {
-		h.writeError(w, ErrUnavailable)
-		return
-	}
-	var input SelectedTODOImportRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
-		return
-	}
-	report, err := importer.ImportSelectedTODOs(r.Context(), input)
-	h.respond(w, report, err)
+	h.writeError(w, todoTeach("route", "use typed Mongo v2 TODO content admission; this Foundation selected-ID import route is disabled and performs no writes", ErrConflict))
 }
 
 func (h *Handler) admitAdditionalTODOs(w http.ResponseWriter, r *http.Request) {
-	admitter, ok := h.service.(additionalTODOAdmitter)
-	if !ok {
-		h.writeError(w, ErrUnavailable)
-		return
-	}
-	var input SelectedTODOImportRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
-		return
-	}
-	report, err := admitter.AdmitAdditionalTODOs(r.Context(), input)
-	h.respond(w, report, err)
+	h.writeError(w, todoTeach("route", "use typed Mongo v2 TODO content admission; this selected-ID import route is disabled and performs no writes", ErrConflict))
 }
 
 func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
@@ -523,6 +563,24 @@ func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, value, err)
 }
 
+func (h *Handler) grantTODOReviewWaiver(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODOReviewWaiverRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identities", ErrConflict))
+		return
+	}
+	value, err := service.GrantTODOReviewWaiver(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
 func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.service.(todoRecordMutationService)
 	if !ok {
@@ -541,6 +599,24 @@ func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
 	h.respond(w, value, err)
 }
 
+func (h *Handler) editTODONextStep(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRecordMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODONextStepEditRequest
+	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.EditTODONextStep(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
 func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.service.(todoRecordMutationService)
 	if !ok {
@@ -556,6 +632,224 @@ func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.R
 		return
 	}
 	value, err := service.NormalizeTODOSectionOwnership(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalTemplate(w http.ResponseWriter, r *http.Request) {
+	h.respond(w, CanonicalTemplate(), nil)
+}
+
+func (h *Handler) canonicalManifest(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := service.CanonicalManifest(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), r.URL.Query().Get("generation_id"))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalIndex(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalIndexReader)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	if len(q) > 7 {
+		h.writeError(w, ErrInvalid)
+		return
+	}
+	for key, values := range q {
+		if len(values) != 1 || key != "family" && key != "module_id" && key != "method" && key != "q" && key != "limit" && key != "cursor" && key != "decisions_only" {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+	}
+	query := CanonicalIndexQuery{Family: CanonicalFamily(q.Get("family")), ModuleID: q.Get("module_id"), Method: q.Get("method"), Q: q.Get("q"), Cursor: q.Get("cursor")}
+	if value := q.Get("decisions_only"); value != "" {
+		if value != "true" {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+		query.DecisionsOnly = true
+	}
+	if value := q.Get("limit"); value != "" {
+		var err error
+		query.Limit, err = strconv.Atoi(value)
+		if err != nil {
+			h.writeError(w, ErrInvalid)
+			return
+		}
+	}
+	page, err := service.CanonicalIndex(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), query)
+	h.respond(w, page, err)
+}
+
+func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalImport
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ImportCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalCreate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalMutation
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) {
+		h.writeError(w, todoTeach("project_id/family", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.CreateCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalActivate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input struct {
+		ProjectID    string `json:"project_id"`
+		GenerationID string `json:"generation_id"`
+		OperationID  string `json:"operation_id"`
+		Actor        string `json:"actor"`
+	}
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ActivateCanonical(r.Context(), r.PathValue("companyID"), input.ProjectID, input.GenerationID, input.OperationID, input.Actor)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalRead(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	query := r.URL.Query()
+	if len(query["generation_id"]) > 1 || len(query["generation_id"]) == 1 && query.Get("generation_id") == "" {
+		h.writeError(w, teachCanonical("", "generation_id", "provide one exact draft generation ID or omit this parameter for active knowledge", ErrInvalid))
+		return
+	}
+	var value CanonicalRecord
+	var err error
+	if generationID := query.Get("generation_id"); generationID != "" {
+		value, err = service.ReadCanonicalDraft(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), generationID, CanonicalFamily(r.PathValue("family")), r.PathValue("recordID"))
+	} else {
+		value, err = service.ReadCanonical(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), CanonicalFamily(r.PathValue("family")), r.PathValue("recordID"))
+	}
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalEdit(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalMutation
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.Record.ID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record.id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.EditCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalDelete(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalDeleteRequest
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.RecordID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record_id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.DeleteCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalRestore(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalRestoreRequest
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") || input.Family != CanonicalFamily(r.PathValue("family")) || input.RecordID != r.PathValue("recordID") {
+		h.writeError(w, todoTeach("project_id/family/record_id", "match the resource path", ErrConflict))
+		return
+	}
+	value, err := service.RestoreCanonical(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalHistory(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalKnowledgeService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	query := r.URL.Query()
+	for key, values := range query {
+		if (key != "limit" && key != "cursor") || len(values) != 1 {
+			h.writeError(w, todoTeach("query", "use one optional limit and cursor parameter", ErrInvalid))
+			return
+		}
+	}
+	limit := 50
+	if raw := query.Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
+			return
+		}
+		limit = parsed
+	}
+	continuation := query.Get("cursor")
+	if continuation != "" {
+		if _, _, err := decodeCanonicalHistoryCursor(continuation, r.PathValue("companyID"), r.PathValue("projectID")); err != nil {
+			h.writeError(w, todoTeach("cursor", "be the exact opaque continuation returned by knowledge history", ErrInvalid))
+			return
+		}
+	}
+	value, err := service.CanonicalHistory(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), continuation, limit)
 	h.respond(w, value, err)
 }
 
@@ -616,6 +910,14 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	var teach *TODOValidationError
 	if errors.As(err, &teach) {
 		response.Teach = teach.Error()
+	}
+	var canonicalTeach *canonicalTeachError
+	if errors.As(err, &canonicalTeach) {
+		response.Teach = canonicalTeach.Error()
+		response.TeachDetail = &canonicalTeach.Diagnostic
+		if canonicalTeach.Diagnostic.Code == "canonical_pending" {
+			response.State = "pending"
+		}
 	}
 	var revisionConflict *todoRevisionConflict
 	if errors.As(err, &revisionConflict) {

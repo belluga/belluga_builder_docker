@@ -15,6 +15,41 @@ import (
 	"testing"
 )
 
+func TestCutoverSnapshotServesPrototypeBesideAPIOnlyDocuments(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"schema_version":"3","id":"sample","scenarios":[],"related":[{"kind":"documentation","document_id":"project-mandate"}]}`)
+	observation := json.RawMessage(`{"schema_version":"3","project_id":"trial-project","target":"prototypes","authority_scope":"local_structure_only","outcome":"go","items":[{"id":"sample","root":"prototypes/sample","entry_point":"screens/main.html","screens":[{"id":"main","path":"screens/main.html","default_state_id":"default","states":[{"id":"default","approved_references":[]}]}],"transitions":[],"scenarios":[]}]}`)
+	snapshot := registeredSnapshot{
+		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
+		Files: map[string][]byte{
+			"prototypes/sample/prototype.json":    manifest,
+			"prototypes/sample/screens/main.html": []byte("<main>prototype</main>"),
+		},
+		Artifacts: []registeredArtifact{
+			{ID: "documents", Kind: "documents", State: "available"},
+			{ID: "sample", Kind: "prototype", State: "available", Entry: "prototypes/sample/screens/main.html", Files: []string{"prototypes/sample/prototype.json", "prototypes/sample/screens/main.html"}},
+		},
+		Observations: map[string]json.RawMessage{"prototype_status": observation},
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	fingerprint := hex.EncodeToString(sum[:])
+	if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, _, err := (&registeredPreview{root: root}).snapshot("trial-project", "trial-company", fingerprint)
+	if err != nil || len(loaded.Artifacts) != 2 {
+		t.Fatalf("cutover snapshot was unavailable: %v", err)
+	}
+}
+
 func TestTodoSourceRequestRejectsDuplicateSelectorsAndInvalidMappings(t *testing.T) {
 	for _, raw := range []string{
 		"company_id=c&project_id=p&todo_id=one&todo_id=two&fingerprint=" + strings.Repeat("a", 64),

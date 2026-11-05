@@ -61,6 +61,7 @@ type catalogProject struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
 	CompanyID           string `json:"company_id"`
+	SourceBound         bool   `json:"source_bound"`
 	SnapshotFingerprint string `json:"snapshot_fingerprint,omitempty"`
 }
 type persistedRegistration struct {
@@ -278,7 +279,7 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 		if !validRegistrationID(p.ID) || key != p.ID || !validRegistrationName(p.Name) || !hasCompany(stored.Companies, p.CompanyID) || !validStoredBinding(storedProject.Binding) {
 			return registrationCatalog{}, errors.New("registration project identity invalid")
 		}
-		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID})
+		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID, SourceBound: true})
 	}
 	for key, preference := range stored.Preferences {
 		if !validRegistrationID(key) || key != preference.ProjectID || !validStoredBinding(preference.Binding) || preference.DeclinedAt == "" {
@@ -514,7 +515,22 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 404, "not_found")
 		return
 	}
-	catalog, err := p.catalog()
+	if r.URL.RawQuery == "" && registryCutoverEnabled() {
+		catalog, err := p.knowledgeCatalog(r)
+		if err != nil {
+			writeError(w, 503, "registration_state_unavailable")
+			return
+		}
+		writeJSON(w, 200, map[string]any{"schema_version": "1", "companies": catalog.Companies, "projects": catalog.Projects})
+		return
+	}
+	var catalog registrationCatalog
+	var err error
+	if registryCutoverEnabled() {
+		catalog, err = p.knowledgeCatalog(r)
+	} else {
+		catalog, err = p.catalog()
+	}
 	if err != nil {
 		writeError(w, 503, "registration_state_unavailable")
 		return
@@ -531,6 +547,10 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 	for _, project := range catalog.Projects {
 		if project.ID != projectID || project.CompanyID != companyID {
 			continue
+		}
+		if registryCutoverEnabled() && !project.SourceBound {
+			writeJSON(w, 200, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "pending", "artifacts": []any{}, "diagnostic": "TEACH: This Project is registered without a repository binding. Published artifacts remain pending until a source is explicitly bound."})
+			return
 		}
 		snapshot, fingerprint, e := p.readCurrent(project.ID, project.CompanyID)
 		if e != nil {
@@ -1437,10 +1457,15 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 			admitted[name] = true
 			seen[name] = true
 		}
-		if artifact.State == "available" && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
+		apiOnlyDocuments := registryCutoverEnabled() && artifact.Kind == "documents" && artifact.Entry == "" && len(artifact.Files) == 0
+		if artifact.State == "available" && !apiOnlyDocuments && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		if artifact.Kind == "prototype" && artifact.State == "available" && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
+		// Mongo owns TODOs after the Roadmap cutover, so the old Foundation
+		// todo-sources map cannot validate Prototype related rows. The current
+		// v3 Prototype status observation is checked below; admitted file paths
+		// and asset digests remain checked above.
+		if artifact.Kind == "prototype" && artifact.State == "available" && !registryCutoverEnabled() && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
 			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
 		}
 	}

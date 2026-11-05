@@ -264,6 +264,18 @@ func TestTODOValidatorRecognizesOnlyPriorContentEditEvolution(t *testing.T) {
 	if !bsonValidatorEqual(bson.Raw(currentRaw), TODOCollectionValidator()) {
 		t.Fatal("current validator did not match canonical shape")
 	}
+	preOutcomeRaw, err := bson.Marshal(TODOCollectionValidatorBeforeReviewOutcome())
+	if err != nil || !bsonValidatorEqual(bson.Raw(preOutcomeRaw), TODOCollectionValidatorBeforeReviewOutcome()) || bsonValidatorEqual(bson.Raw(preOutcomeRaw), TODOCollectionValidator()) {
+		t.Fatalf("pre-outcome validator was not a stable recognized predecessor: %v", err)
+	}
+	if !validReviewOutcome("") || !validReviewOutcome("go") || !validReviewOutcome("no-go") || !validReviewOutcome("waived") || validReviewOutcome("passed") {
+		t.Fatal("review outcome optionality or enum validation drifted")
+	}
+	preOutcomeEvents := historyValidatorBeforeReviewOutcome(TODOEventsValidator())
+	preOutcomeEventsRaw, err := bson.Marshal(preOutcomeEvents)
+	if err != nil || !bsonValidatorEqual(bson.Raw(preOutcomeEventsRaw), preOutcomeEvents) || bsonValidatorEqual(bson.Raw(preOutcomeEventsRaw), TODOEventsValidator()) {
+		t.Fatalf("pre-outcome history validator was not a stable recognized predecessor: %v", err)
+	}
 
 	unrelated := TODOCollectionValidator()
 	jsonSchema := unrelated[0].Value.(bson.D)
@@ -445,8 +457,8 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	}
 	zeroRevision := int64(0)
 	transition := TODOActionRequest{ProjectID: "builder", TODOID: "builder-company-tenant-mongo-registry", ExpectedRevision: &zeroRevision, OperationID: "transition-001", RequestedStage: "Local-Implemented", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}}
-	if _, err := store.TransitionTODO(ctx, "belluga-solutions", transition); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "local_proof") {
-		t.Fatalf("unguarded stage transition = %v, want actionable local-proof TEACH", err)
+	if _, err := store.TransitionTODO(ctx, "belluga-solutions", transition); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "source/content_revision") {
+		t.Fatalf("v1 imported stage transition = %v, want current typed Mongo v2 authority TEACH", err)
 	}
 	staleTransition := transition
 	staleTransition.OperationID = "transition-stale"
@@ -460,12 +472,12 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	invalidJump := transition
 	invalidJump.OperationID = "transition-jump"
 	invalidJump.RequestedStage = "Completed"
-	if _, err := store.TransitionTODO(ctx, "belluga-solutions", invalidJump); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "approved actual-start or verified-local-run transition") {
-		t.Fatalf("guardless nonadjacent stage transition = %v, want actionable stage-specific TEACH", err)
+	if _, err := store.TransitionTODO(ctx, "belluga-solutions", invalidJump); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "source/content_revision") {
+		t.Fatalf("v1 imported nonadjacent stage transition = %v, want current typed Mongo v2 authority TEACH", err)
 	}
 	verify := VerifyCurrentTODOStageRequest{ProjectID: transition.ProjectID, TODOID: transition.TODOID, ExpectedRevision: &zeroRevision, OperationID: "verify-001"}
-	if _, err := store.VerifyCurrentTODOStage(ctx, "belluga-solutions", verify); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "current immutable approved content") {
-		t.Fatalf("untrusted direct current-stage verification = %v, want actionable content-proof TEACH", err)
+	if _, err := store.VerifyCurrentTODOStage(ctx, "belluga-solutions", verify); err == nil || !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "source/content_revision") {
+		t.Fatalf("v1 imported direct stage verification = %v, want current typed Mongo v2 authority TEACH", err)
 	}
 	read, err = store.ReadTODO(ctx, "belluga-solutions", "builder", transition.TODOID, &zeroRevision)
 	if err != nil || read.TODO.ID != transition.TODOID || read.TODO.Stage != "In-Progress" || read.TODO.StageVerification != "unverified" || read.TODORevision != 0 {

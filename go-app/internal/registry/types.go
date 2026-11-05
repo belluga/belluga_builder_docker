@@ -60,10 +60,12 @@ type Project struct {
 	CompanyID             string   `json:"company_id" bson:"company_id"`
 	RoadmapRevision       int64    `json:"roadmap_revision" bson:"roadmap_revision"`
 	Binding               *Binding `json:"binding,omitempty" bson:"binding,omitempty"`
+	BindingRevision       int64    `json:"binding_revision" bson:"binding_revision"`
 	RegisteredAt          string   `json:"registered_at" bson:"registered_at"`
 	PreparationState      string   `json:"preparation_state" bson:"preparation_state"`
 	PreparationDiagnostic string   `json:"preparation_diagnostic,omitempty" bson:"preparation_diagnostic,omitempty"`
 	SnapshotFingerprint   string   `json:"snapshot_fingerprint,omitempty" bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID string   `json:"knowledge_generation_id,omitempty" bson:"knowledge_generation_id,omitempty"`
 }
 
 type Catalog struct {
@@ -86,6 +88,13 @@ type Registration struct {
 	ProjectID   string  `json:"project_id"`
 	ProjectName string  `json:"project_name"`
 	Binding     Binding `json:"binding"`
+}
+
+type FirstBindingRequest struct {
+	ProjectID        string  `json:"project_id"`
+	ExpectedRevision int64   `json:"expected_revision"`
+	OperationID      string  `json:"operation_id"`
+	Binding          Binding `json:"binding"`
 }
 
 type SnapshotReference struct {
@@ -116,6 +125,8 @@ type Service interface {
 	Catalog(context.Context) (Catalog, error)
 	Project(context.Context, string, string) (Project, error)
 	Register(context.Context, Registration) (Project, error)
+	BindFirst(context.Context, string, string, FirstBindingRequest) (Project, error)
+	Preference(context.Context, string, string) (Preference, error)
 	Decline(context.Context, string, string, Binding) error
 	UpdateSnapshotReference(context.Context, string, string, SnapshotReference) (Project, error)
 	LifecycleControl(context.Context) (LifecycleControl, error)

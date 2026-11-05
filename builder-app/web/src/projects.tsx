@@ -6,13 +6,14 @@ import { LocalArtifactPreview } from "./local-artifact-preview";
 import type { PrototypeSelection } from "./local-artifact-preview";
 import { resolveProjectTheme } from "./project-theme";
 import type { ProjectTheme } from "./project-theme";
+import { CanonicalDocuments } from "./canonical-documents";
 import "./projects.css";
 import "./release-detail.css";
 import "./todo-detail.css";
 
 type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
-type Project = { id: string; name: string; company_id: string };
+type Project = { id: string; name: string; company_id: string; source_bound?: boolean };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
 type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
@@ -93,12 +94,12 @@ function TypedTODOContent({ content, legacySections }: { content: NonNullable<Mo
 type OverviewSection = { heading: string; body: string; points: string[]; image_alt?: string };
 type OverviewSource = { schema_version: string; tagline: string; summary: string; desktop_alt?: string; mobile_alt?: string; sections: Record<"problem" | "proposal" | "impact" | "audience", OverviewSection>; media?: Record<string, string> };
 type TargetObservation = { status?: unknown; reason_code?: unknown };
-type KnowledgeObservation = { landing?: TargetObservation; roadmap?: TargetObservation };
-type VisualOriginObservation = { state?: unknown; knowledge_source_state?: unknown; roadmap_source_state?: unknown; design_system_state?: unknown };
+type KnowledgeObservation = { schema_version?: string; landing?: TargetObservation; overview?: TargetObservation; roadmap?: TargetObservation };
+type VisualOriginObservation = { state?: unknown; source_authority?: unknown; knowledge_source_state?: unknown; overview_source_state?: unknown; roadmap_source_state?: unknown; design_system_state?: unknown };
 type SnapshotObservations = { knowledge_status?: KnowledgeObservation; visual_origin?: VisualOriginObservation };
 type Detail = { consumer_readiness: string; company_id?: string; project_id?: string; snapshot_fingerprint?: string; project_sha?: string; external_source_id?: string; external_source_revision?: string; snapshot_observed_at?: string; artifacts: Artifact[]; overview?: OverviewSource; roadmap?: RoadmapProjection; snapshot_observations?: SnapshotObservations; portfolio_summary?: string; portfolio_cover_url?: string; documents?: { path: string; url: string }[]; diagnostic?: string };
 type Page = "overview" | "documents" | "design-system" | "prototypes" | "roadmap" | "backlog" | "release" | "todo";
-type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; epicID: string; releaseID: string; todoID: string; prototype: PrototypeSelection };
+type Route = { companyID: string; projectID: string; page: string; pageExplicit: boolean; epicID: string; releaseID: string; todoID: string; documentFamily: string; documentID: string; decisionID: string; prototype: PrototypeSelection };
 type ProjectView = { key: string; detail: Detail; theme?: ProjectTheme; themeDiagnostic?: string };
 
 const pages: { id: Exclude<Page, "release" | "todo">; label: string }[] = [
@@ -108,12 +109,14 @@ const pages: { id: Exclude<Page, "release" | "todo">; label: string }[] = [
 const pageDisplayNames: Record<Page, string> = { overview: "Overview", roadmap: "Roadmap", backlog: "Backlog", release: "Release", todo: "TODO", documents: "Documents", "design-system": "Design System", prototypes: "Prototypes" };
 const prototypeKeys = ["artifact", "prototype_id", "screen_id", "state_id", "scenario_id", "scenario_step", "fingerprint", "device", "scale", "mode"];
 const roadmapKeys = ["epic_id", "release_id", "todo_id"];
+const documentKeys = ["doc_family", "doc_id", "decision_id"];
 
 function route(): Route {
   const q = new URLSearchParams(location.search);
   return {
     companyID: q.get("company_id") || "", projectID: q.get("project_id") || "",
     page: q.get("page") || "overview", pageExplicit: q.has("page"), epicID: q.get("epic_id") || "", releaseID: q.get("release_id") || "", todoID: q.get("todo_id") || "",
+    documentFamily: q.get("doc_family") || "", documentID: q.get("doc_id") || "", decisionID: q.get("decision_id") || "",
     prototype: {
       mode: q.get("mode") || "", artifact: q.get("artifact") || "", prototypeID: q.get("prototype_id") || "",
       screenID: q.get("screen_id") || "", stateID: q.get("state_id") || "", scenarioID: q.get("scenario_id") || "",
@@ -128,8 +131,8 @@ function navigate(changes: Record<string, string | null>, replace = false) {
   const contextChanged = (changes.company_id !== undefined && changes.company_id !== url.searchParams.get("company_id")) ||
     (changes.project_id !== undefined && changes.project_id !== url.searchParams.get("project_id"));
   const pageChanged = changes.page !== undefined && changes.page !== url.searchParams.get("page");
-  if (contextChanged) { url.searchParams.delete("page"); [...prototypeKeys, ...roadmapKeys].forEach((key) => url.searchParams.delete(key)); }
-  else if (pageChanged) [...prototypeKeys, ...roadmapKeys].forEach((key) => url.searchParams.delete(key));
+  if (contextChanged) { url.searchParams.delete("page"); [...prototypeKeys, ...roadmapKeys, ...documentKeys].forEach((key) => url.searchParams.delete(key)); }
+  else if (pageChanged) [...prototypeKeys, ...roadmapKeys, ...documentKeys].forEach((key) => url.searchParams.delete(key));
   Object.entries(changes).forEach(([key, value]) => value ? url.searchParams.set(key, value) : url.searchParams.delete(key));
   if (replace) history.replaceState({}, "", url); else history.pushState({}, "", url);
   window.dispatchEvent(new PopStateEvent("popstate"));
@@ -146,12 +149,6 @@ function artifactURL(detail: Detail | null, artifact: Artifact) {
 
 function stateLabel(state: string) {
   return state === "available" ? "Available" : state === "invalid" ? "Needs attention" : "Not available yet";
-}
-
-function documentLabel(path: string) {
-  const filename = path.split("/").pop() || path;
-  const words = filename.replace(/\.md$/i, "").replace(/[_-]+/g, " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
 function todoStatusText(todo: RoadmapTodo) {
@@ -306,24 +303,25 @@ function savedObservationTime(value?: string) {
 function SnapshotStatus({ detail }: { detail: Detail }) {
   const knowledge = detail.snapshot_observations?.knowledge_status;
   const visual = detail.snapshot_observations?.visual_origin;
+  const canonical = knowledge?.schema_version === "2" && visual?.source_authority === "canonical_api";
   const reviewLabels = { current: "Current against reviewed source", review_required: "Review required", unverifiable: "Unverifiable" };
   const originLabels = { matching: "Matches saved source observations", mismatch: "Mismatch", unverifiable: "Unverifiable" };
   const observedAt = savedObservationTime(detail.snapshot_observed_at);
   const timestampAvailable = observedAt !== "Observation time unavailable";
   const landing = timestampAvailable ? savedObservationStatus(knowledge?.landing?.status, reviewLabels) : "Unavailable";
+  const overview = timestampAvailable ? savedObservationStatus(knowledge?.overview?.status, reviewLabels) : "Unavailable";
   const roadmap = timestampAvailable ? savedObservationStatus(knowledge?.roadmap?.status, reviewLabels) : "Unavailable";
   const origin = timestampAvailable ? savedObservationStatus(visual?.state, originLabels) : "Unavailable";
-  const needsAttention = landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
+  const needsAttention = canonical ? landing !== reviewLabels.current || overview !== reviewLabels.current : landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
   const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
   return <section className="overview-status" aria-labelledby="snapshot-status-title">
-    <div className="overview-status-heading"><div><span className="project-page-tag">Published source · loaded revision</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>Observations saved {observedAt} · Foundation {detail.project_sha?.slice(0, 12) || "revision unavailable"}</span></div>
+    <div className="overview-status-heading"><div><span className="project-page-tag">{canonical ? "Canonical API · loaded revision" : "Published source · loaded revision"}</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>{canonical ? `Observations saved ${observedAt}` : `Observations saved ${observedAt} · Foundation ${detail.project_sha?.slice(0, 12) || "revision unavailable"}`}</span></div>
     <dl className="overview-status-grid">
       <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
-      <div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div>
-      <div><dt>Visual origin</dt><dd>{origin}</dd></div>
+      {canonical ? <div><dt>Overview review</dt><dd>{overview}{overview !== "Unavailable" && reason(knowledge?.overview?.reason_code)}</dd></div> : <><div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div><div><dt>Visual origin</dt><dd>{origin}</dd></div></>}
     </dl>
-    <p className="overview-status-note">These observations were extracted from the published Foundation revision shown above. They do not establish human approval.</p>
-    {needsAttention && <p className="overview-status-next" role="status">TEACH: Check the selected Project’s published Foundation branch through Delphi. Correct the source, publish the change, then reload this Project to read the current branch.</p>}
+    <p className="overview-status-note">{canonical ? "These observations compare visual artifacts with canonical API documents. They do not establish human approval." : "These observations were extracted from the published Foundation revision shown above. They do not establish human approval."}</p>
+    {needsAttention && <p className="overview-status-next" role="status">{canonical ? "TEACH: Review the selected Project’s canonical API documents and update the affected visual artifact through Delphi; then reload this Project." : "TEACH: Check the selected Project’s published Foundation branch through Delphi. Correct the source, publish the change, then reload this Project to read the current branch."}</p>}
   </section>;
 }
 
@@ -614,10 +612,6 @@ export function Projects() {
   const [loadStage, setLoadStage] = useState<"foundation" | "design" | "error">("foundation");
   const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
-  const [selectedDoc, setSelectedDoc] = useState("");
-  const [markdown, setMarkdown] = useState("");
-  const [docState, setDocState] = useState<"idle" | "loading" | "ready" | "error">("idle");
-  const [loadedDocRevision, setLoadedDocRevision] = useState("");
   useEffect(() => {
     const update = () => { setSelection(route()); setPendingCompanyID(""); };
     addEventListener("popstate", update);
@@ -651,8 +645,8 @@ export function Projects() {
     return () => controller.abort();
   }, [viewKey, reloadCounter, selection.page]);
   useEffect(() => {
-    setView(null); setViewState("loading"); setViewError("unavailable"); setLoadStage("foundation"); setSelectedDoc(""); setMarkdown(""); setDocState("idle"); setLoadedDocRevision("");
-    if (!project) return;
+    setView(null); setViewState("loading"); setViewError("unavailable"); setLoadStage("foundation");
+    if (!project || project.source_bound === false) return;
     const controller = new AbortController();
     async function load() {
       try {
@@ -695,26 +689,8 @@ export function Projects() {
   const roadFamilyPage = ["roadmap", "backlog", "release", "todo"].includes(selection.page);
   const roadmapPage = roadFamilyPage || selection.page === "overview";
   const roadData = roadmapRead.key === viewKey && roadmapRead.state === "ready" ? roadmapRead.value : undefined;
-  const readerIndependentRoadPage = roadFamilyPage && (!activeView || viewState !== "ready");
+  const readerIndependentRoadPage = (roadFamilyPage || selection.page === "documents") && (!activeView || viewState !== "ready");
   const detail = activeView?.detail || (readerIndependentRoadPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
-  const documents = detail?.documents || [];
-  const selectedDocument = documents.find((item) => item.path === selectedDoc);
-  const documentFingerprint = detail?.snapshot_fingerprint || "";
-  const documentRevision = selectedDocument && detail ? `${detail.snapshot_fingerprint}/${selectedDocument.url}` : "";
-  useEffect(() => {
-    if (!selectedDocument || !documentRevision) return;
-    const controller = new AbortController();
-    setMarkdown("");
-    setLoadedDocRevision("");
-    setDocState("loading");
-    fetch(selectedDocument.url, { signal: controller.signal }).then((response) => {
-      if (!response.ok || response.headers.get("X-Builder-Snapshot-Fingerprint") !== documentFingerprint) throw new Error("Document unavailable");
-      return response.text();
-    }).then((value) => { if (!controller.signal.aborted) { setMarkdown(value); setLoadedDocRevision(documentRevision); setDocState("ready"); } })
-      .catch(() => { if (!controller.signal.aborted) { setLoadedDocRevision(documentRevision); setDocState("error"); } });
-    return () => controller.abort();
-  }, [documentRevision, documentFingerprint]);
-  const headings = [...markdown.matchAll(/^#{1,3}\s+(.+)$/gm)].map((match) => match[1]);
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
   const invalidArtifacts = available.filter((item) => item.state === "invalid");
@@ -729,6 +705,7 @@ export function Projects() {
 
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
+	if (project?.source_bound === false && !["roadmap", "backlog", "release", "todo", "documents"].includes(selection.page)) return <main className="projects-page"><section className="project-notice" role="status"><h1>{project.name}</h1><p>Project registrado. Os artefatos publicados estão pendentes até que um repositório seja vinculado para a capacidade que precisa dele.</p><button onClick={() => navigate({ page: "roadmap" })}>Abrir Roadmap</button><button onClick={() => navigate({ page: "documents" })}>Abrir conhecimento</button></section></main>;
 
   if ((!readerIndependentRoadPage && (viewState !== "ready" || !detail || !activeView)) || !detail) return <ProjectLoadingShell key={`${viewKey}/${reloadCounter}`} company={company!} project={project!} stage={loadStage} error={viewState === "error" ? (viewError === "registration" ? "Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.") : ""} onRetry={() => setReloadCounter((value) => value + 1)} />;
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };
@@ -744,16 +721,12 @@ export function Projects() {
     </div>
     <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && <header className="project-page-heading"><span className="project-page-tag">{page === "documents" ? "FOUNDATION DOCUMENTATION · SAVED SNAPSHOT" : page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{page === "documents" ? "Documents & decisions" : pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
+      <section className="project-content">{activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
           <SnapshotStatus detail={detail} />
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
-        {page === "documents" && <div className="documents-page"><p className="documents-page-intro">Read the canonical Markdown files admitted from this Project's loaded Foundation revision.</p>
-          {documents.length ? <section className="document-list" aria-label="Admitted Documents">{documents.map((item) => <article className="document-row" key={item.path}><div><h2>{documentLabel(item.path)}</h2><p>{item.path}</p></div><button aria-pressed={selectedDoc === item.path} onClick={() => setSelectedDoc(item.path)}>{selectedDoc === item.path ? "Selected" : "Read document"} <span aria-hidden="true">→</span></button></article>)}</section> : <p className="project-notice documents-empty">{available.find((item) => item.kind === "documents")?.diagnostic || "No canonical Markdown documents are admitted in this snapshot."}</p>}
-          {selectedDocument && <article className="project-markdown document-reader">{(docState === "loading" || loadedDocRevision !== documentRevision) && <p role="status">Loading document…</p>}{docState === "error" && loadedDocRevision === documentRevision && <p role="alert">This admitted document could not be loaded.</p>}{docState === "ready" && loadedDocRevision === documentRevision && <>{headings.length > 0 && <nav className="document-headings" aria-label="Document headings">{headings.map((heading, index) => <button key={`${heading}-${index}`} onClick={() => document.querySelectorAll(".project-markdown h1, .project-markdown h2, .project-markdown h3")[index]?.scrollIntoView({ behavior: "smooth" })}>{heading}</button>)}</nav>}<ReactMarkdown components={{ img: () => null }}>{markdown}</ReactMarkdown></>}</article>}
-          <section className="documents-note"><h2>Reading is not review</h2><p>These files were read from the loaded Foundation revision. Availability does not indicate human approval.</p></section>
-        </div>}
+        {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}
         {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
         {roadFamilyPage && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. Verifique a Registry API e recarregue; não é usado snapshot Foundation como fallback.</p>}

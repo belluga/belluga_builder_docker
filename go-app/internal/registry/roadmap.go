@@ -137,7 +137,7 @@ func projectRoadmap(projectID string, revision int64, epics []roadmapEpic, relea
 func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 	contract, selected := selectedTODOContract(record.ID)
 	path := record.Source.Path
-	if selected {
+	if selected && record.Source.Kind != "mongo-content-revision" {
 		path = contract.Path
 	}
 	kind := "executable"
