@@ -123,7 +123,11 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 		}
 	}
 	operation := TODOOperationState{ID: request.OperationID, Kind: "content-edit", RequestDigest: digest, ResultRevision: next}
-	update := bson.D{{Key: "$set", Value: bson.D{{Key: "sections", Value: newSections}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	set := bson.D{{Key: "sections", Value: newSections}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	if err := validateTODORecordMutationSize(record, set, nil); err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	session, err := m.client.StartSession()
 	if err != nil {
 		return TODOContentEditResponse{}, ErrUnavailable
@@ -330,9 +334,9 @@ func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, req
 		func(TODORecord) bson.D { return nil })
 }
 
-// Check the exact stored BSON shape after an evidence edit, including the CAS
-// marker and revision. The count limit alone cannot bound reference text.
-func validateEvidenceRecordSize(record TODORecord, set bson.D) error {
+// Check the stored BSON shape after a record mutation, including the CAS
+// marker and revision. Field and reference-count limits alone do not bound it.
+func validateTODORecordMutationSize(record TODORecord, set bson.D, unset []string) error {
 	encoded, err := bson.Marshal(record)
 	if err != nil {
 		return ErrUnavailable
@@ -344,13 +348,16 @@ func validateEvidenceRecordSize(record TODORecord, set bson.D) error {
 	for _, field := range set {
 		projected[field.Key] = field.Value
 	}
+	for _, field := range unset {
+		delete(projected, field)
+	}
 	projected["revision"] = record.Revision + 1
 	encoded, err = bson.Marshal(projected)
 	if err != nil {
 		return ErrUnavailable
 	}
 	if len(encoded) > maxTODORecordBytes {
-		return todoTeach("evidence", "keep the resulting TODO record within the 1 MiB BSON limit", ErrInvalid)
+		return todoTeach("todo.record_bytes", "keep the resulting TODO record within the 1 MiB BSON limit", ErrInvalid)
 	}
 	return nil
 }
@@ -464,17 +471,17 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		}
 	}
 	set = append(set, bson.E{Key: "last_operation", Value: operation}, bson.E{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())})
-	if kind == "evidence-edit" {
-		if err := validateEvidenceRecordSize(record, set); err != nil {
-			return TODOContentEditResponse{}, err
-		}
-	}
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	var unset []string
 	if kind == "placement-edit" {
 		placement := request.(TODOPlacementEditRequest)
 		if placement.Detach || placement.Action == "detach" {
 			update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "release_id", Value: ""}, {Key: "position", Value: ""}}})
+			unset = []string{"release_id", "position"}
 		}
+	}
+	if err := validateTODORecordMutationSize(record, set, unset); err != nil {
+		return TODOContentEditResponse{}, err
 	}
 	session, err := m.client.StartSession()
 	if err != nil {

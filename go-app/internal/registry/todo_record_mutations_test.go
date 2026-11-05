@@ -74,13 +74,41 @@ func TestEvidenceEditRejectsOversizedResultingBSONRecord(t *testing.T) {
 	record := mongoBornTODOFixture()
 	operation := TODOOperationState{ID: "evidence-1", Kind: "evidence-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}
 	fields := bson.D{{Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
-	if err := validateEvidenceRecordSize(record, fields); err != nil {
+	if err := validateTODORecordMutationSize(record, fields, nil); err != nil {
 		t.Fatalf("bounded evidence edit rejected: %v", err)
 	}
 	oversized := append(bson.D{}, fields...)
 	oversized = append(oversized, bson.E{Key: "proof_refs", Value: []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: strings.Repeat("x", maxTODORecordBytes), SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}})
-	if err := validateEvidenceRecordSize(record, oversized); !errors.Is(err, ErrInvalid) {
+	if err := validateTODORecordMutationSize(record, oversized, nil); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("oversized resulting BSON record accepted: %v", err)
+	}
+}
+
+func TestNextStepCannotGrowNearLimitTODORecordPastBSONCap(t *testing.T) {
+	record := mongoBornTODOFixture()
+	record.ProofReferences = []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: "x", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}
+	encoded, err := bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.ProofReferences[0].Reference = strings.Repeat("x", maxTODORecordBytes-len(encoded)-64+1)
+	set := bson.D{{Key: "next_exact_step", Value: strings.Repeat("n", 512)}, {Key: "last_operation", Value: TODOOperationState{ID: "next-step-1", Kind: "next-step-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	if err := validateTODORecordMutationSize(record, set, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("next-step growth past the record cap accepted: %v", err)
+	}
+}
+
+func TestSectionOwnershipCannotGrowNearLimitTODORecordPastBSONCap(t *testing.T) {
+	record := mongoBornTODOFixture()
+	record.ProofReferences = []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: "x", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}
+	encoded, err := bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.ProofReferences[0].Reference = strings.Repeat("x", maxTODORecordBytes-len(encoded)-64+1)
+	set := bson.D{{Key: "sections", Value: []TODOSection{{Key: "scope", Title: "Scope", Ownership: "contract", BodyMarkdown: strings.Repeat("s", 512)}}}, {Key: "last_operation", Value: TODOOperationState{ID: "classify-1", Kind: "content-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	if err := validateTODORecordMutationSize(record, set, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("section ownership growth past the record cap accepted: %v", err)
 	}
 }
 
