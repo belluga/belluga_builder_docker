@@ -162,6 +162,9 @@ func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 		TODOCollectionValidatorBeforeRecordEvents(), TODOCollectionValidatorBeforeCreation(), TODOCollectionValidatorBeforeReviewOutcome(),
 	}
 	for _, predecessor := range predecessors {
+		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
+			return true
+		}
 		predecessor = todoValidatorWithEvidenceCapacity(predecessor, 64)
 		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
 			return true

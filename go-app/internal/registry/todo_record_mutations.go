@@ -365,9 +365,12 @@ func validateTODORecordMutationSize(persisted bson.Raw, set bson.D, unset []stri
 	for _, field := range unset {
 		delete(projected, field)
 	}
-	if revision, ok := projected["revision"].(int64); ok {
+	switch revision := projected["revision"].(type) {
+	case int32:
+		projected["revision"] = int64(revision) + 1
+	case int64:
 		projected["revision"] = revision + 1
-	} else {
+	default:
 		return ErrUnavailable
 	}
 	encoded, err := bson.Marshal(projected)
