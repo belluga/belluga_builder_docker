@@ -62,6 +62,27 @@ func TestValidateGenericTODOAdmission(t *testing.T) {
 	}
 }
 
+func TestMultiRevisionEvidenceCapacityPreservesVerifiedReferences(t *testing.T) {
+	record := genericTODOAdmissionFixture().TODO
+	for i := 0; i < 65; i++ {
+		record.ProofReferences = append(record.ProofReferences, TODOProofReference{Kind: fmt.Sprintf("criterion:older-%d", i), Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"})
+	}
+	if err := validateGenericTODOAdmission(record); err != nil {
+		t.Fatalf("bounded multi-revision evidence rejected: %v", err)
+	}
+	verified := append([]TODOProofReference(nil), record.ProofReferences...)
+	for i := range verified {
+		verified[i].VerificationState = "verified"
+	}
+	if err := preserveVerifiedEvidence(verified, verified, "proof_refs"); err != nil {
+		t.Fatalf("preserved verified history rejected: %v", err)
+	}
+	record.ProofReferences = append(record.ProofReferences, make([]TODOProofReference, maxTODOProofs-len(record.ProofReferences)+1)...)
+	if err := validateGenericTODOAdmission(record); err == nil {
+		t.Fatal("evidence above the shared bound was accepted")
+	}
+}
+
 func mongoBornTODOFixture() TODORecord {
 	record := genericTODOAdmissionFixture().TODO
 	record.ID = "builder-mongo-todo-section-schema-analysis"

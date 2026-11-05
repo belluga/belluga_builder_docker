@@ -15,7 +15,7 @@ const (
 	todoSchemaVersion   = "builder-selected-todos-v1"
 	maxTODORecordBytes  = 1 << 20
 	maxTODOSections     = 128
-	maxTODOProofs       = 64
+	maxTODOProofs       = 256
 	maxTODOPathPatterns = 512
 )
 
@@ -270,7 +270,7 @@ func validateTODORecord(record TODORecord, source selectedTODOSourceContract) er
 		return todoTeach("todos["+record.ID+"].source", "match Foundation "+source.Foundation+" revision "+source.FoundationSHA+", path "+source.Path+", and digest "+source.SourceDigest, ErrConflict)
 	}
 	if len(record.Sections) > maxTODOSections || len(record.ProofReferences)+len(record.WaiverReferences)+len(record.ImplementationCommits) > maxTODOProofs {
-		return todoTeach("todos["+record.ID+"].sections/proof_refs/waiver_refs/implementation_commits", "stay within 128 ordered sections and 64 combined proof references", ErrInvalid)
+		return todoTeach("todos["+record.ID+"].sections/proof_refs/waiver_refs/implementation_commits", fmt.Sprintf("stay within %d ordered sections and %d combined evidence references", maxTODOSections, maxTODOProofs), ErrInvalid)
 	}
 	if record.Qualifiers == nil || record.Sections == nil {
 		return todoTeach("todos["+record.ID+"].qualifiers/sections", "encode empty collections as [] rather than null", ErrInvalid)

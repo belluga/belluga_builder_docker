@@ -220,6 +220,25 @@ func TestTODOValidatorRecognizesPinnedMVPParentCombinationOnly(t *testing.T) {
 	}
 }
 
+func TestEvidenceCapacityUpgradeRecognizesOnlyPriorStrictValidator(t *testing.T) {
+	previous := TODOCollectionValidatorBeforeEvidenceCapacity()
+	encoded, err := bson.Marshal(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("published 64-reference validator was not recognized")
+	}
+	unknown := withoutBSONFieldsAtPath(previous, []string{"$jsonSchema", "properties"}, "source")
+	encoded, err = bson.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("unknown validator variant was accepted")
+	}
+}
+
 func TestMongoProvisionTODOHistoryUpgradesCombinedEventValidatorPredecessor(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {

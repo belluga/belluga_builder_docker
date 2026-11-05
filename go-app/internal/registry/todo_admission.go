@@ -222,7 +222,7 @@ func validateGenericTODOAdmission(record TODORecord) error {
 		return todoTeach("todo.title/objective/next_exact_step/artifact_type/stage/work_state", "provide typed fields within the canonical TODO limits", ErrInvalid)
 	}
 	if record.Qualifiers == nil || record.Sections == nil || record.Content != nil && len(record.Sections) != 0 || len(record.Sections) > maxTODOSections || len(record.ProofReferences)+len(record.WaiverReferences)+len(record.ImplementationCommits) > maxTODOProofs {
-		return todoTeach("todo.qualifiers/sections/proof_refs", "use non-null bounded arrays and at most 128 sections and 64 evidence references", ErrInvalid)
+		return todoTeach("todo.qualifiers/sections/proof_refs", fmt.Sprintf("use non-null bounded arrays and at most %d sections and %d evidence references", maxTODOSections, maxTODOProofs), ErrInvalid)
 	}
 	seenQualifiers := map[string]bool{}
 	for _, qualifier := range record.Qualifiers {

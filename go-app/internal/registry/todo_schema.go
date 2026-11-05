@@ -155,17 +155,33 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 
 func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeEvidenceCapacity(),
 		TODOCollectionValidatorBeforeMVPParentUpgrade(),
 		TODOCollectionValidatorBeforeRepositoryIdentity(), TODOCollectionValidatorBeforeReviewWaiver(), TODOCollectionValidatorBeforeNextStepEdit(), priorTODOCollectionValidator(),
 		TODOCollectionValidatorBeforeContentMigration(), TODOCollectionValidatorBeforeHistoricalAdoption(), TODOCollectionValidatorBeforeOwnership(),
 		TODOCollectionValidatorBeforeRecordEvents(), TODOCollectionValidatorBeforeCreation(), TODOCollectionValidatorBeforeReviewOutcome(),
 	}
 	for _, predecessor := range predecessors {
+		predecessor = todoValidatorWithEvidenceCapacity(predecessor, 64)
 		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
 			return true
 		}
 	}
 	return false
+}
+
+// Keep the exact deployed 64-reference validator as an upgrade predecessor.
+// Earlier validator fixtures must retain that bound even after the current
+// collection increases its bounded evidence capacity.
+func TODOCollectionValidatorBeforeEvidenceCapacity() bson.D {
+	return todoValidatorWithEvidenceCapacity(TODOCollectionValidator(), 64)
+}
+
+func todoValidatorWithEvidenceCapacity(validator bson.D, limit int) bson.D {
+	for _, field := range []string{"proof_refs", "waiver_refs", "implementation_commits"} {
+		validator = replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", field, "maxItems"}, limit)
+	}
+	return validator
 }
 
 // TODOCollectionValidatorBeforeMVPParentUpgrade is the strict/error validator
@@ -183,7 +199,7 @@ func TODOCollectionValidatorBeforeMVPParentUpgrade() bson.D {
 // predecessor that did not allow the approved repository and delivery branch
 // on a diff scope. No other fields or validation rules are relaxed.
 func TODOCollectionValidatorBeforeRepositoryIdentity() bson.D {
-	raw, err := bson.Marshal(TODOCollectionValidator())
+	raw, err := bson.Marshal(TODOCollectionValidatorBeforeEvidenceCapacity())
 	if err != nil {
 		return nil
 	}
@@ -259,7 +275,7 @@ func TODOCollectionValidatorBeforeReviewWaiver() bson.D {
 }
 
 func todoCollectionValidatorWithOperationKinds(kinds bson.A) bson.D {
-	validator := TODOCollectionValidator()
+	validator := TODOCollectionValidatorBeforeEvidenceCapacity()
 	raw, err := bson.Marshal(validator)
 	if err != nil {
 		return nil

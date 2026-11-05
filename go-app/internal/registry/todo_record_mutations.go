@@ -206,6 +206,9 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	if err := upgradeTODOCollectionForHistory(ctx, collection.Database()); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	current, err := readSelectedTODO(ctx, collection, request.ProjectID, request.TODOID)
 	if err != nil {
 		return TODOContentEditResponse{}, err
@@ -230,7 +233,7 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 		return TODOContentEditResponse{}, err
 	}
 	if len(proofs)+len(waivers)+len(commits) > maxTODOProofs {
-		return TODOContentEditResponse{}, todoTeach("evidence", "contain at most 64 typed references", ErrInvalid)
+		return TODOContentEditResponse{}, todoTeach("evidence", "contain at most "+strconv.Itoa(maxTODOProofs)+" combined typed references and commits", ErrInvalid)
 	}
 	seen := map[string]bool{}
 	sections := append([]TODOSection{}, request.RecordSections...)
