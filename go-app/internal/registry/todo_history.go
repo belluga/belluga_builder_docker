@@ -577,8 +577,9 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		beforeContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(validator))
 		beforeReviewOutcome := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewOutcome(validator))
 		beforeReviewWaiver := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewWaiver(validator))
+		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)))
 		beforeAdoptionAndContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)))
-		if !bsonValidatorEqual(actualValidator.Document(), prior) && !bsonValidatorEqual(actualValidator.Document(), priorV2) && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver {
+		if !bsonValidatorEqual(actualValidator.Document(), prior) && !bsonValidatorEqual(actualValidator.Document(), priorV2) && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
 		if !beforeDigest && !beforePlacement {

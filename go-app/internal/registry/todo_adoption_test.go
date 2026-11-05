@@ -236,6 +236,16 @@ func TestMongoProvisionTODOHistoryUpgradesCombinedEventValidatorPredecessor(t *t
 	if err := verifyTODOHistoryCollections(ctx, database); err != nil {
 		t.Fatalf("verify upgraded history validators/indexes: %v", err)
 	}
+	combinedReviewPredecessor := historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(TODOEventsValidator()))
+	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoEventsCollection}, {Key: "validator", Value: combinedReviewPredecessor}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatalf("install combined review predecessor: %v", err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, company.ID); err != nil {
+		t.Fatalf("upgrade combined review event validator predecessor: %v", err)
+	}
+	if err := verifyTODOHistoryCollections(ctx, database); err != nil {
+		t.Fatalf("verify review-upgraded history validators/indexes: %v", err)
+	}
 }
 
 func validatorProperties(validator bson.D) bson.D {
