@@ -124,7 +124,11 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 	}
 	operation := TODOOperationState{ID: request.OperationID, Kind: "content-edit", RequestDigest: digest, ResultRevision: next}
 	set := bson.D{{Key: "sections", Value: newSections}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
-	if err := validateTODORecordMutationSize(record, set, nil); err != nil {
+	persisted, err := persistedTODORecordBSON(ctx, collection, record)
+	if err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	if err := validateTODORecordMutationSize(persisted, set, nil); err != nil {
 		return TODOContentEditResponse{}, err
 	}
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
@@ -336,13 +340,23 @@ func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, req
 
 // Check the stored BSON shape after a record mutation, including the CAS
 // marker and revision. Field and reference-count limits alone do not bound it.
-func validateTODORecordMutationSize(record TODORecord, set bson.D, unset []string) error {
-	encoded, err := bson.Marshal(record)
-	if err != nil {
-		return ErrUnavailable
+func persistedTODORecordBSON(ctx context.Context, collection *mongo.Collection, record TODORecord) (bson.Raw, error) {
+	var persisted bson.Raw
+	err := collection.FindOne(ctx, bson.D{{Key: "_id", Value: record.ObjectID}, {Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ID}, {Key: "revision", Value: record.Revision}}).Decode(&persisted)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, &todoRevisionConflict{Revision: record.Revision + 1}
 	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	return persisted, nil
+}
+
+// Project from persisted BSON: readSelectedTODO may overlay a shorter synthetic
+// Mongo source on an imported record without changing the stored document.
+func validateTODORecordMutationSize(persisted bson.Raw, set bson.D, unset []string) error {
 	var projected bson.M
-	if err := bson.Unmarshal(encoded, &projected); err != nil {
+	if err := bson.Unmarshal(persisted, &projected); err != nil {
 		return ErrUnavailable
 	}
 	for _, field := range set {
@@ -351,8 +365,12 @@ func validateTODORecordMutationSize(record TODORecord, set bson.D, unset []strin
 	for _, field := range unset {
 		delete(projected, field)
 	}
-	projected["revision"] = record.Revision + 1
-	encoded, err = bson.Marshal(projected)
+	if revision, ok := projected["revision"].(int64); ok {
+		projected["revision"] = revision + 1
+	} else {
+		return ErrUnavailable
+	}
+	encoded, err := bson.Marshal(projected)
 	if err != nil {
 		return ErrUnavailable
 	}
@@ -480,7 +498,11 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 			unset = []string{"release_id", "position"}
 		}
 	}
-	if err := validateTODORecordMutationSize(record, set, unset); err != nil {
+	persisted, err := persistedTODORecordBSON(ctx, collection, record)
+	if err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	if err := validateTODORecordMutationSize(persisted, set, unset); err != nil {
 		return TODOContentEditResponse{}, err
 	}
 	session, err := m.client.StartSession()
