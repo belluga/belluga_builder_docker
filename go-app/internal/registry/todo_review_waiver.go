@@ -131,7 +131,7 @@ func knownRequiredReviewKind(content TODOContent, kind string) bool {
 		}
 		return false
 	}
-	if !isTODOAuditDeliveryKind(kind) {
+	if !isTODOAuditDeliveryKind(kind) || content.Planning == nil {
 		return false
 	}
 	floors, err := deriveTODOAuditFloors(content.Planning)
