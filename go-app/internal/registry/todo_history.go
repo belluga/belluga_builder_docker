@@ -1126,7 +1126,8 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	var prior TODOHistoryEvent
 	findErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "operation_id", Value: request.OperationID}}).Decode(&prior)
 	if findErr == nil {
-		if prior.Kind != eventKind || prior.RequestDigest != digest {
+		replanned := prior.Kind == "state_changed" && prior.Changes.Stage != nil && *prior.Changes.Stage == "Planning" && prior.Changes.VerifiedTransitionRef != nil && prior.Changes.VerifiedTransitionRef.Kind == "planning-stage"
+		if (prior.Kind != eventKind && !replanned) || prior.RequestDigest != digest {
 			return TODOContentEditResponse{}, todoTeach("operation_id", "not be reused with a different content payload", ErrConflict)
 		}
 		response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: prior.Revision, NoOp: true}
@@ -1174,6 +1175,21 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		requestedContent.LegacyContext = current.LegacyContext
 	}
 	if reflect.DeepEqual(current, requestedContent) {
+		if record.Source.Kind == "mongo-content-revision" && record.StageVerification == "unverified" && (record.Stage == "Local-Implemented" || record.Stage == "Promotion-Lane" || record.Stage == "Completed") {
+			contentRevision, contentDigest, contentRef, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
+			if subjectErr != nil {
+				return TODOContentEditResponse{}, subjectErr
+			}
+			if !hasCurrentContent || !validSourceDigest(contentDigest) {
+				return TODOContentEditResponse{}, todoTeach("content_revision", "retain the current immutable Mongo content version before re-planning", ErrConflict)
+			}
+			proof := TODOProofReference{Kind: "planning-stage", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: contentDigest, VerificationState: "verified"}
+			action, writeErr := writeVerifiedTODO(ctx, database, collection, companyID, record, "Planning", proof, request.OperationID, "content-edit", digest)
+			if writeErr != nil {
+				return TODOContentEditResponse{}, writeErr
+			}
+			return TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: action.TODORevision, ContentRevision: &contentRevision, ContentDigest: contentDigest}, nil
+		}
 		response := TODOContentEditResponse{CompanyID: companyID, ProjectID: record.ProjectID, TODOID: record.ID, Revision: record.Revision, NoOp: true}
 		if record.Source.Kind == "mongo-content-revision" || usesImportedTODOContentStageProof(record) {
 			contentRevision, contentDigest, _, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
@@ -1199,7 +1215,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if err != nil {
 		return TODOContentEditResponse{}, ErrInvalid
 	}
-	reopensPlanning := record.Source.Kind == "mongo-content-revision" && (record.Stage == "Implementation-Approval-Pending" || record.Stage == "Ready-for-Implementation" || record.Stage == "In-Progress")
+	reopensPlanning := record.Source.Kind == "mongo-content-revision" && record.Stage != "Planning"
 	var planningProof *TODOProofReference
 	if reopensPlanning {
 		planningProof = &TODOProofReference{

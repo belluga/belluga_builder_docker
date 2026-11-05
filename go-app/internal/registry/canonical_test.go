@@ -581,6 +581,58 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if foundExtra != (importErr == nil) {
 		t.Fatalf("import/activation race lost a committed record: import=%v manifest=%+v", importErr, parallelManifest)
 	}
+	deletionComparison, err := store.CompareCanonicalHistory(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy", 1, 2)
+	if err != nil || !deletionComparison.Changed || deletionComparison.From.ContentDigest != deletionComparison.To.ContentDigest || deletionComparison.From.Deleted || !deletionComparison.To.Deleted {
+		t.Fatalf("deletion with unchanged payload was hidden by comparison: %+v, %v", deletionComparison, err)
+	}
+	if _, err := store.EditCanonical(ctx, "company-canonical", CanonicalMutation{ProjectID: "builder", Family: FamilyPolicy, Record: created, ExpectedRevision: 2, OperationID: "edit-tombstone", Actor: "owner"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ordinary edit bypassed tombstone boundary: %v", err)
+	}
+	if _, err := store.RestoreCanonical(ctx, "company-canonical", CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyPolicy, RecordID: "new-policy", Revision: 2, ExpectedRevision: 2, OperationID: "restore-deleted-version", Actor: "owner"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("restore accepted a tombstone as source content: %v", err)
+	}
+	if _, err := store.RestoreCanonical(ctx, "company-canonical", CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyPolicy, RecordID: "new-policy", Revision: 1, ExpectedRevision: 1, OperationID: "restore-stale-revision", Actor: "owner"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("restore ignored current revision CAS: %v", err)
+	}
+	restoreRequest, err := json.Marshal(CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyPolicy, RecordID: "new-policy", Revision: 1, ExpectedRevision: 2, OperationID: "restore-deleted-policy", Actor: "owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restorePath := "/internal/v1/companies/company-canonical/projects/builder/knowledge/policy/new-policy/history/restore"
+	restoreResponse := httptest.NewRecorder()
+	handler.ServeHTTP(restoreResponse, httptest.NewRequest("POST", restorePath, strings.NewReader(string(restoreRequest))))
+	var restoredPolicy CanonicalRecord
+	if restoreResponse.Code != 200 || json.Unmarshal(restoreResponse.Body.Bytes(), &restoredPolicy) != nil || restoredPolicy.Revision != 3 || restoredPolicy.Deleted {
+		t.Fatalf("governed tombstone restore status=%d body=%s", restoreResponse.Code, restoreResponse.Body.String())
+	}
+	currentPolicy, err := store.ReadCanonical(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy")
+	if err != nil || currentPolicy.Deleted || currentPolicy.Revision != 3 || currentPolicy.ContentDigest != created.ContentDigest {
+		t.Fatalf("restored policy not live at revision 3: %+v, %v", currentPolicy, err)
+	}
+	deletedHistory, err := store.ReadCanonicalAsOf(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy", 2)
+	if err != nil || !deletedHistory.Deleted {
+		t.Fatalf("restore erased deletion history: %+v, %v", deletedHistory, err)
+	}
+	restoredComparison, err := store.CompareCanonicalHistory(ctx, "company-canonical", "builder", FamilyPolicy, "new-policy", 1, 3)
+	if err != nil || restoredComparison.Changed {
+		t.Fatalf("restored payload and live state differ from original: %+v, %v", restoredComparison, err)
+	}
+	if repeated, err := store.RestoreCanonical(ctx, "company-canonical", CanonicalRestoreRequest{ProjectID: "builder", Family: FamilyPolicy, RecordID: "new-policy", Revision: 1, ExpectedRevision: 2, OperationID: "restore-deleted-policy", Actor: "owner"}); err != nil || repeated.Revision != 3 || repeated.Deleted {
+		t.Fatalf("restore retry was not idempotent: %+v, %v", repeated, err)
+	}
+	restoredEvents, err := store.CanonicalHistory(ctx, "company-canonical", "builder", "", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoreEvents := 0
+	for _, event := range restoredEvents.Events {
+		if event.RecordID == "new-policy" && event.Kind == "content_restored" && event.Revision == 3 {
+			restoreEvents++
+		}
+	}
+	if restoreEvents != 1 {
+		t.Fatalf("restore retry created %d immutable events; want one", restoreEvents)
+	}
 }
 
 func TestCanonicalDuplicateJSONKeysFailBeforeTypedDecoding(t *testing.T) {

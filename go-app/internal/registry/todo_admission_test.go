@@ -1378,6 +1378,72 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || inProgressAfterEdit.TODO.Stage != "Planning" || inProgressAfterEdit.TODO.StageVerification != "verified" || inProgressAfterEdit.TODO.VerifiedTransitionRef == nil || inProgressAfterEdit.TODO.VerifiedTransitionRef.Kind != "planning-stage" || inProgressAfterEdit.TODO.VerifiedTransitionRef.SourceDigest != inProgressEdit.ContentDigest {
 		t.Fatalf("In-Progress content edit did not reopen verified Planning: %+v, %v", inProgressAfterEdit, err)
 	}
+	for _, advancedStage := range []string{"Local-Implemented", "Promotion-Lane", "Completed"} {
+		advancedRecord, readErr := readSelectedTODO(ctx, database.Collection(todosCollection), "builder", mongoBorn.ID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		fixtureProof := TODOProofReference{Kind: "test-stage-proof", Source: "test-fixture", Reference: advancedStage, SourceDigest: sourceHash([]byte(advancedStage)), VerificationState: "verified"}
+		seeded, seedErr := writeVerifiedTODO(ctx, database, database.Collection(todosCollection), "company-a", advancedRecord, advancedStage, fixtureProof, "seed-"+advancedStage, "transition", sourceHash([]byte("seed-"+advancedStage)))
+		if seedErr != nil {
+			t.Fatalf("seed %s: %v", advancedStage, seedErr)
+		}
+		advancedRead, readErr := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		changed := contentFromTODO(advancedRead.TODO)
+		changed.Context += " Revised from " + advancedStage + "."
+		edit, editErr := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: int64Pointer(seeded.TODORevision), OperationID: "replan-" + advancedStage, Content: changed, Reason: "Replan changed advanced content"})
+		if editErr != nil || edit.Revision != seeded.TODORevision+1 {
+			t.Fatalf("edit from %s: %+v, %v", advancedStage, edit, editErr)
+		}
+		before, beforeErr := store.ReadTODOAsOf(ctx, "company-a", "builder", mongoBorn.ID, seeded.TODORevision)
+		after, afterErr := store.ReadTODOAsOf(ctx, "company-a", "builder", mongoBorn.ID, edit.Revision)
+		if beforeErr != nil || afterErr != nil || before.State.Stage != advancedStage || before.State.StageVerification != "verified" || after.State.Stage != "Planning" || after.State.StageVerification != "verified" || after.State.VerifiedTransitionRef == nil || after.State.VerifiedTransitionRef.SourceDigest != edit.ContentDigest {
+			t.Fatalf("replan from %s lost stage history: before=%+v (%v), after=%+v (%v)", advancedStage, before, beforeErr, after, afterErr)
+		}
+	}
+	advancedRecord, err := readSelectedTODO(ctx, database.Collection(todosCollection), "builder", mongoBorn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixtureProof := TODOProofReference{Kind: "test-stage-proof", Source: "test-fixture", Reference: "stranded-local", SourceDigest: sourceHash([]byte("stranded-local")), VerificationState: "verified"}
+	seeded, err := writeVerifiedTODO(ctx, database, database.Collection(todosCollection), "company-a", advancedRecord, "Local-Implemented", fixtureProof, "seed-stranded-local", "transition", sourceHash([]byte("seed-stranded-local")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	strandedRevision := seeded.TODORevision + 1
+	unverified := "unverified"
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: mongoBorn.ID}, {Key: "revision", Value: seeded.TODORevision}}, bson.D{{Key: "$set", Value: bson.D{{Key: "stage_verification", Value: unverified}}}, {Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}); err != nil {
+		t.Fatal(err)
+	}
+	strandedEvent := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: mongoBorn.ID, Revision: strandedRevision, Kind: "state_changed", OccurredAt: time.Now().UTC(), OperationID: "seed-stranded-unverified", RequestDigest: sourceHash([]byte("seed-stranded-unverified")), Changes: TODOHistoryChanges{StageVerification: &unverified, ClearVerifiedTransitionRef: true}}
+	if _, err := database.Collection(todoEventsCollection).InsertOne(ctx, strandedEvent); err != nil {
+		t.Fatal(err)
+	}
+	strandedRead, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionCountBefore, err := database.Collection(todoContentVersionsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: mongoBorn.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replanRequest := TODOContentEditRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &strandedRevision, OperationID: "recover-stranded-advanced", Content: contentFromTODO(strandedRead.TODO), Reason: "Recover an already unverified advanced content edit"}
+	replannedAdvanced, err := store.EditTODOContent(ctx, "company-a", replanRequest)
+	if err != nil || replannedAdvanced.NoOp || replannedAdvanced.Revision != strandedRevision+1 || replannedAdvanced.ContentDigest != strandedRead.ContentDigest || replannedAdvanced.ContentRevision == nil || strandedRead.ContentRevision == nil || *replannedAdvanced.ContentRevision != *strandedRead.ContentRevision {
+		t.Fatalf("same-content governed replan = %+v, %v", replannedAdvanced, err)
+	}
+	recoveredRead, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
+	versionCountAfter, countErr := database.Collection(todoContentVersionsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: mongoBorn.ID}})
+	if err != nil || countErr != nil || recoveredRead.TODO.Stage != "Planning" || recoveredRead.TODO.StageVerification != "verified" || recoveredRead.TODO.VerifiedTransitionRef == nil || recoveredRead.TODO.VerifiedTransitionRef.SourceDigest != strandedRead.ContentDigest || versionCountAfter != versionCountBefore {
+		t.Fatalf("recovery did not preserve content version and prior proof: read=%+v, versions=%d/%d, errors=%v/%v", recoveredRead, versionCountBefore, versionCountAfter, err, countErr)
+	}
+	retry, retryErr := store.EditTODOContent(ctx, "company-a", replanRequest)
+	if retryErr != nil || !retry.NoOp || retry.Revision != replannedAdvanced.Revision {
+		t.Fatalf("same-content recovery retry = %+v, %v", retry, retryErr)
+	}
 	zero := int64(0)
 	// Seed a previously verified v1 stage for the immutable-history exercise.
 	// The public transition route must not create this state after the v2 cutoff.

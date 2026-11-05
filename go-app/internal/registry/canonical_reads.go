@@ -137,5 +137,5 @@ func (m *MongoStore) CompareCanonicalHistory(ctx context.Context, companyID, pro
 	if err != nil {
 		return CanonicalComparison{}, err
 	}
-	return CanonicalComparison{From: before, To: after, Changed: before.ContentDigest != after.ContentDigest}, nil
+	return CanonicalComparison{From: before, To: after, Changed: before.ContentDigest != after.ContentDigest || before.Deleted != after.Deleted}, nil
 }

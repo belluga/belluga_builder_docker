@@ -983,10 +983,24 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	} else if e != mongo.ErrNoDocuments {
 		return CanonicalRecord{}, ErrUnavailable
 	}
-	current, err := m.ReadCanonical(ctx, companyID, input.ProjectID, input.Family, input.Record.ID)
+	name, err := canonicalCollection(input.Family)
 	if err != nil {
 		return CanonicalRecord{}, err
 	}
+	if !canonicalID.MatchString(input.Record.ID) {
+		return CanonicalRecord{}, teachCanonical(input.Record.ID, "record_id", "use a stable lowercase record ID", ErrInvalid)
+	}
+	currentFilter := bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "id", Value: input.Record.ID}}
+	if eventKind != "content_restored" {
+		currentFilter = append(currentFilter, bson.E{Key: "deleted", Value: bson.M{"$ne": true}})
+	}
+	var currentStored canonicalStored
+	if err = db.Collection(name).FindOne(ctx, currentFilter).Decode(&currentStored); err == mongo.ErrNoDocuments {
+		return CanonicalRecord{}, ErrNotFound
+	} else if err != nil {
+		return CanonicalRecord{}, ErrUnavailable
+	}
+	current := currentStored.toRecord()
 	if current.Revision != input.ExpectedRevision {
 		return CanonicalRecord{}, ErrConflict
 	}
@@ -998,7 +1012,6 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	}
 	input.Record.ContentDigest = canonicalDigest(input.Record.Payload)
 	input.Record.UpdatedAt = canonicalTime()
-	name, _ := canonicalCollection(input.Family)
 	filter := bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "id", Value: input.Record.ID}, {Key: "revision", Value: input.ExpectedRevision}}
 	session, err := db.Client().StartSession()
 	if err != nil {
@@ -1019,6 +1032,9 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 			return nil, e
 		}
 		delete(fields, "_id")
+		if eventKind == "content_restored" {
+			fields["deleted"] = false
+		}
 		result, e := db.Collection(name).UpdateOne(sc, filter, bson.M{"$set": fields})
 		if e != nil {
 			return nil, e
@@ -1132,6 +1148,9 @@ func (m *MongoStore) RestoreCanonical(ctx context.Context, companyID string, inp
 	}
 	if err != nil {
 		return CanonicalRecord{}, ErrUnavailable
+	}
+	if version.Record.Deleted {
+		return CanonicalRecord{}, teachCanonical(input.RecordID, "revision", "select a prior live revision to restore", ErrInvalid)
 	}
 	return m.editCanonical(ctx, companyID, CanonicalMutation{ProjectID: input.ProjectID, Family: input.Family, Record: version.Record.toRecord(), ExpectedRevision: input.ExpectedRevision, OperationID: input.OperationID, Actor: input.Actor}, "content_restored")
 }
