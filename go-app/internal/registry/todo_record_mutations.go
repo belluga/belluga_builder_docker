@@ -330,6 +330,31 @@ func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, req
 		func(TODORecord) bson.D { return nil })
 }
 
+// Check the exact stored BSON shape after an evidence edit, including the CAS
+// marker and revision. The count limit alone cannot bound reference text.
+func validateEvidenceRecordSize(record TODORecord, set bson.D) error {
+	encoded, err := bson.Marshal(record)
+	if err != nil {
+		return ErrUnavailable
+	}
+	var projected bson.M
+	if err := bson.Unmarshal(encoded, &projected); err != nil {
+		return ErrUnavailable
+	}
+	for _, field := range set {
+		projected[field.Key] = field.Value
+	}
+	projected["revision"] = record.Revision + 1
+	encoded, err = bson.Marshal(projected)
+	if err != nil {
+		return ErrUnavailable
+	}
+	if len(encoded) > maxTODORecordBytes {
+		return todoTeach("evidence", "keep the resulting TODO record within the 1 MiB BSON limit", ErrInvalid)
+	}
+	return nil
+}
+
 func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, projectID, todoID string, expected int64, operationID, kind string, request any, reason string, fields bson.D, changes func(TODORecord) (TODOHistoryChanges, error), extra func(TODORecord) bson.D) (TODOContentEditResponse, error) {
 	project, collection, err := m.selectedTODOCollection(ctx, companyID, projectID, todoID)
 	if err != nil {
@@ -439,6 +464,11 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		}
 	}
 	set = append(set, bson.E{Key: "last_operation", Value: operation}, bson.E{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())})
+	if kind == "evidence-edit" {
+		if err := validateEvidenceRecordSize(record, set); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	if kind == "placement-edit" {
 		placement := request.(TODOPlacementEditRequest)
