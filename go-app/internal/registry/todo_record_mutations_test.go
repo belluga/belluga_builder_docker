@@ -70,6 +70,70 @@ func TestMongoPlacementReopensOnlyUnfinishedApprovalOnPlacementChange(t *testing
 	}
 }
 
+func TestEvidenceEditRejectsOversizedResultingBSONRecord(t *testing.T) {
+	record := mongoBornTODOFixture()
+	operation := TODOOperationState{ID: "evidence-1", Kind: "evidence-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}
+	fields := bson.D{{Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	persisted, err := bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTODORecordMutationSize(persisted, fields, nil); err != nil {
+		t.Fatalf("bounded evidence edit rejected: %v", err)
+	}
+	oversized := append(bson.D{}, fields...)
+	oversized = append(oversized, bson.E{Key: "proof_refs", Value: []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: strings.Repeat("x", maxTODORecordBytes), SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}})
+	if err := validateTODORecordMutationSize(persisted, oversized, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("oversized resulting BSON record accepted: %v", err)
+	}
+}
+
+func TestNextStepCannotGrowNearLimitTODORecordPastBSONCap(t *testing.T) {
+	record := mongoBornTODOFixture()
+	record.ProofReferences = []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: "x", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}
+	encoded, err := bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.ProofReferences[0].Reference = strings.Repeat("x", maxTODORecordBytes-len(encoded)-64+1)
+	encoded, err = bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := bson.D{{Key: "next_exact_step", Value: strings.Repeat("n", 512)}, {Key: "last_operation", Value: TODOOperationState{ID: "next-step-1", Kind: "next-step-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	if err := validateTODORecordMutationSize(encoded, set, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("next-step growth past the record cap accepted: %v", err)
+	}
+}
+
+func TestSectionOwnershipCannotGrowNearLimitTODORecordPastBSONCap(t *testing.T) {
+	record := mongoBornTODOFixture()
+	record.ProofReferences = []TODOProofReference{{Kind: "criterion:large", Source: "paced-local-runner", Reference: "x", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}}
+	encoded, err := bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.ProofReferences[0].Reference = strings.Repeat("x", maxTODORecordBytes-len(encoded)-64+1)
+	encoded, err = bson.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := bson.D{{Key: "sections", Value: []TODOSection{{Key: "scope", Title: "Scope", Ownership: "contract", BodyMarkdown: strings.Repeat("s", 512)}}}, {Key: "last_operation", Value: TODOOperationState{ID: "classify-1", Kind: "content-edit", RequestDigest: "sha256:" + strings.Repeat("a", 64), ResultRevision: 1}}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	if err := validateTODORecordMutationSize(encoded, set, nil); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("section ownership growth past the record cap accepted: %v", err)
+	}
+}
+
+func TestRecordCapAcceptsBSONInt32Revision(t *testing.T) {
+	persisted, err := bson.Marshal(bson.D{{Key: "revision", Value: int32(0)}, {Key: "source", Value: bson.D{{Key: "kind", Value: "foundation-import"}, {Key: "path", Value: "legacy.md"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateTODORecordMutationSize(persisted, bson.D{{Key: "next_exact_step", Value: "Review"}}, nil); err != nil {
+		t.Fatalf("valid BSON int32 revision rejected: %v", err)
+	}
+}
+
 type recordMutationHTTPService struct {
 	*testService
 	called  string
@@ -215,5 +279,193 @@ func TestMongoNextStepEditPreservesContentAndStage(t *testing.T) {
 	count, err := database.Collection(todoContentVersionsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: record.ID}})
 	if err != nil || count != 1 {
 		t.Fatalf("next-step edit created content version: count=%d err=%v", count, err)
+	}
+}
+
+func TestMongoEvidenceEditUpgradesPriorCapacityAndPersistsHistory(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated replica-set MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProvisionTODOCollection(ctx, "company-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, "company-a"); err != nil {
+		t.Fatal(err)
+	}
+	record := mongoBornTODOFixture()
+	record.ID = "capacity-upgrade-fixture"
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); err != nil {
+		t.Fatal(err)
+	}
+	database := store.client.Database(store.tenantDatabase("company-a"))
+	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todosCollection}, {Key: "validator", Value: TODOCollectionValidatorBeforeEvidenceCapacity()}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	proofs := make([]TODOProofReference, 65)
+	for i := range proofs {
+		proofs[i] = TODOProofReference{Kind: "criterion:" + strconv.Itoa(i), Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: "sha256:" + strings.Repeat("a", 64), VerificationState: "unverified"}
+	}
+	zero := int64(0)
+	request := TODOEvidenceEditRequest{ProjectID: "builder", TODOID: record.ID, ExpectedRevision: &zero, OperationID: "evidence-capacity-1", ProofReferences: proofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{}, RecordSections: []TODOSection{}, Reason: "Preserve bounded multi-revision proof"}
+	result, err := store.EditTODOEvidence(ctx, "company-a", request)
+	if err != nil || result.Revision != 1 || result.NoOp {
+		t.Fatalf("evidence edit after validator upgrade = %+v, %v", result, err)
+	}
+	if err := verifyTODOCollection(ctx, database); err != nil {
+		t.Fatalf("validator was not upgraded: %v", err)
+	}
+	read, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)
+	if err != nil || read.TODORevision != 1 || len(read.TODO.ProofReferences) != len(proofs) {
+		t.Fatalf("persisted evidence = %+v, %v", read, err)
+	}
+	prior, err := store.ReadTODOAsOf(ctx, "company-a", "builder", record.ID, 0)
+	if err != nil || len(prior.State.ProofReferences) != 0 {
+		t.Fatalf("prior history changed: %+v, %v", prior, err)
+	}
+	current, err := store.ReadTODOAsOf(ctx, "company-a", "builder", record.ID, 1)
+	if err != nil || len(current.State.ProofReferences) != len(proofs) {
+		t.Fatalf("new evidence history missing: %+v, %v", current, err)
+	}
+	if _, err := database.Collection(epicsCollection).InsertOne(ctx, roadmapEpic{StorageID: bson.NewObjectID(), ProjectID: "builder", ID: "e-06", Name: "Database", Position: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(releasesCollection).InsertOne(ctx, roadmapRelease{StorageID: bson.NewObjectID(), ProjectID: "builder", ID: "r-08", EpicID: "e-06", Name: "Mongo", Position: 0}); err != nil {
+		t.Fatal(err)
+	}
+	imported := genericTODOAdmissionFixture()
+	imported.TODO.ID = "imported-cap-fixture"
+	imported.TODO.Source.Path = "todos/active/TODO-imported-cap-fixture.md"
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", imported); err != nil {
+		t.Fatal(err)
+	}
+	typed := TODOAuthoredContent{TODOContent: validTODOContent(), Title: imported.TODO.Title, Objective: imported.TODO.Objective, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	typedDigest, err := todoContentRevisionDigest("builder", imported.TODO.ID, 1, typed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(todoContentVersionsCollection).InsertOne(ctx, TODOContentVersion{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: imported.TODO.ID, Revision: 1, Content: typed, Digest: typedDigest}); err != nil {
+		t.Fatal(err)
+	}
+	one := int64(1)
+	if _, err := database.Collection(todoEventsCollection).InsertOne(ctx, TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: "builder", TODOID: imported.TODO.ID, Revision: one, Kind: "content_changed", OccurredAt: time.Now().UTC(), OperationID: "fixture-typed-content", RequestDigest: sourceHash([]byte("typed")), ContentRevision: &one}); err != nil {
+		t.Fatal(err)
+	}
+	sections := make([]TODOSection, 17)
+	for i := range sections {
+		sections[i] = TODOSection{Key: "section-" + strconv.Itoa(i), Title: "Section " + strconv.Itoa(i), BodyMarkdown: strings.Repeat("x", 60<<10), Position: i, Ownership: "record"}
+	}
+	var importedRecord TODORecord
+	if err := database.Collection(todosCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: imported.TODO.ID}}).Decode(&importedRecord); err != nil {
+		t.Fatal(err)
+	}
+	var projected bson.M
+	encoded, err := bson.Marshal(importedRecord)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bson.Unmarshal(encoded, &projected); err != nil {
+		t.Fatal(err)
+	}
+	projected["sections"] = sections
+	projected["revision"] = one
+	encoded, err = bson.Marshal(projected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trim := len(encoded) - (maxTODORecordBytes - 64)
+	lastBodyLength := len(sections[16].BodyMarkdown) - trim
+	if lastBodyLength <= 0 || lastBodyLength > 64<<10 {
+		t.Fatalf("near-limit imported fixture cannot be sized: trim=%d", trim)
+	}
+	sections[16].BodyMarkdown = strings.Repeat("x", lastBodyLength)
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: imported.TODO.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "revision", Value: one}, {Key: "sections", Value: sections}}}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.ReadTODO(ctx, "company-a", "builder", imported.TODO.ID, nil)
+	if err != nil || before.TODO.Source.Kind != "mongo-content-revision" {
+		t.Fatalf("migrated imported TODO not readable: %+v, %v", before, err)
+	}
+	step := TODONextStepEditRequest{ProjectID: "builder", TODOID: imported.TODO.ID, ExpectedRevision: &one, OperationID: "imported-cap-next-step", NextExactStep: strings.Repeat("n", 512), Reason: "Exercise the persisted-source size boundary"}
+	stepDigest, err := todoRequestDigest(step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	set := bson.D{{Key: "next_exact_step", Value: step.NextExactStep}, {Key: "last_operation", Value: TODOOperationState{ID: step.OperationID, Kind: "next-step-edit", RequestDigest: stepDigest, ResultRevision: 2}}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	projectedSize := func(raw bson.Raw) int {
+		var doc bson.M
+		if err := bson.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		for _, field := range set {
+			doc[field.Key] = field.Value
+		}
+		doc["revision"] = int64(2)
+		encoded, err := bson.Marshal(doc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(encoded)
+	}
+	persisted, err := persistedTODORecordBSON(ctx, database.Collection(todosCollection), TODORecord{ObjectID: importedRecord.ObjectID, ProjectID: "builder", ID: imported.TODO.ID, Revision: one})
+	if err != nil {
+		t.Fatal(err)
+	}
+	synthetic, err := bson.Marshal(before.TODO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap := projectedSize(persisted) - projectedSize(synthetic)
+	if gap < 2 {
+		t.Fatalf("imported source was not larger than synthetic source: gap=%d", gap)
+	}
+	shrink := projectedSize(persisted) - (maxTODORecordBytes + gap/2)
+	lastBodyLength = len(sections[16].BodyMarkdown) - shrink
+	if lastBodyLength <= 0 || lastBodyLength > 64<<10 {
+		t.Fatalf("cannot calibrate imported source gap: shrink=%d gap=%d", shrink, gap)
+	}
+	sections[16].BodyMarkdown = strings.Repeat("x", lastBodyLength)
+	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: imported.TODO.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "sections", Value: sections}}}}); err != nil {
+		t.Fatal(err)
+	}
+	before, err = store.ReadTODO(ctx, "company-a", "builder", imported.TODO.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err = persistedTODORecordBSON(ctx, database.Collection(todosCollection), TODORecord{ObjectID: importedRecord.ObjectID, ProjectID: "builder", ID: imported.TODO.ID, Revision: one})
+	if err != nil {
+		t.Fatal(err)
+	}
+	synthetic, err = bson.Marshal(before.TODO)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectedSize(persisted) <= maxTODORecordBytes || projectedSize(synthetic) > maxTODORecordBytes {
+		t.Fatalf("fixture does not distinguish persisted and synthetic projection: persisted=%d synthetic=%d", projectedSize(persisted), projectedSize(synthetic))
+	}
+	if _, err := store.EditTODONextStep(ctx, "company-a", step); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "todo.record_bytes") {
+		t.Fatalf("near-limit imported TODO accepted oversized next step: %v", err)
+	}
+	after, err := store.ReadTODO(ctx, "company-a", "builder", imported.TODO.ID, nil)
+	if err != nil || after.TODORevision != one || after.TODO.NextExactStep != before.TODO.NextExactStep {
+		t.Fatalf("rejected edit changed imported TODO: %+v, %v", after, err)
+	}
+	if count, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: imported.TODO.ID}, {Key: "operation_id", Value: step.OperationID}}); err != nil || count != 0 {
+		t.Fatalf("rejected edit wrote history: count=%d err=%v", count, err)
 	}
 }

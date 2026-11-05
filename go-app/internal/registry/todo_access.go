@@ -1091,7 +1091,7 @@ func unverifiedProofs(proofs []TODOProofReference, field string) ([]TODOProofRef
 		return []TODOProofReference{}, nil
 	}
 	if len(proofs) > maxTODOProofs {
-		return nil, todoTeach(field, "contain at most 64 unverified references", ErrInvalid)
+		return nil, todoTeach(field, fmt.Sprintf("contain at most %d unverified references", maxTODOProofs), ErrInvalid)
 	}
 	result := append([]TODOProofReference(nil), proofs...)
 	for _, proof := range result {

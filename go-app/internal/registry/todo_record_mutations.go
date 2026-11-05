@@ -123,7 +123,15 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 		}
 	}
 	operation := TODOOperationState{ID: request.OperationID, Kind: "content-edit", RequestDigest: digest, ResultRevision: next}
-	update := bson.D{{Key: "$set", Value: bson.D{{Key: "sections", Value: newSections}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	set := bson.D{{Key: "sections", Value: newSections}, {Key: "last_operation", Value: operation}, {Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())}}
+	persisted, err := persistedTODORecordBSON(ctx, collection, record)
+	if err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	if err := validateTODORecordMutationSize(persisted, set, nil); err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	session, err := m.client.StartSession()
 	if err != nil {
 		return TODOContentEditResponse{}, ErrUnavailable
@@ -206,6 +214,9 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	if err := upgradeTODOCollectionForHistory(ctx, collection.Database()); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	current, err := readSelectedTODO(ctx, collection, request.ProjectID, request.TODOID)
 	if err != nil {
 		return TODOContentEditResponse{}, err
@@ -230,7 +241,7 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 		return TODOContentEditResponse{}, err
 	}
 	if len(proofs)+len(waivers)+len(commits) > maxTODOProofs {
-		return TODOContentEditResponse{}, todoTeach("evidence", "contain at most 64 typed references", ErrInvalid)
+		return TODOContentEditResponse{}, todoTeach("evidence", "contain at most "+strconv.Itoa(maxTODOProofs)+" combined typed references and commits", ErrInvalid)
 	}
 	seen := map[string]bool{}
 	sections := append([]TODOSection{}, request.RecordSections...)
@@ -325,6 +336,51 @@ func (m *MongoStore) EditTODONextStep(ctx context.Context, companyID string, req
 		bson.D{{Key: "next_exact_step", Value: step}},
 		func(TODORecord) (TODOHistoryChanges, error) { return TODOHistoryChanges{NextExactStep: &step}, nil },
 		func(TODORecord) bson.D { return nil })
+}
+
+// Check the stored BSON shape after a record mutation, including the CAS
+// marker and revision. Field and reference-count limits alone do not bound it.
+func persistedTODORecordBSON(ctx context.Context, collection *mongo.Collection, record TODORecord) (bson.Raw, error) {
+	var persisted bson.Raw
+	err := collection.FindOne(ctx, bson.D{{Key: "_id", Value: record.ObjectID}, {Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ID}, {Key: "revision", Value: record.Revision}}).Decode(&persisted)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, &todoRevisionConflict{Revision: record.Revision + 1}
+	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	return persisted, nil
+}
+
+// Project from persisted BSON: readSelectedTODO may overlay a shorter synthetic
+// Mongo source on an imported record without changing the stored document.
+func validateTODORecordMutationSize(persisted bson.Raw, set bson.D, unset []string) error {
+	var projected bson.M
+	if err := bson.Unmarshal(persisted, &projected); err != nil {
+		return ErrUnavailable
+	}
+	for _, field := range set {
+		projected[field.Key] = field.Value
+	}
+	for _, field := range unset {
+		delete(projected, field)
+	}
+	switch revision := projected["revision"].(type) {
+	case int32:
+		projected["revision"] = int64(revision) + 1
+	case int64:
+		projected["revision"] = revision + 1
+	default:
+		return ErrUnavailable
+	}
+	encoded, err := bson.Marshal(projected)
+	if err != nil {
+		return ErrUnavailable
+	}
+	if len(encoded) > maxTODORecordBytes {
+		return todoTeach("todo.record_bytes", "keep the resulting TODO record within the 1 MiB BSON limit", ErrInvalid)
+	}
+	return nil
 }
 
 func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, projectID, todoID string, expected int64, operationID, kind string, request any, reason string, fields bson.D, changes func(TODORecord) (TODOHistoryChanges, error), extra func(TODORecord) bson.D) (TODOContentEditResponse, error) {
@@ -437,11 +493,20 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	}
 	set = append(set, bson.E{Key: "last_operation", Value: operation}, bson.E{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())})
 	update := bson.D{{Key: "$set", Value: set}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	var unset []string
 	if kind == "placement-edit" {
 		placement := request.(TODOPlacementEditRequest)
 		if placement.Detach || placement.Action == "detach" {
 			update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "release_id", Value: ""}, {Key: "position", Value: ""}}})
+			unset = []string{"release_id", "position"}
 		}
+	}
+	persisted, err := persistedTODORecordBSON(ctx, collection, record)
+	if err != nil {
+		return TODOContentEditResponse{}, err
+	}
+	if err := validateTODORecordMutationSize(persisted, set, unset); err != nil {
+		return TODOContentEditResponse{}, err
 	}
 	session, err := m.client.StartSession()
 	if err != nil {

@@ -87,16 +87,12 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	if len(pacedCommits) > 0 {
 		query.Set("paced_commits", strings.Join(pacedCommits, ","))
 		if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
-			for _, scope := range todo.DiffExpectation {
-				if (scope.Repository == "PACED" || scope.Repository == "delphi-ai") && validGitRepositoryID(scope.RepositoryID) && validDeliveryBranch(scope.DeliveryBranch) {
-					query.Set("paced_repository_id", scope.RepositoryID)
-					query.Set("paced_branch", scope.DeliveryBranch)
-					break
-				}
+			repository, branch, identityErr := mvpPACEDRepository(todo, pacedCommits)
+			if identityErr != nil {
+				return TODOProofReference{}, identityErr
 			}
-			if query.Get("paced_repository_id") == "" {
-				return TODOProofReference{}, todoTeach("diff_expectation.repository_id/delivery_branch", "provide the approved PACED repository and branch before production proof", ErrConflict)
-			}
+			query.Set("paced_repository_id", repository)
+			query.Set("paced_branch", branch)
 		}
 	}
 	if len(foundationCommits) > 0 {
@@ -137,6 +133,53 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	}{verified, contentDigest, todo.VerifiedTransitionRef.SourceDigest, pacedCommits})
 	hash := sha256.Sum256(evidence)
 	return TODOProofReference{Kind: "production-deployment", Source: "private-reader", Reference: claim.Reference, SourceDigest: "sha256:" + hex.EncodeToString(hash[:]), VerificationState: "verified"}, nil
+}
+
+// Older v2 contracts can lack repository metadata even though their local delivery
+// already verified the exact remote PACED identity for every implementation commit.
+// Reuse only that verified identity; never infer it from a label or a current branch.
+func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, error) {
+	for _, scope := range todo.DiffExpectation {
+		if scope.Repository != "PACED" && scope.Repository != "delphi-ai" {
+			continue
+		}
+		if validGitRepositoryID(scope.RepositoryID) && validDeliveryBranch(scope.DeliveryBranch) {
+			return scope.RepositoryID, scope.DeliveryBranch, nil
+		}
+		if scope.RepositoryID != "" || scope.DeliveryBranch != "" {
+			break
+		}
+		proof := todo.VerifiedTransitionRef
+		if proof == nil || proof.Kind != "remote-local-delivery" || proof.Source != "private-reader-and-paced-runner" || proof.VerificationState != "verified" {
+			break
+		}
+		var repository, branch string
+		for _, commit := range commits {
+			found := false
+			for _, item := range strings.Split(proof.Reference, ";") {
+				identity, detail, ok := strings.Cut(item, ":")
+				if !ok || !strings.HasPrefix(detail, commit+"/parent=") {
+					continue
+				}
+				candidateRepository, candidateBranch, ok := strings.Cut(identity, "@")
+				if !ok || !validGitRepositoryID(candidateRepository) || !validDeliveryBranch(candidateBranch) || (found && (repository != candidateRepository || branch != candidateBranch)) {
+					return "", "", todoTeach("local_proof", "use one unambiguous previously verified PACED repository and branch for every implementation commit", ErrConflict)
+				}
+				if repository != "" && (repository != candidateRepository || branch != candidateBranch) {
+					return "", "", todoTeach("local_proof", "match all PACED implementation commits to the same verified repository and branch", ErrConflict)
+				}
+				repository, branch, found = candidateRepository, candidateBranch, true
+			}
+			if !found {
+				return "", "", todoTeach("local_proof", "match every PACED implementation commit to its previously verified remote delivery", ErrConflict)
+			}
+		}
+		if repository != "" {
+			return repository, branch, nil
+		}
+		break
+	}
+	return "", "", todoTeach("diff_expectation.repository_id/delivery_branch", "provide the approved PACED repository and branch or retain exact previously verified remote delivery for every PACED commit", ErrConflict)
 }
 
 func mvpApprovedDockerRepository(todo TODORecord) string {
