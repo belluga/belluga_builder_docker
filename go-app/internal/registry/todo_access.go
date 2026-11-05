@@ -1107,7 +1107,21 @@ func validProofReference(proof TODOProofReference) bool {
 }
 
 func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collection, projectID string, releases []roadmapRelease) ([]roadmapTODOView, error) {
-	cursor, err := collection.Find(ctx, bson.D{{Key: "project_id", Value: projectID}}, options.Find().SetSort(bson.D{{Key: "position", Value: 1}, {Key: "id", Value: 1}}))
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}}}},
+		bson.D{{Key: "$sort", Value: bson.D{{Key: "position", Value: 1}, {Key: "id", Value: 1}}}},
+		bson.D{{Key: "$lookup", Value: bson.D{
+			{Key: "from", Value: todoContentVersionsCollection},
+			{Key: "let", Value: bson.D{{Key: "todo_id", Value: "$id"}}},
+			{Key: "pipeline", Value: mongo.Pipeline{
+				bson.D{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}, {Key: "$expr", Value: bson.D{{Key: "$eq", Value: bson.A{"$todo_id", "$$todo_id"}}}}}}},
+				bson.D{{Key: "$sort", Value: bson.D{{Key: "revision", Value: -1}}}},
+				bson.D{{Key: "$limit", Value: 1}},
+			}},
+			{Key: "as", Value: "latest_content_version"},
+		}}},
+	}
+	cursor, err := collection.Aggregate(ctx, pipeline)
 	if err != nil {
 		return nil, ErrUnavailable
 	}
@@ -1117,42 +1131,22 @@ func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collect
 		releaseIDs[release.ID] = true
 	}
 	records := make([]TODORecord, 0)
-	ids := make(bson.A, 0)
+	latestByID := make(map[string]TODOContentVersion)
 	for cursor.Next(ctx) {
-		var record TODORecord
-		if cursor.Decode(&record) != nil {
+		var row struct {
+			TODORecord `bson:",inline"`
+			Latest []TODOContentVersion `bson:"latest_content_version"`
+		}
+		if cursor.Decode(&row) != nil || len(row.Latest) > 1 {
 			return nil, ErrUnavailable
 		}
-		records = append(records, record)
-		ids = append(ids, record.ID)
+		records = append(records, row.TODORecord)
+		if len(row.Latest) == 1 {
+			latestByID[row.ID] = row.Latest[0]
+		}
 	}
 	if cursor.Err() != nil {
 		return nil, ErrUnavailable
-	}
-	latestByID := make(map[string]TODOContentVersion, len(records))
-	if len(ids) > 0 {
-		pipeline := mongo.Pipeline{
-			bson.D{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: bson.D{{Key: "$in", Value: ids}}}}}},
-			bson.D{{Key: "$sort", Value: bson.D{{Key: "todo_id", Value: -1}, {Key: "revision", Value: -1}}}},
-			bson.D{{Key: "$group", Value: bson.D{{Key: "_id", Value: "$todo_id"}, {Key: "version", Value: bson.D{{Key: "$first", Value: "$$ROOT"}}}}}},
-		}
-		versions, queryErr := collection.Database().Collection(todoContentVersionsCollection).Aggregate(ctx, pipeline)
-		if queryErr != nil {
-			return nil, ErrUnavailable
-		}
-		defer versions.Close(ctx)
-		for versions.Next(ctx) {
-			var row struct {
-				Version TODOContentVersion `bson:"version"`
-			}
-			if versions.Decode(&row) != nil {
-				return nil, ErrUnavailable
-			}
-			latestByID[row.Version.TODOID] = row.Version
-		}
-		if versions.Err() != nil {
-			return nil, ErrUnavailable
-		}
 	}
 	result := make([]roadmapTODOView, 0, len(records))
 	for _, record := range records {
