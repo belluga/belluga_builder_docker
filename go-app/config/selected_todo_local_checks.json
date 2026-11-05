@@ -13,6 +13,7 @@
   "required_by": {
     "builder-company-tenant-mongo-registry": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST"],
     "builder-mongo-v0-7-1-todo-migration": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST"],
+    "builder-mongo-promotion-guards-cutover": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST"],
     "builder-mongo-selected-todo-stage-verification": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
   }
 }
