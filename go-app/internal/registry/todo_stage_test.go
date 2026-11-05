@@ -37,6 +37,29 @@ func TestMVPClaimsAllowPACEDOnlyWithoutInventingBuilderCommit(t *testing.T) {
 	}
 }
 
+func TestMVPUsesVerifiedLocalPACEDIdentityForOlderScope(t *testing.T) {
+	first, second := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", VerificationState: "verified", Reference: "run=approved;belluga/delphi-ai@builder:" + first + "/parent=" + strings.Repeat("c", 40) + "/head=" + second + ";belluga/delphi-ai@builder:" + second + "/parent=" + first + "/head=" + second}
+	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: first}, {Repository: "PACED", Commit: second}}}
+	repo, branch, err := mvpPACEDRepository(todo, []string{first, second})
+	if err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
+		t.Fatalf("verified older PACED identity = %q @ %q, %v", repo, branch, err)
+	}
+	todo.VerifiedTransitionRef.VerificationState = "unverified"
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}); err == nil {
+		t.Fatal("unverified historical identity accepted")
+	}
+	todo.VerifiedTransitionRef.VerificationState = "verified"
+	if _, _, err := mvpPACEDRepository(todo, []string{first, strings.Repeat("d", 40)}); err == nil {
+		t.Fatal("unmatched implementation commit accepted")
+	}
+	todo.DiffExpectation[0].RepositoryID = "belluga/delphi-ai"
+	todo.DiffExpectation[0].DeliveryBranch = "builder"
+	if repo, branch, err := mvpPACEDRepository(todo, []string{first, second}); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
+		t.Fatalf("current explicit identity changed: %q @ %q, %v", repo, branch, err)
+	}
+}
+
 func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
 	todo := TODORecord{Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ImplementationCommits: []TODOCommitReference{{Repository: "belluga_builder_foundation_documentation", Commit: strings.Repeat("a", 40)}}}
 	if _, _, _, err := mvpImplementationClaims(todo); err == nil || !strings.Contains(err.Error(), "implementation_commits.repository") {
