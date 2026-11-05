@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 )
 
 const maxRequestBody = maxSnapshotReferenceBytes
@@ -83,7 +82,7 @@ type canonicalKnowledgeService interface {
 	RestoreCanonical(context.Context, string, CanonicalRestoreRequest) (CanonicalRecord, error)
 	DeleteCanonical(context.Context, string, CanonicalDeleteRequest) (CanonicalRecord, error)
 	ActivateCanonical(context.Context, string, string, string, string, string) (CanonicalManifest, error)
-	CanonicalHistory(context.Context, string, string, time.Time, int) (CanonicalHistoryPage, error)
+	CanonicalHistory(context.Context, string, string, string, int) (CanonicalHistoryPage, error)
 }
 
 type canonicalKnowledgeReader interface {
@@ -827,8 +826,15 @@ func (h *Handler) canonicalHistory(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, ErrUnavailable)
 		return
 	}
+	query := r.URL.Query()
+	for key, values := range query {
+		if (key != "limit" && key != "cursor") || len(values) != 1 {
+			h.writeError(w, todoTeach("query", "use one optional limit and cursor parameter", ErrInvalid))
+			return
+		}
+	}
 	limit := 50
-	if raw := r.URL.Query().Get("limit"); raw != "" {
+	if raw := query.Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil {
 			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
@@ -836,16 +842,14 @@ func (h *Handler) canonicalHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = parsed
 	}
-	var after time.Time
-	if raw := r.URL.Query().Get("after"); raw != "" {
-		parsed, err := time.Parse(time.RFC3339Nano, raw)
-		if err != nil {
-			h.writeError(w, todoTeach("after", "be an RFC3339 timestamp", ErrInvalid))
+	continuation := query.Get("cursor")
+	if continuation != "" {
+		if _, _, err := decodeCanonicalHistoryCursor(continuation, r.PathValue("companyID"), r.PathValue("projectID")); err != nil {
+			h.writeError(w, todoTeach("cursor", "be the exact opaque continuation returned by knowledge history", ErrInvalid))
 			return
 		}
-		after = parsed
 	}
-	value, err := service.CanonicalHistory(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), after, limit)
+	value, err := service.CanonicalHistory(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), continuation, limit)
 	h.respond(w, value, err)
 }
 

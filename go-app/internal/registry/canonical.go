@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -132,7 +133,8 @@ type CanonicalManifestEntry struct {
 }
 
 type CanonicalHistoryPage struct {
-	Events []CanonicalEvent `json:"events"`
+	Events     []CanonicalEvent `json:"events"`
+	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
 type CanonicalTeachDiagnostic struct {
@@ -464,7 +466,7 @@ func CanonicalTemplate() map[string]any {
 	return map[string]any{
 		"values":        map[string]any{"status": []string{"current", "planned", "draft", "deprecated", "historical"}, "decision_status": []string{"current", "planned", "draft", "deprecated", "historical"}, "owner_kind": []string{"module", "project_constitution", "policy"}},
 		"identity":      map[string]string{"record_id": "lowercase slug", "semantic_id": "case-sensitive owner-local ID; preserve uppercase", "decision_ref": "owner_kind/owner_id/decision_id"},
-		"reads":         []string{"entities/{entityID}", "endpoints/{endpointID}", "{family}/{recordID}/decisions/{decisionID}", "{family}/{recordID}/history/{revision}", "{family}/{recordID}/history/compare?from=1&to=2"},
+		"reads":         []string{"entities/{entityID}", "endpoints/{endpointID}", "{family}/{recordID}/decisions/{decisionID}", "{family}/{recordID}/history/{revision}", "{family}/{recordID}/history/compare?from=1&to=2", "GET /history?limit=50&cursor=<opaque Company+Project+occurred_at+event_id continuation>"},
 		"families":      []string{string(FamilyMandate), string(FamilyDomain), string(FamilyConstitution), string(FamilyRoadmap), string(FamilyModule), string(FamilyEndpoint), string(FamilyPolicy)},
 		"record":        map[string]any{"id": "stable-id", "project_id": "project", "generation_id": "generation", "revision": 1, "content_digest": "sha256:<digest>", "updated_at": "<BSON Date/RFC3339>", "payload": "<family-specific object>"},
 		"payload_types": formats,
@@ -656,6 +658,7 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 	}{
 		{canonicalVersions, "canonical_versions_lookup", bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "revision", Value: 1}}, true},
 		{canonicalEvents, "canonical_events_timeline", bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}, false},
+		{canonicalEvents, "canonical_events_project_timeline", bson.D{{Key: "project_id", Value: 1}, {Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}, false},
 		{canonicalEvents, "canonical_events_operation_unique", bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "kind", Value: 1}}, true},
 	} {
 		idxOptions := options.Index().SetName(model.index)
@@ -1270,15 +1273,17 @@ func validateCanonicalGeneration(ctx context.Context, db *mongo.Database, projec
 			}
 			entities := map[string]bool{}
 			for _, entity := range domain.Entities {
-				if !canonicalID.MatchString(entity.ID) || strings.TrimSpace(entity.Name) == "" || entities[entity.ID] {
+				if !canonicalSemanticID.MatchString(entity.ID) || strings.TrimSpace(entity.Name) == "" || entities[entity.ID] {
 					return teachCanonical(entry.ID, "payload.entities", "use unique stable entity IDs and names", ErrInvalid)
 				}
 				entities[entity.ID] = true
 			}
+			relationIDs := map[string]bool{}
 			for _, relation := range domain.Relations {
-				if !canonicalID.MatchString(relation.ID) || !entities[relation.From] || !entities[relation.To] {
+				if !canonicalSemanticID.MatchString(relation.ID) || !entities[relation.From] || !entities[relation.To] || relationIDs[relation.ID] {
 					return teachCanonical(entry.ID, "payload.relations", "reference declared entity IDs", ErrInvalid)
 				}
+				relationIDs[relation.ID] = true
 			}
 		case FamilyPolicy:
 			var policy PolicyPayload
@@ -1409,7 +1414,41 @@ func (m *MongoStore) ActivateCanonical(ctx context.Context, companyID, projectID
 	return manifest, nil
 }
 
-func (m *MongoStore) CanonicalHistory(ctx context.Context, companyID, projectID string, after time.Time, limit int) (CanonicalHistoryPage, error) {
+func encodeCanonicalHistoryCursor(companyID, projectID string, occurredAt time.Time, id bson.ObjectID) string {
+	value := companyID + "|" + projectID + "|" + occurredAt.UTC().Format(time.RFC3339Nano) + "|" + id.Hex()
+	return base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func decodeCanonicalHistoryCursor(value, companyID, projectID string) (time.Time, bson.ObjectID, error) {
+	data, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || base64.RawURLEncoding.EncodeToString(data) != value {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	raw := string(data)
+	encodedCompany, remainder, ok := strings.Cut(raw, "|")
+	if !ok || encodedCompany != companyID {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	encodedProject, remainder, ok := strings.Cut(remainder, "|")
+	if !ok || encodedProject != projectID {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	timestamp, rawID, ok := strings.Cut(remainder, "|")
+	if !ok {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	at, err := time.Parse(time.RFC3339Nano, timestamp)
+	if err != nil || at.UTC().Format(time.RFC3339Nano) != timestamp {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	id, err := bson.ObjectIDFromHex(rawID)
+	if err != nil || id.Hex() != rawID {
+		return time.Time{}, bson.ObjectID{}, ErrInvalid
+	}
+	return at, id, nil
+}
+
+func (m *MongoStore) CanonicalHistory(ctx context.Context, companyID, projectID, continuation string, limit int) (CanonicalHistoryPage, error) {
 	if limit < 1 || limit > 100 {
 		return CanonicalHistoryPage{}, ErrInvalid
 	}
@@ -1418,10 +1457,17 @@ func (m *MongoStore) CanonicalHistory(ctx context.Context, companyID, projectID 
 		return CanonicalHistoryPage{}, err
 	}
 	filter := bson.D{{Key: "project_id", Value: projectID}}
-	if !after.IsZero() {
-		filter = append(filter, bson.E{Key: "occurred_at", Value: bson.M{"$gt": after}})
+	if continuation != "" {
+		after, id, err := decodeCanonicalHistoryCursor(continuation, companyID, projectID)
+		if err != nil {
+			return CanonicalHistoryPage{}, ErrInvalid
+		}
+		filter = append(filter, bson.E{Key: "$or", Value: bson.A{
+			bson.D{{Key: "occurred_at", Value: bson.D{{Key: "$gt", Value: after}}}},
+			bson.D{{Key: "occurred_at", Value: after}, {Key: "_id", Value: bson.D{{Key: "$gt", Value: id}}}},
+		}})
 	}
-	cursor, err := db.Collection(canonicalEvents).Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}).SetLimit(int64(limit)))
+	cursor, err := db.Collection(canonicalEvents).Find(ctx, filter, options.Find().SetSort(bson.D{{Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}).SetLimit(int64(limit+1)))
 	if err != nil {
 		return CanonicalHistoryPage{}, ErrUnavailable
 	}
@@ -1436,6 +1482,11 @@ func (m *MongoStore) CanonicalHistory(ctx context.Context, companyID, projectID 
 	}
 	if cursor.Err() != nil {
 		return CanonicalHistoryPage{}, ErrUnavailable
+	}
+	if len(page.Events) > limit {
+		page.Events = page.Events[:limit]
+		last := page.Events[len(page.Events)-1]
+		page.NextCursor = encodeCanonicalHistoryCursor(companyID, projectID, last.OccurredAt, last.ObjectID)
 	}
 	return page, nil
 }

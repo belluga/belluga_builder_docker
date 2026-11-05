@@ -7,7 +7,41 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+type testCanonicalHistoryService struct {
+	*testService
+	canonicalKnowledgeService
+	cursor string
+	limit  int
+	calls  int
+}
+
+func (s *testCanonicalHistoryService) CanonicalHistory(_ context.Context, _, _, cursor string, limit int) (CanonicalHistoryPage, error) {
+	s.calls++
+	s.cursor, s.limit = cursor, limit
+	return CanonicalHistoryPage{Events: []CanonicalEvent{}, NextCursor: "opaque-next"}, nil
+}
+
+func TestCanonicalHistoryRouteUsesOpaqueCursorAndRejectsTimestampPagination(t *testing.T) {
+	service := &testCanonicalHistoryService{testService: &testService{}}
+	cursor := encodeCanonicalHistoryCursor("company-a", "project-a", time.Date(2026, 11, 4, 12, 30, 0, 123000000, time.UTC), bson.NewObjectID())
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/knowledge/history?limit=7&cursor="+cursor, nil))
+	if response.Code != http.StatusOK || service.calls != 1 || service.cursor != cursor || service.limit != 7 || !strings.Contains(response.Body.String(), `"next_cursor":"opaque-next"`) {
+		t.Fatalf("cursor history route status=%d call=%d cursor=%q limit=%d response=%s", response.Code, service.calls, service.cursor, service.limit, response.Body)
+	}
+	for _, query := range []string{"after=2026-11-04T12%3A30%3A00Z", "cursor=invalid/opaque", "cursor=" + cursor + "&cursor=" + cursor, "unused=1"} {
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/knowledge/history?"+query, nil))
+		if response.Code != http.StatusBadRequest || service.calls != 1 {
+			t.Fatalf("invalid history query %q status=%d calls=%d body=%s", query, response.Code, service.calls, response.Body)
+		}
+	}
+}
 
 type testService struct {
 	Service

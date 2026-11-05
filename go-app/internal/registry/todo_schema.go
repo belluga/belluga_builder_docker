@@ -116,19 +116,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 	if bsonValidatorEqual(actual, TODOCollectionValidator()) {
 		return nil
 	}
-	predecessors := []bson.D{
-		TODOCollectionValidatorBeforeRepositoryIdentity(), TODOCollectionValidatorBeforeReviewWaiver(), TODOCollectionValidatorBeforeNextStepEdit(), priorTODOCollectionValidator(),
-		TODOCollectionValidatorBeforeContentMigration(), TODOCollectionValidatorBeforeHistoricalAdoption(), TODOCollectionValidatorBeforeOwnership(),
-		TODOCollectionValidatorBeforeRecordEvents(), TODOCollectionValidatorBeforeCreation(),
-	}
-	recognized := bsonValidatorEqual(actual, TODOCollectionValidatorBeforeReviewOutcome())
-	for _, predecessor := range predecessors {
-		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
-			recognized = true
-			break
-		}
-	}
-	if !recognized {
+	if !recognizedTODOCollectionValidator(actual) {
 		return todoTeach("todos.validator", "match the canonical schema or a recognized strict/error predecessor", ErrConflict)
 	}
 	cursor, err := database.Collection(todosCollection).Find(ctx, bson.D{})
@@ -163,6 +151,32 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 		return ErrUnavailable
 	}
 	return verifyTODOCollection(ctx, database)
+}
+
+func recognizedTODOCollectionValidator(actual bson.Raw) bool {
+	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeMVPParentUpgrade(),
+		TODOCollectionValidatorBeforeRepositoryIdentity(), TODOCollectionValidatorBeforeReviewWaiver(), TODOCollectionValidatorBeforeNextStepEdit(), priorTODOCollectionValidator(),
+		TODOCollectionValidatorBeforeContentMigration(), TODOCollectionValidatorBeforeHistoricalAdoption(), TODOCollectionValidatorBeforeOwnership(),
+		TODOCollectionValidatorBeforeRecordEvents(), TODOCollectionValidatorBeforeCreation(), TODOCollectionValidatorBeforeReviewOutcome(),
+	}
+	for _, predecessor := range predecessors {
+		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
+			return true
+		}
+	}
+	return false
+}
+
+// TODOCollectionValidatorBeforeMVPParentUpgrade is the strict/error validator
+// deployed by the MVP parent before PR #10. Its exact shape is pinned to the
+// schema at the merged MVP parent: no diff repository identity fields, only
+// the then-supported operation kinds, and no review outcomes.
+func TODOCollectionValidatorBeforeMVPParentUpgrade() bson.D {
+	// MVP parent merge 03ba3dc carried the original seven operation kinds.
+	validator := todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	return todoCollectionValidatorWithoutReviewOutcome(validator)
 }
 
 // TODOCollectionValidatorBeforeRepositoryIdentity is the deployed strict

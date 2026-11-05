@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 func canonicalTestRecord(family CanonicalFamily, id string, payload string) CanonicalImportRecord {
@@ -54,7 +57,10 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 		valid   bool
 	}{
 		{FamilyMandate, `{"purpose":"Build","scope":["web"]}`, true},
-		{FamilyDomain, `{"entities":[{"id":"project","name":"Project","description":""}],"relations":[],"distinctions":[]}`, true},
+		{FamilyDomain, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`, true},
+		{FamilyDomain, `{"entities":[{"id":"Project","name":"Project","description":""},{"id":"Project","name":"Duplicate","description":""}],"relations":[],"distinctions":[]}`, false},
+		{FamilyDomain, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"},{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`, false},
+		{FamilyDomain, `{"entities":[{"id":"Project!","name":"Project","description":""}],"relations":[],"distinctions":[]}`, false},
 		{FamilyConstitution, `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"tenant-access","status":"current","statement":"Scope reads"}]}`, true},
 		{FamilyRoadmap, `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`, true},
 		{FamilyModule, `{"purpose":"Owns project work","decisions":[{"id":"ownership","status":"current","statement":"Module owns its routes"}]}`, true},
@@ -83,6 +89,27 @@ func TestCanonicalFamilyPayloadValidationIsTypedAndMarkdownFree(t *testing.T) {
 func TestCanonicalDigestNormalizesJSONObjectOrder(t *testing.T) {
 	if canonicalDigest(json.RawMessage(`{"a":1,"b":{"c":2}}`)) != canonicalDigest(json.RawMessage(`{"b":{"c":2},"a":1}`)) {
 		t.Fatal("semantically equal payloads produced different digests")
+	}
+}
+
+func TestCanonicalHistoryCursorRoundTripsTimestampAndStableID(t *testing.T) {
+	at := time.Date(2026, 11, 4, 12, 30, 0, 123000000, time.UTC)
+	id := bson.ObjectID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
+	cursor := encodeCanonicalHistoryCursor("company-a", "project-a", at, id)
+	gotTime, gotID, err := decodeCanonicalHistoryCursor(cursor, "company-a", "project-a")
+	if err != nil || !gotTime.Equal(at) || gotID != id {
+		t.Fatalf("cursor %q decoded as %s/%s, %v", cursor, gotTime, gotID.Hex(), err)
+	}
+	for _, invalid := range []string{"not-base64!", "", "eHk", encodeCanonicalHistoryCursor("company-a", "project-a", at, id) + "="} {
+		if _, _, err := decodeCanonicalHistoryCursor(invalid, "company-a", "project-a"); err == nil {
+			t.Fatalf("invalid cursor %q was accepted", invalid)
+		}
+	}
+	if _, _, err := decodeCanonicalHistoryCursor(cursor, "company-a", "project-b"); err == nil {
+		t.Fatal("cursor from another Project was accepted")
+	}
+	if _, _, err := decodeCanonicalHistoryCursor(cursor, "company-b", "project-a"); err == nil {
+		t.Fatal("cursor from another Company was accepted")
 	}
 }
 
@@ -212,7 +239,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	input := CanonicalImport{ProjectID: "builder", GenerationID: "g1", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", OperationID: "import-1", Actor: "migration-agent", Records: []CanonicalImportRecord{
 		canonicalTestRecord(FamilyMandate, "builder", `{"purpose":"Build","scope":["web"]}`),
-		canonicalTestRecord(FamilyDomain, "builder", `{"entities":[{"id":"project","name":"Project","description":""}],"relations":[],"distinctions":[]}`),
+		canonicalTestRecord(FamilyDomain, "builder", `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
 		canonicalTestRecord(FamilyConstitution, "builder", `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"tenant-access","status":"current","statement":"Scope reads"}]}`),
 		canonicalTestRecord(FamilyRoadmap, "builder", `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`),
 		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-ART-01","status":"current","statement":"Module owns routes"}],"schemas":[{"id":"project","name":"projects","kind":"collection","fields":[{"name":"name","type":"string"}]}]}`),
@@ -375,11 +402,71 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if err != nil || restored.Revision != 3 || canonicalDigest(restored.Payload) != read.ContentDigest {
 		t.Fatalf("restore=%+v, %v", restored, err)
 	}
-	history, err := store.CanonicalHistory(ctx, "company-canonical", "builder", time.Time{}, 100)
+	history, err := store.CanonicalHistory(ctx, "company-canonical", "builder", "", 100)
 	if err != nil || len(history.Events) != 12 {
 		t.Fatalf("history events=%d, %v", len(history.Events), err)
 	}
-	entity, err := store.ReadCanonicalEntity(ctx, "company-canonical", "builder", "project")
+	indexCursor, err := store.client.Database(store.tenantDatabase("company-canonical")).Collection(canonicalEvents).Indexes().List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectTimelineFound := false
+	for indexCursor.Next(ctx) {
+		var index struct {
+			Name string `bson:"name"`
+			Key  bson.D `bson:"key"`
+		}
+		if indexCursor.Decode(&index) != nil {
+			_ = indexCursor.Close(ctx)
+			t.Fatal("decode canonical event index")
+		}
+		if index.Name == "canonical_events_project_timeline" && reflect.DeepEqual(index.Key, bson.D{{Key: "project_id", Value: int32(1)}, {Key: "occurred_at", Value: int32(1)}, {Key: "_id", Value: int32(1)}}) {
+			projectTimelineFound = true
+		}
+	}
+	if indexCursor.Err() != nil || indexCursor.Close(ctx) != nil || !projectTimelineFound {
+		t.Fatalf("project-wide canonical timeline index missing or incorrect: found=%v", projectTimelineFound)
+	}
+	tieTime := time.Now().UTC().Truncate(time.Millisecond).Add(24 * time.Hour)
+	tiedIDs := []bson.ObjectID{}
+	for _, hexID := range []string{"0102030405060708090a0b01", "0102030405060708090a0b02", "0102030405060708090a0b03", "0102030405060708090a0b04"} {
+		id, parseErr := bson.ObjectIDFromHex(hexID)
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		tiedIDs = append(tiedIDs, id)
+		if _, err := store.client.Database(store.tenantDatabase("company-canonical")).Collection(canonicalEvents).InsertOne(ctx, CanonicalEvent{ObjectID: id, ProjectID: "builder", GenerationID: "other-generation", Family: "project", RecordID: "builder", Kind: "fixed-timestamp-test", Revision: 1, OperationID: "tied-" + id.Hex(), Actor: "test", OccurredAt: tieTime}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seenTied := map[bson.ObjectID]int{}
+	continuation := ""
+	terminalSeen := false
+	for pageNumber := 0; pageNumber < 16; pageNumber++ {
+		page, pageErr := store.CanonicalHistory(ctx, "company-canonical", "builder", continuation, 2)
+		if pageErr != nil {
+			t.Fatal(pageErr)
+		}
+		for _, event := range page.Events {
+			if event.Kind == "fixed-timestamp-test" {
+				seenTied[event.ObjectID]++
+			}
+		}
+		continuation = page.NextCursor
+		if continuation == "" {
+			terminalSeen = true
+			break
+		}
+	}
+	if !terminalSeen || len(seenTied) != len(tiedIDs) {
+		t.Fatalf("tied fixed event set yielded terminal=%v, %d IDs, want %d: %v", terminalSeen, len(seenTied), len(tiedIDs), seenTied)
+	}
+	for _, id := range tiedIDs {
+		if seenTied[id] != 1 {
+			t.Fatalf("tied event %s appeared %d times across cursor pages", id.Hex(), seenTied[id])
+		}
+	}
+	entity, err := store.ReadCanonicalEntity(ctx, "company-canonical", "builder", "Project")
 	if err != nil || entity.Entity == nil || entity.Entity.Name != "Project" || entity.RecordID != "builder" || entity.Revision != 1 {
 		t.Fatalf("entity projection=%+v, %v", entity, err)
 	}
@@ -412,7 +499,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if err != nil || endpoint.Revision != 1 {
 		t.Fatalf("endpoint=%+v, %v", endpoint, err)
 	}
-	for _, path := range []string{"entities/project", "endpoints/list-projects", "module/projects/decisions/DEC-ART-01", "project_mandate/builder/history/1", "project_mandate/builder/history/compare?from=1&to=2"} {
+	for _, path := range []string{"entities/Project", "endpoints/list-projects", "module/projects/decisions/DEC-ART-01", "project_mandate/builder/history/1", "project_mandate/builder/history/compare?from=1&to=2"} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, httptest.NewRequest("GET", base+path, nil))
 		if response.Code != 200 || !json.Valid(response.Body.Bytes()) || !strings.Contains(response.Body.String(), `"revision":1`) {
@@ -435,8 +522,8 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	// One new endpoint operation above, but read/compare/projection operations
 	// must not create events or mutate the owning record's revision.
-	historyAfter, err := store.CanonicalHistory(ctx, "company-canonical", "builder", time.Time{}, 100)
-	if err != nil || len(historyAfter.Events) != len(history.Events)+1 {
+	historyAfter, err := store.CanonicalHistory(ctx, "company-canonical", "builder", "", 100)
+	if err != nil || len(historyAfter.Events) != len(history.Events)+5 {
 		t.Fatalf("reads changed history: events=%d, %v", len(historyAfter.Events), err)
 	}
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-other", CompanyName: "Other", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
@@ -450,6 +537,10 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "parallel", ProjectName: "Parallel", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
+	}
+	crossProjectCursor := encodeCanonicalHistoryCursor("company-canonical", "builder", tieTime, tiedIDs[0])
+	if _, err := store.CanonicalHistory(ctx, "company-canonical", "parallel", crossProjectCursor, 2); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("canonical history accepted a cursor from another Project: %v", err)
 	}
 	parallel := input
 	parallel.ProjectID, parallel.GenerationID, parallel.OperationID = "parallel", "race", "import-race-base"

@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	historicalPilotRevision     = "f1edcc2a07a17252491e91b3960a6075b6dee55c"
-	historicalPilotPath         = "todos/completed/TODO-v1-tenant-admin-events-temporal-filter.md"
-	historicalPilotDigest       = "sha256:8117a5f840286e2c8afff274c6ef03fcb47ce05855fdcad3877bf50f5be738cb"
-	historicalPilotTODOID       = "boora-v1-tenant-admin-events-temporal-filter"
-	historicalPilotGitRepo      = "belluga_now_foundation_documentation"
-	historicalPilotFoundationID = "belluga-now-foundation-documentation"
+	mvpParentTODOValidatorSHA256 = "7250d9083ffe4e1f95d31b187ca022dc447b6a8dbfc17f7f83559ec7e0a2438f"
+	historicalPilotRevision      = "f1edcc2a07a17252491e91b3960a6075b6dee55c"
+	historicalPilotPath          = "todos/completed/TODO-v1-tenant-admin-events-temporal-filter.md"
+	historicalPilotDigest        = "sha256:8117a5f840286e2c8afff274c6ef03fcb47ce05855fdcad3877bf50f5be738cb"
+	historicalPilotTODOID        = "boora-v1-tenant-admin-events-temporal-filter"
+	historicalPilotGitRepo       = "belluga_now_foundation_documentation"
+	historicalPilotFoundationID  = "belluga-now-foundation-documentation"
 )
 
 func historicalPilotSource() (TODOSource, error) {
@@ -190,6 +191,35 @@ func TestHistoricalAdoptionValidatorsRecognizeExactPredecessors(t *testing.T) {
 	}
 }
 
+func TestTODOValidatorRecognizesPinnedMVPParentCombinationOnly(t *testing.T) {
+	parent := TODOCollectionValidatorBeforeMVPParentUpgrade()
+	parentBytes, err := bson.Marshal(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recognizedTODOCollectionValidator(bson.Raw(parentBytes)) {
+		t.Fatal("exact strict/error validator deployed by the MVP parent was not recognized")
+	}
+	if digest := fmt.Sprintf("%x", sha256.Sum256(parentBytes)); digest != mvpParentTODOValidatorSHA256 {
+		t.Fatalf("MVP-parent validator fixture digest = %s, want pinned parent %s", digest, mvpParentTODOValidatorSHA256)
+	}
+	currentBytes, err := bson.Marshal(TODOCollectionValidator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizedTODOCollectionValidator(bson.Raw(currentBytes)) {
+		t.Fatal("current validator should be recognized by exact equality before predecessor matching")
+	}
+	unknown := withoutBSONFieldsAtPath(parent, []string{"$jsonSchema", "properties"}, "source")
+	unknownBytes, err := bson.Marshal(unknown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizedTODOCollectionValidator(bson.Raw(unknownBytes)) {
+		t.Fatal("unknown validator variant was accepted as an MVP parent predecessor")
+	}
+}
+
 func TestMongoProvisionTODOHistoryUpgradesCombinedEventValidatorPredecessor(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {
@@ -318,6 +348,22 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 	record.StageVerification = ""
 	if _, err := store.AdmitTODO(ctx, "belluga-solutions", "boora", TODOAdmissionRequest{TODO: record}); err != nil {
 		t.Fatalf("admit isolated pinned historical fixture: %v", err)
+	}
+	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todosCollection}, {Key: "validator", Value: TODOCollectionValidatorBeforeMVPParentUpgrade()}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatalf("install exact MVP-parent TODO validator: %v", err)
+	}
+	if err := upgradeTODOCollectionForHistory(ctx, database); err != nil {
+		t.Fatalf("upgrade exact combined MVP-parent TODO validator: %v", err)
+	}
+	if err := verifyTODOCollection(ctx, database); err != nil {
+		t.Fatalf("verify upgraded TODO validator: %v", err)
+	}
+	var afterUpgrade TODORecord
+	if err := database.Collection(todosCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}).Decode(&afterUpgrade); err != nil {
+		t.Fatal(err)
+	}
+	if afterUpgrade.ID != record.ID || afterUpgrade.Revision != record.Revision || afterUpgrade.Source.Digest != source.Digest || len(afterUpgrade.Sections) != 1 || afterUpgrade.Sections[0].BodyMarkdown != string(fixtureBody) {
+		t.Fatalf("validator upgrade changed existing TODO data: %+v", afterUpgrade)
 	}
 	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todosCollection}, {Key: "validator", Value: TODOCollectionValidatorBeforeHistoricalAdoption()}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatalf("prepare TODO validator predecessor: %v", err)
