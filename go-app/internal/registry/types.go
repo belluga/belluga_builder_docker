@@ -118,6 +118,40 @@ type RepositoryBindingRequest struct {
 	Branch           string `json:"publication_branch,omitempty"`
 }
 
+// DesignSystemMutationIntent is the durable Git/Mongo crash-recovery record.
+// It is persisted before the prepared commit is pushed and is not caller proof
+// that the remote contains that commit.
+type DesignSystemMutationIntent struct {
+	Operation               string `json:"operation" bson:"operation"`
+	OperationID             string `json:"operation_id" bson:"operation_id"`
+	Actor                   string `json:"actor" bson:"actor"`
+	PayloadDigest           string `json:"payload_digest" bson:"payload_digest"`
+	ExpectedBindingRevision int64  `json:"expected_binding_revision" bson:"expected_binding_revision"`
+	ExpectedSelectedSHA     string `json:"expected_selected_sha,omitempty" bson:"expected_selected_sha,omitempty"`
+	ExpectedInventoryDigest string `json:"expected_inventory_digest,omitempty" bson:"expected_inventory_digest,omitempty"`
+	ExpectedHead            string `json:"expected_head" bson:"expected_head"`
+	CandidateTreeSHA        string `json:"candidate_tree_sha" bson:"candidate_tree_sha"`
+	PreparedCommitSHA       string `json:"prepared_commit_sha" bson:"prepared_commit_sha"`
+	InventoryDigest         string `json:"inventory_digest" bson:"inventory_digest"`
+}
+
+type DesignSystemSelection struct {
+	State             string `json:"state"`
+	RepositoryID      string `json:"repository_id,omitempty"`
+	PublicationBranch string `json:"publication_branch,omitempty"`
+	SHA               string `json:"sha,omitempty"`
+	InventoryDigest   string `json:"inventory_digest,omitempty"`
+	BindingRevision   int64  `json:"binding_revision"`
+}
+
+// DesignSystemState is a read-only Project-scoped view of selected Git state
+// and the minimal durable operation required for crash recovery.
+type DesignSystemState struct {
+	Selection        DesignSystemSelection       `json:"selection"`
+	PendingOperation *DesignSystemMutationIntent `json:"pending_operation,omitempty"`
+	LastOperation    *DesignSystemMutationResult `json:"last_operation,omitempty"`
+}
+
 type SnapshotReference struct {
 	CompanyID           string `json:"company_id"`
 	BindingRevision     int64  `json:"binding_revision"`

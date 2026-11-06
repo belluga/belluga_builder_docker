@@ -16,6 +16,15 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+type fakeDesignSystemRemoteVerifier struct {
+	state designSystemRemoteState
+	err   error
+}
+
+func (f fakeDesignSystemRemoteVerifier) VerifyDesignSystemMutation(_ context.Context, _, _ string, _ Binding, _ DesignSystemMutationIntent) (designSystemRemoteState, error) {
+	return f.state, f.err
+}
+
 func TestSameLifecycleMigrationTreatsReorderedJSONAsEquivalent(t *testing.T) {
 	expected := &LifecycleMigration{
 		State:       "complete",
@@ -185,6 +194,47 @@ func TestRepositoryBindingValidationAndPublicProjection(t *testing.T) {
 	}
 }
 
+func TestDesignSystemMutationIntentValidation(t *testing.T) {
+	valid := DesignSystemMutationIntent{
+		Operation: "create", OperationID: "ds-op-1", Actor: "owner", PayloadDigest: "sha256:" + strings.Repeat("e", 64),
+		ExpectedBindingRevision: 3, ExpectedHead: strings.Repeat("b", 40), CandidateTreeSHA: strings.Repeat("c", 40),
+		PreparedCommitSHA: strings.Repeat("d", 40), InventoryDigest: "sha256:" + strings.Repeat("e", 64),
+	}
+	if !validDesignSystemMutationIntent(valid) {
+		t.Fatal("valid prepared Design System operation rejected")
+	}
+	mismatchedPayload := valid
+	mismatchedPayload.PayloadDigest = "sha256:" + strings.Repeat("a", 64)
+	if validDesignSystemMutationIntent(mismatchedPayload) {
+		t.Fatal("payload digest that differs from the whole-source inventory digest accepted")
+	}
+	legacyRevision := valid
+	legacyRevision.ExpectedBindingRevision = 0
+	if !validDesignSystemMutationIntent(legacyRevision) {
+		t.Fatal("configured legacy binding revision zero rejected")
+	}
+	invalidRevision := valid
+	invalidRevision.ExpectedBindingRevision = -1
+	if validDesignSystemMutationIntent(invalidRevision) {
+		t.Fatal("negative binding revision accepted")
+	}
+	invalid := valid
+	invalid.ExpectedHead = strings.Repeat("B", 40)
+	if validDesignSystemMutationIntent(invalid) {
+		t.Fatal("noncanonical Git SHA accepted")
+	}
+	invalid = valid
+	invalid.InventoryDigest = "sha256:" + strings.Repeat("z", 64)
+	if validDesignSystemMutationIntent(invalid) {
+		t.Fatal("malformed inventory digest accepted")
+	}
+	invalid = valid
+	invalid.Operation = "bind"
+	if validDesignSystemMutationIntent(invalid) {
+		t.Fatal("unsupported mutation accepted")
+	}
+}
+
 func TestRegisterRejectsRepositoryBindingAndDirectsToCASAPI(t *testing.T) {
 	store := &MongoStore{}
 	_, err := store.Register(context.Background(), Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "project-a", ProjectName: "Project A", Binding: validTestBinding()})
@@ -265,6 +315,308 @@ func TestMongoRepositoryBindingConcurrentIdempotencyAndConflict(t *testing.T) {
 	}
 	if succeeded != 1 || conflicted != 1 {
 		t.Fatalf("distinct concurrent operations must have one winner and one actionable conflict: %+v", distinctResults)
+	}
+}
+
+func TestMongoDesignSystemIntentSerializesRepositoryBindingAndRecoversAfterRestart(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("test_design_system_intent_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	projectID := "design-system-intent"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: projectID, ProjectName: projectID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	projects := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection)
+	for _, legacy := range []struct {
+		projectID    string
+		explicitZero bool
+	}{{"legacy-binding-missing-revision", false}, {"legacy-binding-zero-revision", true}} {
+		if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: legacy.projectID, ProjectName: legacy.projectID}); err != nil {
+			t.Fatal(err)
+		}
+		set := bson.M{"binding": validTestBinding()}
+		unset := bson.M{"binding_revision": ""}
+		if legacy.explicitZero {
+			set["binding_revision"] = int64(0)
+			unset = bson.M{}
+		}
+		update := bson.M{"$set": set}
+		if len(unset) > 0 {
+			update["$unset"] = unset
+		}
+		if _, err := projects.UpdateOne(ctx, bson.D{{Key: "id", Value: legacy.projectID}}, update); err != nil {
+			t.Fatal(err)
+		}
+		legacyIntent := DesignSystemMutationIntent{
+			Operation: "create", OperationID: "ds-legacy-" + strings.TrimPrefix(legacy.projectID, "legacy-binding-"),
+			Actor: "owner", PayloadDigest: "sha256:" + strings.Repeat("e", 64), ExpectedBindingRevision: 0,
+			ExpectedHead: strings.Repeat("b", 40), CandidateTreeSHA: strings.Repeat("c", 40),
+			PreparedCommitSHA: strings.Repeat("d", 40), InventoryDigest: "sha256:" + strings.Repeat("e", 64),
+		}
+		if _, err := store.BeginDesignSystemMutation(ctx, "company-a", legacy.projectID, legacyIntent); err != nil {
+			t.Fatalf("configured revision-zero Project (%s) could not begin its Design System intent: %v", legacy.projectID, err)
+		}
+	}
+	intent := DesignSystemMutationIntent{
+		Operation: "create", OperationID: "ds-replace-1", Actor: "owner", PayloadDigest: "sha256:" + strings.Repeat("e", 64),
+		ExpectedBindingRevision: 1, ExpectedHead: strings.Repeat("b", 40), CandidateTreeSHA: strings.Repeat("c", 40),
+		PreparedCommitSHA: strings.Repeat("d", 40), InventoryDigest: "sha256:" + strings.Repeat("e", 64),
+	}
+	competing := intent
+	competing.OperationID = "ds-replace-2"
+	competing.PreparedCommitSHA = strings.Repeat("f", 40)
+	start := make(chan struct{})
+	results := make(chan struct {
+		intent DesignSystemMutationIntent
+		err    error
+	}, 2)
+	for _, candidate := range []DesignSystemMutationIntent{intent, competing} {
+		candidate := candidate
+		go func() {
+			<-start
+			result, err := store.BeginDesignSystemMutation(ctx, "company-a", projectID, candidate)
+			results <- struct {
+				intent DesignSystemMutationIntent
+				err    error
+			}{result, err}
+		}()
+	}
+	close(start)
+	first, second := <-results, <-results
+	succeeded, conflicted := 0, 0
+	var pending DesignSystemMutationIntent
+	for _, result := range []struct {
+		intent DesignSystemMutationIntent
+		err    error
+	}{first, second} {
+		if result.err == nil {
+			succeeded++
+			pending = result.intent
+		} else if errors.Is(result.err, ErrConflict) && strings.Contains(result.err.Error(), "pending_operation") {
+			conflicted++
+		} else {
+			t.Fatalf("competing Design System intent returned unexpected result: %+v", result)
+		}
+	}
+	if succeeded != 1 || conflicted != 1 {
+		t.Fatalf("concurrent Design System intents did not serialize: first=%+v second=%+v", first, second)
+	}
+	if replay, err := store.BeginDesignSystemMutation(ctx, "company-a", projectID, pending); err != nil || replay != pending {
+		t.Fatalf("exact pending retry = %+v, %v", replay, err)
+	}
+	changed := pending
+	changed.PreparedCommitSHA = strings.Repeat("f", 40)
+	if changed.PreparedCommitSHA == pending.PreparedCommitSHA {
+		changed.PreparedCommitSHA = strings.Repeat("e", 40)
+	}
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", projectID, changed); !errors.Is(err, ErrConflict) || err == nil || !strings.Contains(err.Error(), "operation_id") {
+		t.Fatalf("changed retry did not conflict: %v", err)
+	}
+	if _, err := store.ChangeRepositoryBinding(ctx, "company-a", projectID, RepositoryBindingRequest{
+		Action: "unbind", ProjectID: projectID, ExpectedRevision: 1, OperationID: "unbind-during-ds", Actor: "owner",
+	}); !errors.Is(err, ErrConflict) || err == nil || !strings.Contains(err.Error(), "pending_operation") {
+		t.Fatalf("binding mutation was not serialized behind pending Design System intent: %v", err)
+	}
+	if binding, err := store.ReadRepositoryBinding(ctx, "company-a", projectID); err != nil || binding.State != "configured" || binding.Revision != 1 {
+		t.Fatalf("pending Design System intent changed shared binding: %+v, %v", binding, err)
+	}
+	contentionProject := "design-system-binding-race"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: contentionProject, ProjectName: contentionProject, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	raceIntent := intent
+	raceIntent.OperationID = "ds-race-op"
+	raceStart := make(chan struct{})
+	raceResults := make(chan error, 2)
+	go func() {
+		<-raceStart
+		_, err := store.BeginDesignSystemMutation(ctx, "company-a", contentionProject, raceIntent)
+		raceResults <- err
+	}()
+	go func() {
+		<-raceStart
+		_, err := store.ChangeRepositoryBinding(ctx, "company-a", contentionProject, RepositoryBindingRequest{
+			Action: "unbind", ProjectID: contentionProject, ExpectedRevision: 1, OperationID: "unbind-race-op", Actor: "owner",
+		})
+		raceResults <- err
+	}()
+	close(raceStart)
+	firstRaceErr, secondRaceErr := <-raceResults, <-raceResults
+	if firstRaceErr == nil && errors.Is(secondRaceErr, ErrConflict) && (strings.Contains(secondRaceErr.Error(), "pending_operation") || strings.Contains(secondRaceErr.Error(), "expected_binding_revision")) ||
+		secondRaceErr == nil && errors.Is(firstRaceErr, ErrConflict) && (strings.Contains(firstRaceErr.Error(), "pending_operation") || strings.Contains(firstRaceErr.Error(), "expected_binding_revision")) {
+		// Exactly one CAS won. The other side either observed its pending intent
+		// or the changed shared binding revision.
+	} else {
+		t.Fatalf("Design System intent and shared binding CAS did not serialize: first=%v second=%v", firstRaceErr, secondRaceErr)
+	}
+	if err := store.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store, err = OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	recovered, err := store.ReadDesignSystemMutation(ctx, "company-a", projectID)
+	if err != nil || recovered == nil || *recovered != pending {
+		t.Fatalf("pending intent was not recoverable from Mongo: %+v, %v", recovered, err)
+	}
+}
+
+func TestMongoDesignSystemMutationRecoveryFinalizesOnlyVerifiedRemoteState(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("test_design_system_recovery_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	projectID := "design-system-recovery"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: projectID, ProjectName: projectID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	intent := DesignSystemMutationIntent{
+		Operation: "create", OperationID: "ds-recovery-create", Actor: "owner", PayloadDigest: "sha256:" + strings.Repeat("e", 64),
+		ExpectedBindingRevision: 1, ExpectedHead: strings.Repeat("b", 40), CandidateTreeSHA: strings.Repeat("c", 40),
+		PreparedCommitSHA: strings.Repeat("d", 40), InventoryDigest: "sha256:" + strings.Repeat("e", 64),
+	}
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", projectID, intent); err != nil {
+		t.Fatal(err)
+	}
+	verified := fakeDesignSystemRemoteVerifier{state: designSystemRemoteState{
+		RemoteHead: strings.Repeat("f", 40), CommitSHA: intent.PreparedCommitSHA, ParentSHA: intent.ExpectedHead,
+		TreeSHA: intent.CandidateTreeSHA, InventoryDigest: intent.InventoryDigest, Reachable: true, ReachabilityVerified: true,
+	}}
+	store.designSystemVerifier = verified
+	result, err := store.recoverDesignSystemMutation(ctx, "company-a", projectID)
+	if err != nil || result.Outcome != "published" || result.SelectedSHA != intent.PreparedCommitSHA {
+		t.Fatalf("verified remote commit was not finalized: %+v, %v", result, err)
+	}
+	var stored projectDocument
+	if err := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection).FindOne(ctx, bson.D{{Key: "id", Value: projectID}}).Decode(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.PendingDesignSystemMutation != nil || stored.DesignSystemState != "selected" || stored.DesignSystemSHA != intent.PreparedCommitSHA || stored.DesignSystemInventoryDigest != intent.InventoryDigest || stored.BindingRevision != 1 || stored.Binding == nil || stored.Binding.RepositoryID != validTestBinding().RepositoryID {
+		t.Fatalf("finalization changed the wrong Project state: %+v", stored)
+	}
+	if _, err := store.ChangeRepositoryBinding(ctx, "company-a", projectID, RepositoryBindingRequest{
+		Action: "replace", ProjectID: projectID, ExpectedRevision: 1, OperationID: "replace-after-selection", Actor: "owner",
+		RepositoryID: validTestBinding().RepositoryID, Branch: validTestBinding().PublicationBranch,
+	}); err != nil {
+		t.Fatalf("repository replacement failed: %v", err)
+	}
+	if err := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection).FindOne(ctx, bson.D{{Key: "id", Value: projectID}}).Decode(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.DesignSystemState != "unselected" || stored.DesignSystemSHA != "" || stored.DesignSystemInventoryDigest != "" || stored.BindingRevision != 2 {
+		t.Fatalf("repository replacement retained stale Design System selection: %+v", stored)
+	}
+
+	staleSelectionID := "design-system-stale-selection"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: staleSelectionID, ProjectName: staleSelectionID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: staleSelectionID}}, bson.M{"$set": bson.M{
+		"design_system_state": "selected", "design_system_sha": strings.Repeat("a", 40), "design_system_inventory_digest": "sha256:" + strings.Repeat("e", 64),
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	staleIntent := intent
+	staleIntent.OperationID = "ds-stale-selection"
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", staleSelectionID, staleIntent); !errors.Is(err, ErrConflict) || err == nil || !strings.Contains(err.Error(), "expected_design_system_selection") {
+		t.Fatalf("intent prepared against stale selection was accepted: %v", err)
+	}
+
+	notPushedID := "design-system-not-pushed"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: notPushedID, ProjectName: notPushedID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	notPushedIntent := intent
+	notPushedIntent.OperationID = "ds-recovery-not-pushed"
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", notPushedID, notPushedIntent); err != nil {
+		t.Fatal(err)
+	}
+	notPushed := fakeDesignSystemRemoteVerifier{state: designSystemRemoteState{RemoteHead: notPushedIntent.ExpectedHead, ReachabilityVerified: true}}
+	store.designSystemVerifier = notPushed
+	result, err = store.recoverDesignSystemMutation(ctx, "company-a", notPushedID)
+	if err != nil || result.Outcome != "not_pushed" {
+		t.Fatalf("conclusive no-push state did not abort intent: %+v, %v", result, err)
+	}
+	if pending, err := store.ReadDesignSystemMutation(ctx, "company-a", notPushedID); err != nil || pending != nil {
+		t.Fatalf("conclusive no-push left intent pending: %+v, %v", pending, err)
+	}
+
+	supersededID := "design-system-superseded"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: supersededID, ProjectName: supersededID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	previousSHA, previousInventory := strings.Repeat("a", 40), "sha256:"+strings.Repeat("1", 64)
+	if _, err := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: supersededID}}, bson.M{"$set": bson.M{
+		"design_system_state": "selected", "design_system_sha": previousSHA, "design_system_inventory_digest": previousInventory,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	supersededIntent := intent
+	supersededIntent.Operation = "replace"
+	supersededIntent.OperationID = "ds-recovery-superseded"
+	supersededIntent.ExpectedSelectedSHA = previousSHA
+	supersededIntent.ExpectedInventoryDigest = previousInventory
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", supersededID, supersededIntent); err != nil {
+		t.Fatal(err)
+	}
+	store.designSystemVerifier = fakeDesignSystemRemoteVerifier{state: designSystemRemoteState{
+		RemoteHead: strings.Repeat("9", 40), ReachabilityVerified: true,
+	}}
+	result, err = store.recoverDesignSystemMutation(ctx, "company-a", supersededID)
+	if err != nil || result.Outcome != "superseded" || result.State != "selected" || result.SelectedSHA != previousSHA || result.InventoryHash != previousInventory {
+		t.Fatalf("verified unrelated branch advance did not preserve the prior selection: %+v, %v", result, err)
+	}
+	stored = projectDocument{}
+	if err := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection).FindOne(ctx, bson.D{{Key: "id", Value: supersededID}}).Decode(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.PendingDesignSystemMutation != nil || stored.DesignSystemState != "selected" || stored.DesignSystemSHA != previousSHA || stored.DesignSystemInventoryDigest != previousInventory || stored.DesignSystemLastOperation == nil || stored.DesignSystemLastOperation.Outcome != "superseded" {
+		t.Fatalf("superseded intent was not cleared without changing the old selection: %+v", stored)
+	}
+
+	uncertainID := "design-system-uncertain"
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: uncertainID, ProjectName: uncertainID, Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	uncertainIntent := intent
+	uncertainIntent.OperationID = "ds-recovery-uncertain"
+	if _, err := store.BeginDesignSystemMutation(ctx, "company-a", uncertainID, uncertainIntent); err != nil {
+		t.Fatal(err)
+	}
+	uncertain := fakeDesignSystemRemoteVerifier{state: designSystemRemoteState{RemoteHead: strings.Repeat("f", 40)}}
+	store.designSystemVerifier = uncertain
+	if _, err := store.recoverDesignSystemMutation(ctx, "company-a", uncertainID); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("uncertain remote state was not kept pending: %v", err)
+	}
+	if pending, err := store.ReadDesignSystemMutation(ctx, "company-a", uncertainID); err != nil || pending == nil || pending.OperationID != uncertainIntent.OperationID {
+		t.Fatalf("uncertain remote state lost the recovery intent: %+v, %v", pending, err)
 	}
 }
 

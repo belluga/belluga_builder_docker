@@ -11,7 +11,7 @@ import (
 	"sync"
 	"testing"
 
-	ac "belluga-builder-viewer/internal/artifact_catalog"
+	ac "belluga-builder-viewer/artifact_catalog"
 )
 
 func TestAtomicSnapshotConcurrentWritersKeepWholeLastWrite(t *testing.T) {

@@ -10,6 +10,8 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -35,15 +37,29 @@ const (
 var mongoDatabaseName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
 type MongoStore struct {
-	client              *mongo.Client
-	control             *mongo.Database
-	beforeProjectWrite  func() error
-	beforeSnapshotWrite func() error
-	tenantPrefix        string
-	proofReaderURL      string
-	proofReaderToken    string
-	proofHTTPClient     *http.Client
-	localMatrix         *localProofMatrix
+	client                    *mongo.Client
+	control                   *mongo.Database
+	beforeProjectWrite        func() error
+	beforeSnapshotWrite       func() error
+	tenantPrefix              string
+	proofReaderURL            string
+	proofReaderToken          string
+	proofHTTPClient           *http.Client
+	localMatrix               *localProofMatrix
+	designSystemVerifier      designSystemRemoteVerifier
+	designSystemSourceMapRoot string
+}
+
+func (m *MongoStore) ConfigureDesignSystemSourceMapRoot(root string) error {
+	if root == "" || !filepath.IsAbs(root) {
+		return fmt.Errorf("%w: private Design System source-map root must be absolute", ErrInvalid)
+	}
+	info, err := os.Lstat(root)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: private Design System source-map root is unavailable", ErrInvalid)
+	}
+	m.designSystemSourceMapRoot = filepath.Clean(root)
+	return nil
 }
 
 func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
@@ -60,22 +76,27 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 const maxSnapshotReferenceBytes = 128 << 10
 
 type projectDocument struct {
-	ObjectID              bson.ObjectID     `bson:"_id,omitempty"`
-	ID                    string            `bson:"id"`
-	Name                  string            `bson:"name"`
-	CompanyID             string            `bson:"company_id"`
-	RoadmapRevision       int64             `bson:"roadmap_revision,omitempty"`
-	RoadmapLastOperation  *roadmapOperation `bson:"roadmap_last_operation,omitempty"`
-	Binding               *Binding          `bson:"binding,omitempty"`
-	BindingRevision       int64             `bson:"binding_revision,omitempty"`
-	BindingOperation      string            `bson:"binding_operation,omitempty"`
-	BindingActor          string            `bson:"binding_actor,omitempty"`
-	BindingRequestDigest  string            `bson:"binding_request_digest,omitempty"`
-	RegisteredAt          time.Time         `bson:"registered_at"`
-	PreparationState      string            `bson:"preparation_state"`
-	PreparationDiagnostic string            `bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint   string            `bson:"snapshot_fingerprint,omitempty"`
-	KnowledgeGenerationID string            `bson:"knowledge_generation_id,omitempty"`
+	ObjectID                    bson.ObjectID               `bson:"_id,omitempty"`
+	ID                          string                      `bson:"id"`
+	Name                        string                      `bson:"name"`
+	CompanyID                   string                      `bson:"company_id"`
+	RoadmapRevision             int64                       `bson:"roadmap_revision,omitempty"`
+	RoadmapLastOperation        *roadmapOperation           `bson:"roadmap_last_operation,omitempty"`
+	Binding                     *Binding                    `bson:"binding,omitempty"`
+	BindingRevision             int64                       `bson:"binding_revision,omitempty"`
+	BindingOperation            string                      `bson:"binding_operation,omitempty"`
+	BindingActor                string                      `bson:"binding_actor,omitempty"`
+	BindingRequestDigest        string                      `bson:"binding_request_digest,omitempty"`
+	PendingDesignSystemMutation *DesignSystemMutationIntent `bson:"pending_design_system_mutation,omitempty"`
+	DesignSystemState           string                      `bson:"design_system_state,omitempty"`
+	DesignSystemSHA             string                      `bson:"design_system_sha,omitempty"`
+	DesignSystemInventoryDigest string                      `bson:"design_system_inventory_digest,omitempty"`
+	DesignSystemLastOperation   *DesignSystemMutationResult `bson:"design_system_last_operation,omitempty"`
+	RegisteredAt                time.Time                   `bson:"registered_at"`
+	PreparationState            string                      `bson:"preparation_state"`
+	PreparationDiagnostic       string                      `bson:"preparation_diagnostic,omitempty"`
+	SnapshotFingerprint         string                      `bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID       string                      `bson:"knowledge_generation_id,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -218,7 +239,7 @@ func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
 	}
-	store := &MongoStore{client: client, control: client.Database(controlDatabase)}
+	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier()}
 	if err := store.ensureControlIndexes(pingCtx); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
@@ -492,6 +513,9 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		}
 		return RepositoryBinding{}, todoTeach("operation_id", "choose a new ID or retry the exact same repository binding request", ErrConflict)
 	}
+	if stored.PendingDesignSystemMutation != nil {
+		return RepositoryBinding{}, todoTeach("pending_operation", "resolve the pending Project Design System Git operation before changing the shared repository binding", ErrConflict)
+	}
 	if stored.BindingRevision != input.ExpectedRevision {
 		return RepositoryBinding{}, todoTeach("expected_revision", "reload the current repository binding and retry with its revision", ErrConflict)
 	}
@@ -534,7 +558,15 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 	} else {
 		filter = append(filter, bson.E{Key: "binding", Value: *stored.Binding})
 	}
+	filter = append(filter, bson.E{Key: "pending_design_system_mutation", Value: bson.M{"$exists": false}})
 	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": "", "snapshot_fingerprint": ""}
+	if input.Action == "unbind" {
+		set["design_system_state"] = "unbound"
+	} else {
+		set["design_system_state"] = "unselected"
+	}
+	set["design_system_sha"] = ""
+	set["design_system_inventory_digest"] = ""
 	update := bson.M{"$set": set}
 	if nextBinding != nil {
 		set["binding"] = *nextBinding
@@ -547,9 +579,14 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 	}
 	if result.MatchedCount != 1 {
 		var latest projectDocument
-		if readErr := collection.FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&latest); readErr == nil && latest.CompanyID == companyID && latest.BindingOperation == input.OperationID && latest.BindingRequestDigest == requestDigest {
-			return repositoryBindingFromProject(latest.toAPI()), nil
-		} else if readErr != nil && !errors.Is(readErr, mongo.ErrNoDocuments) {
+		if readErr := collection.FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&latest); readErr == nil {
+			if latest.CompanyID == companyID && latest.BindingOperation == input.OperationID && latest.BindingRequestDigest == requestDigest {
+				return repositoryBindingFromProject(latest.toAPI()), nil
+			}
+			if latest.CompanyID == companyID && latest.PendingDesignSystemMutation != nil {
+				return RepositoryBinding{}, todoTeach("pending_operation", "resolve the pending Project Design System Git operation before changing the shared repository binding", ErrConflict)
+			}
+		} else if !errors.Is(readErr, mongo.ErrNoDocuments) {
 			return RepositoryBinding{}, normalizeMongoError(readErr)
 		}
 		return RepositoryBinding{}, todoTeach("expected_revision", "reload the current repository binding after a concurrent change and retry", ErrConflict)

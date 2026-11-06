@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { Projects } from "./projects";
 
 const fingerprint = "a".repeat(64);
+const designRevision = "e".repeat(40);
 const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
 const companies = [{ id: "belluga", name: "Belluga" }, { id: "second", name: "Second Company" }];
 const projects = [{ id: "builder", name: "Builder", company_id: "belluga", preparation_state: "ready", snapshot_fingerprint: fingerprint, artifacts: [] },
@@ -16,6 +17,7 @@ const theme = { tokens: [
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
 const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
+function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ id: "system", name, owner: { level: "project", id: projectID }, tokens: [{ id: "ink", type: "color", value: "#112233" }], components: [{ id: "button", name: "Button", token_ids: ["ink"], states: [], variants: [], examples: [] }], assets: ["design/system/assets/mark.svg"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid" } }; }
 function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
   return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
 }
@@ -59,6 +61,7 @@ function detail(companyID: string, projectID: string, documents: { path: string;
 function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
   if (url.pathname === "/api/knowledge") return { ok: true, json: async () => ({ project_id: url.searchParams.get("project_id"), active: false, state: "pending", documents: [] }) };
+  if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
   if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
   if (documents.some((item) => item.url === String(input))) return { ok: documentResponse?.ok ?? false, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": documentResponse?.fingerprint || fingerprint }), text: async (): Promise<string> => documentResponse?.body || "" };
@@ -71,6 +74,7 @@ function mockProjectDetail(saved: ReturnType<typeof detail>, todoResponse = todo
   if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
   if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
   if (url.pathname === "/api/local-preview") return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
+  if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async () => todoResponse };
   return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
 })); }
@@ -175,13 +179,14 @@ describe("single root Project experience", () => {
     let resolveDetail!: (value: unknown) => void;
     const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
     const detailCalls = vi.fn();
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
       return { ok: true, json: async () => ({ companies, projects }) };
-    }));
+    });
+    vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
@@ -1057,7 +1062,7 @@ describe("single root Project experience", () => {
   it("replaces Prototype evidence and presentation identity when switching Projects", async () => {
     const booraFingerprint = "b".repeat(64);
     const registered = projects.map((item) => item.id === "boora" ? { ...item, snapshot_fingerprint: booraFingerprint } : item);
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname.startsWith("/snapshot/")) {
         const boora = url.pathname.includes("/boora/");
@@ -1072,7 +1077,8 @@ describe("single root Project experience", () => {
       return { ok: true, json: async () => ({ ...saved, snapshot_fingerprint: id === "boora" ? booraFingerprint : fingerprint,
         artifacts: [...saved.artifacts, { id: prototype.id, kind: "prototype", name: prototype.name, state: "available", entry_point: `${prototype.root}/home.html` }],
         snapshot_observations: { prototype_status: { outcome: "go", items: [prototype] } } }) };
-    }));
+    });
+    vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "builder Screen / Default" })).toBeInTheDocument();
@@ -1083,15 +1089,118 @@ describe("single root Project experience", () => {
     expect(screen.queryByRole("heading", { name: "builder Screen / Default" })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Prototype inspector")).toHaveLength(1);
     expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(false);
   });
-  it("renders the admitted Design System roles without nesting its full catalog", async () => {
+  it("reads the current selected Design System and pins asset links to its SHA", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
-    expect(await screen.findByRole("heading", { name: "Paleta estrutural" })).toBeInTheDocument();
-    expect(screen.getByText("#101820")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Hierarquia" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Abrir Design System ↗" })).toHaveAttribute("target", "_blank");
-    expect(document.querySelector(".design-system-view iframe")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(screen.getByText("#112233")).toBeInTheDocument();
+    const asset = screen.getByRole("link", { name: /design\/system\/assets\/mark\.svg/ });
+    const assetURL = new URL(asset.getAttribute("href")!, location.origin);
+    expect(assetURL.pathname).toBe("/api/design-system/assets");
+    expect(assetURL.searchParams.get("revision")).toBe(designRevision);
+    expect(assetURL.searchParams.get("path")).toBe("design/system/assets/mark.svg");
+  });
+  it("does not apply the Foundation snapshot theme as the Design System page theme", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
+      if (url.pathname.endsWith("/design/system/design-system.json")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
+      return { ok: true, json: async () => theme };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(screen.getByRole("main")).not.toHaveAttribute("style");
+  });
+  it("loads Design System independently for a source-unbound Project", async () => {
+    const unbound = { id: "builder", name: "Builder", company_id: "belluga", source_bound: false, repository_bound: true };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("Legacy snapshot must not gate Design System");
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => ({ companies, projects: [unbound] }) };
+      return { ok: true, json: async () => ({ companies, projects: [unbound] }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(screen.queryByText(/artefatos publicados estão pendentes/)).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/local-preview?company_id="))).toBe(false);
+  });
+  it("keeps Design System readable when Foundation local-preview fails", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: false, status: 503, json: async () => ({ diagnostic: "Reader unavailable" }) };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(screen.queryByText(/não foi possível ler os dados publicados/)).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/design-system?"))).toBe(true);
+  });
+  it("shows bounded Registry TEACH within the Design System section", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: false, status: 409, json: async () => ({ teach: "TEACH: A seleção mudou; recarregue a revisão." }) };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: A seleção mudou; recarregue a revisão.");
+    expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+  });
+  it("retries a failed Design System read and renders the successful retry", async () => {
+    let designSystemCalls = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") {
+        designSystemCalls += 1;
+        if (designSystemCalls === 1) return { ok: false, status: 503, json: async () => ({ teach: "TEACH: Registry unavailable" }) };
+        return { ok: true, json: async () => designSystemRead("belluga", "builder") };
+      }
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Registry unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(designSystemCalls).toBe(2);
+  });
+  it("ignores a late Design System response from the previous Project", async () => {
+    let releaseBuilder: ((response: { ok: boolean; json: () => Promise<unknown> }) => void) | undefined;
+    const builderPending = new Promise<{ ok: boolean; json: () => Promise<unknown> }>((resolve) => { releaseBuilder = resolve; });
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") {
+        const projectID = url.searchParams.get("project_id");
+        if (projectID === "builder") return builderPending;
+        return { ok: true, json: async () => designSystemRead("belluga", "boora", "Bóora System", "f".repeat(40)) };
+      }
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: true, json: async () => detail("belluga", url.searchParams.get("project_id")!) };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
+    render(<Projects />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(true));
+    fireEvent.change(screen.getByLabelText("Switch Project"), { target: { value: "boora" } });
+    fireEvent.click(within(await screen.findByRole("navigation", { name: "Project pages" })).getByRole("button", { name: "Design System" }));
+    expect(await screen.findByRole("heading", { name: "Bóora System" })).toBeInTheDocument();
+    await act(async () => { releaseBuilder?.({ ok: true, json: async () => designSystemRead("belluga", "builder") }); });
+    expect(screen.getByRole("heading", { name: "Bóora System" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Builder System" })).not.toBeInTheDocument();
   });
   it("does not render a Project with a mismatched saved identity", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, json: async () => String(input).includes("project_id=") ? detail("second", "builder") : { companies, projects } })));

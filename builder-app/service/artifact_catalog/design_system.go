@@ -164,9 +164,15 @@ func SelectSourceBinding(bindings SourceBindings) (string, *SourceBinding) {
 }
 
 func ValidateSourceBindings(bindings SourceBindings, mode string) []Diagnostic {
+	return ValidateSourceBindingsFor(bindings, mode, DefaultProjectID, "belluga-solutions")
+}
+
+// ValidateSourceBindingsFor validates the shared map contract against an explicit
+// tenant identity. The CLI wrapper above keeps its historical Builder defaults.
+func ValidateSourceBindingsFor(bindings SourceBindings, mode, projectID, companyID string) []Diagnostic {
 	var diagnostics designSystemDiagnosticList
-	if bindings.SchemaVersion != SchemaVersion || bindings.ProjectID != DefaultProjectID || bindings.CompanyID != "belluga-solutions" {
-		diagnostics.add("invalid_schema", "", "", "local-api/source-bindings.json", "source binding identity or schema version is invalid", "Use schema_version 1, project_id builder, and company_id belluga-solutions.")
+	if bindings.SchemaVersion != SchemaVersion || bindings.ProjectID != projectID || bindings.CompanyID != companyID {
+		diagnostics.add("invalid_schema", "", "", "local-api/source-bindings.json", "source binding identity or schema version is invalid", "Use schema_version 1 and the matching Project and Company IDs.")
 	}
 	if mode != "working-tree" && mode != "committed" {
 		diagnostics.add("invalid_schema", "", "", "local-api/source-bindings.json", "source binding evaluation mode is invalid", "Choose working-tree or committed mode.")
@@ -180,7 +186,7 @@ func ValidateSourceBindings(bindings SourceBindings, mode string) []Diagnostic {
 		}
 		binding := entry.value
 		path := "local-api/source-bindings.json"
-		if !validID(binding.RepositoryID) || binding.CheckoutRoot == "" || ValidateRelativePath(binding.CheckoutRoot) != nil || len([]byte(binding.CheckoutRoot)) > MaxPathBytes || hasGitSegment(binding.CheckoutRoot) || !strings.HasSuffix(binding.DefinitionPath, "/design-system.json") || ValidateRelativePath(binding.DefinitionPath) != nil || len([]byte(binding.DefinitionPath)) > MaxPathBytes {
+		if !validRepositoryID(binding.RepositoryID) || binding.CheckoutRoot == "" || ValidateRelativePath(binding.CheckoutRoot) != nil || len([]byte(binding.CheckoutRoot)) > MaxPathBytes || hasGitSegment(binding.CheckoutRoot) || !strings.HasSuffix(binding.DefinitionPath, "/design-system.json") || ValidateRelativePath(binding.DefinitionPath) != nil || len([]byte(binding.DefinitionPath)) > MaxPathBytes {
 			diagnostics.add("invalid_path", binding.RepositoryID, "", path, "source binding paths or repository identity are invalid", "Use a stable repository ID, a workspace-relative Git root, and a Git-relative path ending in design-system.json.")
 		}
 		if binding.Revision != nil && !isFullSHA(*binding.Revision) {
@@ -194,6 +200,27 @@ func ValidateSourceBindings(bindings SourceBindings, mode string) []Diagnostic {
 		}
 	}
 	return sortedDiagnostics(diagnostics)
+}
+
+func validRepositoryID(value string) bool {
+	parts := strings.Split(value, "/")
+	if len(parts) == 1 {
+		return validID(value)
+	}
+	if len(parts) != 2 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".git") {
+			return false
+		}
+		for _, r := range part {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' && r != '.' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func EvaluateDesignSystem(source Source, projectID, companyID, level string, binding SourceBinding) DesignSystemResponse {

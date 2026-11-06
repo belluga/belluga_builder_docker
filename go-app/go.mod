@@ -4,6 +4,10 @@ go 1.23
 
 require go.mongodb.org/mongo-driver/v2 v2.6.0
 
+require belluga-builder-viewer v0.0.0
+
+replace belluga-builder-viewer => ../builder-app/service
+
 require (
 	github.com/klauspost/compress v1.17.6 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

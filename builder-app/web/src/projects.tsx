@@ -7,13 +7,14 @@ import type { PrototypeSelection } from "./local-artifact-preview";
 import { resolveProjectTheme } from "./project-theme";
 import type { ProjectTheme } from "./project-theme";
 import { CanonicalDocuments } from "./canonical-documents";
+import { DesignSystemViewer } from "./design-system-viewer";
 import "./projects.css";
 import "./release-detail.css";
 import "./todo-detail.css";
 
 type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
-type Project = { id: string; name: string; company_id: string; source_bound?: boolean };
+type Project = { id: string; name: string; company_id: string; source_bound?: boolean; repository_bound?: boolean };
 type Catalog = { companies: Company[]; projects: Project[] };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
 type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
@@ -576,31 +577,6 @@ function ProjectCard({ project, onOpen }: { project: Project; onOpen: () => void
   </button>;
 }
 
-function DesignSystemView({ artifacts, detail, theme }: { artifacts: Artifact[]; detail: Detail; theme: ProjectTheme }) {
-  if (!artifacts.length) return <p className="project-notice">No Design System artifact is available in this snapshot.</p>;
-  const palette = [
-    { id: "canvas", label: "Canvas" },
-    { id: "surface", label: "Surface" },
-    { id: "border", label: "Border" },
-    { id: "accent", label: "Accent" },
-    { id: "focus", label: "Focus" },
-  ] as const;
-  const value = (role: string) => theme[`--project-${role}`];
-  return <div className="design-system-view">{artifacts.map((artifact) => {
-    const href = artifactURL(detail, artifact);
-    if (!href) return <p className="project-notice" key={artifact.id}>{artifact.diagnostic || `${artifact.name} is ${stateLabel(artifact.state).toLowerCase()}.`}</p>;
-    return <div key={artifact.id}>
-      <section className="design-system-palette"><h2>Paleta estrutural</h2><p>Tokens visuais aplicados do Design System deste projeto.</p><div className="design-system-swatches">{palette.map((item) => <div className="design-system-swatch" key={item.id} style={{ backgroundColor: value(item.id), color: item.id === "accent" || item.id === "focus" || item.id === "border" ? value("canvas") : value("text") }}><strong>{item.label}</strong><code>{value(item.id)}</code></div>)}</div></section>
-      <div className="design-system-cards">
-        <article><h2>Hierarquia</h2><p className="design-system-type-sample">Clareza para decidir.</p><p>Títulos, contexto e conteúdo seguem os tokens tipográficos deste projeto: {value("displaySize")} / {value("bodySize")}.</p></article>
-        <article><h2>Componentes</h2><div className="design-system-controls"><button disabled>Primário</button><button disabled>Secundário</button><span className="project-page-tag">STATUS · DISPONÍVEL</span></div></article>
-        <article><h2>Princípio</h2><p>Cor de destaque orienta ação e foco; superfícies organizam a informação sem competir com ela.</p><p>Raio dos cartões: {value("cardRadius")}.</p></article>
-      </div>
-      <section className="design-system-source"><div><h2>Fonte autorada</h2><p>O catálogo completo de {artifact.name} está no artefato admitido deste projeto. Esta tela o apresenta, mas não o edita.</p></div><a href={href} target="_blank" rel="noreferrer">Abrir Design System ↗</a></section>
-    </div>;
-  })}</div>;
-}
-
 export function Projects() {
   const [selection, setSelection] = useState(route);
   const [catalog, setCatalog] = useState<Catalog>({ companies: [], projects: [] });
@@ -690,7 +666,8 @@ export function Projects() {
   const roadmapPage = roadFamilyPage || selection.page === "overview";
   const roadData = roadmapRead.key === viewKey && roadmapRead.state === "ready" ? roadmapRead.value : undefined;
   const readerIndependentRoadPage = (roadFamilyPage || selection.page === "documents") && (!activeView || viewState !== "ready");
-  const detail = activeView?.detail || (readerIndependentRoadPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
+  const designSystemPage = selection.page === "design-system";
+  const detail = activeView?.detail || (readerIndependentRoadPage || designSystemPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
   const invalidArtifacts = available.filter((item) => item.state === "invalid");
@@ -705,15 +682,15 @@ export function Projects() {
 
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
-	if (project?.source_bound === false && !["roadmap", "backlog", "release", "todo", "documents"].includes(selection.page)) return <main className="projects-page"><section className="project-notice" role="status"><h1>{project.name}</h1><p>Project registrado. Os artefatos publicados estão pendentes até que um repositório seja vinculado para a capacidade que precisa dele.</p><button onClick={() => navigate({ page: "roadmap" })}>Abrir Roadmap</button><button onClick={() => navigate({ page: "documents" })}>Abrir conhecimento</button></section></main>;
+	if (project?.source_bound === false && !["roadmap", "backlog", "release", "todo", "documents", "design-system"].includes(selection.page)) return <main className="projects-page"><section className="project-notice" role="status"><h1>{project.name}</h1><p>Project registrado. Os artefatos publicados estão pendentes até que um repositório seja vinculado para a capacidade que precisa dele.</p><button onClick={() => navigate({ page: "roadmap" })}>Abrir Roadmap</button><button onClick={() => navigate({ page: "documents" })}>Abrir conhecimento</button></section></main>;
 
-  if ((!readerIndependentRoadPage && (viewState !== "ready" || !detail || !activeView)) || !detail) return <ProjectLoadingShell key={`${viewKey}/${reloadCounter}`} company={company!} project={project!} stage={loadStage} error={viewState === "error" ? (viewError === "registration" ? "Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.") : ""} onRetry={() => setReloadCounter((value) => value + 1)} />;
+  if ((!readerIndependentRoadPage && !designSystemPage && (viewState !== "ready" || !detail || !activeView)) || !detail) return <ProjectLoadingShell key={`${viewKey}/${reloadCounter}`} company={company!} project={project!} stage={loadStage} error={viewState === "error" ? (viewError === "registration" ? "Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.") : ""} onRetry={() => setReloadCounter((value) => value + 1)} />;
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };
   if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeView?.theme}><LocalArtifactPreview {...previewProps} /></div>;
   const tentativeProjects = catalog.projects.filter((item) => item.company_id === (pendingCompanyID || selection.companyID));
   const selectedTODOInBacklog = (roadData?.backlog?.todos || []).concat((roadData?.backlog?.folders || []).flatMap(flattenBacklogTodos)).some((todo) => todo.id === selection.todoID);
   const roadmapPending = roadmapPage && (roadmapRead.key !== viewKey || roadmapRead.state === "loading");
-  return <main className="projects-page projects-project" style={activeView?.theme}>
+  return <main className="projects-page projects-project" style={designSystemPage ? undefined : activeView?.theme}>
     <div className="project-bar"><span className="project-bar-context">CONTEXTO</span>
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -721,13 +698,13 @@ export function Projects() {
     </div>
     <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
+      <section className="project-content">{page !== "design-system" && activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
           <SnapshotStatus detail={detail} />
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
         {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}
-        {page === "design-system" && activeView?.theme && <DesignSystemView artifacts={available.filter((item) => item.kind === "design_system")} detail={detail} theme={activeView.theme} />}
+        {page === "design-system" && <DesignSystemViewer key={viewKey} companyID={project!.company_id} projectID={project!.id} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
         {roadFamilyPage && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. Verifique a Registry API e recarregue; não é usado snapshot Foundation como fallback.</p>}
         {roadmapPending && <p className="project-notice" role="status">Carregando Roadmap atual da Registry…</p>}

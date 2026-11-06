@@ -59,8 +59,8 @@ services:
   builder-registry:
     image: belluga-builder-registry:local
     build:
-      context: ./go-app
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: go-app/Dockerfile
       target: runtime
     env_file:
       - path: ./go-app/.env
@@ -68,13 +68,19 @@ services:
     environment:
       DELPHI_PROJECT_READER_URL: http://project-reader:8099
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
+      DELPHI_PROJECT_READER_STATE_ROOT: /state
+    volumes:
+      - type: bind
+        source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
+        target: /state
+        read_only: true
     networks:
       project-reader-private:
       builder-registry-private:
         aliases: [builder-registry]
     read_only: true
     tmpfs:
-      - /tmp:size=16m,noexec,nosuid
+      - /tmp:size=128m,noexec,nosuid
     restart: unless-stopped
 
 networks:
