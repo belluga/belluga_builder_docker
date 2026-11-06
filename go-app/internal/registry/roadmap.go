@@ -188,7 +188,15 @@ func validSnapshotState(value string) bool {
 	return value == "ready" || value == "not_ready" || value == "invalid" || value == "unavailable"
 }
 func validBinding(value Binding) bool {
-	if !strings.HasPrefix(value.WorkspaceRoot, "/") || value.ProjectRoot == "" || value.FoundationRoot == "" || value.RepositoryID == "" || !branchPattern.MatchString(value.PublicationBranch) {
+	legacyLocator := value.WorkspaceRoot != "" || value.ProjectRoot != "" || value.FoundationRoot != ""
+	if value.RepositoryID == "" && value.PublicationBranch == "" {
+		if !legacyLocator {
+			return value.DockerRepositoryID != "" || value.SourceBindingsPath != "" || value.SourceBindingsDigest != "" || value.DefaultOwnerID != "" || value.SourceBindingsStatePath != ""
+		}
+	} else if !validGitRepositoryIdentity(value.RepositoryID) || !validGitBranch(value.PublicationBranch) {
+		return false
+	}
+	if legacyLocator && (!strings.HasPrefix(value.WorkspaceRoot, "/") || value.ProjectRoot == "" || value.FoundationRoot == "") {
 		return false
 	}
 	for _, path := range []string{value.ProjectRoot, value.FoundationRoot, value.SourceBindingsPath, value.SourceBindingsStatePath} {
@@ -200,6 +208,10 @@ func validBinding(value Binding) bool {
 		return false
 	}
 	return true
+}
+
+func legacyFoundationSourceEligible(value *Binding) bool {
+	return value != nil && value.FoundationRoot != "" && !value.LegacyFoundationSourceDisabled && value.RepositoryID != "" && value.PublicationBranch != ""
 }
 func tenantKey(kind, identifier string) (string, error) {
 	value := strings.ToLower(strings.TrimSpace(identifier))

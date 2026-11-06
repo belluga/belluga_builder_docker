@@ -26,7 +26,7 @@ func TestPACEDReaderUpdatesMongoSnapshotPointerThroughPrivateAPI(t *testing.T) {
 	}
 	store.tenantPrefix = stamp
 	companyID, projectID := "company-"+fmt.Sprint(time.Now().UnixNano()), "project-"+fmt.Sprint(time.Now().UnixNano())
-	if _, err := store.Register(ctx, Registration{CompanyID: companyID, CompanyName: "Reader Integration", ProjectID: projectID, ProjectName: "Reader Integration Project", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: companyID, CompanyName: "Reader Integration", ProjectID: projectID, ProjectName: "Reader Integration Project", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(NewHandler(store))

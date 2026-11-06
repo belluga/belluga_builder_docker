@@ -50,6 +50,58 @@ func TestCutoverSnapshotServesPrototypeBesideAPIOnlyDocuments(t *testing.T) {
 	}
 }
 
+func TestLocalPreviewSeparatesFreshLegacyAndInvalidatedRepositorySources(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	type bindingState struct {
+		RepositoryID                   string `json:"repository_id"`
+		PublicationBranch              string `json:"publication_branch"`
+		FoundationRoot                 string `json:"foundation_root,omitempty"`
+		LegacyFoundationSourceDisabled bool   `json:"legacy_foundation_source_disabled,omitempty"`
+	}
+	state := bindingState{RepositoryID: "belluga/fresh", PublicationBranch: "main"}
+	readerCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/catalog":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"schema_version": "1",
+				"companies":      []any{map[string]string{"id": "company-a", "name": "Company A"}},
+				"projects": []any{map[string]any{
+					"id": "project-a", "name": "Project A", "company_id": "company-a", "binding": state,
+				}},
+			})
+		case "/internal/v1/projects/project-a":
+			readerCalls++
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"state":"unavailable","teach":"synthetic reader outage"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	preview := &registeredPreview{registryURL: upstream.URL, readerURL: upstream.URL, readerToken: strings.Repeat("t", 32), client: upstream.Client()}
+	read := func() *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		preview.apiHandler(response, httptest.NewRequest(http.MethodGet, "/api/local-preview?company_id=company-a&project_id=project-a", nil))
+		return response
+	}
+	response := read()
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "supported Project artifact reader is not activated") || readerCalls != 0 {
+		t.Fatalf("fresh path-free binding did not remain pending/API-only: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+	state.FoundationRoot = "foundation"
+	response = read()
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "Check the governed published Foundation branch") || strings.Contains(response.Body.String(), "disabled after a Project repository binding change") || readerCalls != 1 {
+		t.Fatalf("unchanged historical binding did not route through legacy reader: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+	state.LegacyFoundationSourceDisabled = true
+	response = read()
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "disabled after a Project repository binding change") || readerCalls != 1 {
+		t.Fatalf("invalidated legacy source did not fail closed without reader fallback: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+}
+
 func TestTodoSourceRequestRejectsDuplicateSelectorsAndInvalidMappings(t *testing.T) {
 	for _, raw := range []string{
 		"company_id=c&project_id=p&todo_id=one&todo_id=two&fingerprint=" + strings.Repeat("a", 64),

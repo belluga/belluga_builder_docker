@@ -20,6 +20,40 @@ type testCanonicalHistoryService struct {
 	calls  int
 }
 
+type testRepositoryBindingService struct {
+	*testService
+	request RepositoryBindingRequest
+}
+
+func (s *testRepositoryBindingService) ReadRepositoryBinding(context.Context, string, string) (RepositoryBinding, error) {
+	return RepositoryBinding{RepositoryID: "belluga/repo", PublicationBranch: "main", State: "configured", Revision: 2}, nil
+}
+func (s *testRepositoryBindingService) ChangeRepositoryBinding(_ context.Context, _, _ string, request RepositoryBindingRequest) (RepositoryBinding, error) {
+	s.request = request
+	return RepositoryBinding{State: "absent", Revision: request.ExpectedRevision + 1}, nil
+}
+
+func TestRepositoryBindingRoutesAreProjectScopedAndPathFree(t *testing.T) {
+	service := &testRepositoryBindingService{testService: &testService{}}
+	handler := NewHandler(service)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/binding", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"configured"`) || strings.Contains(response.Body.String(), "foundation_root") {
+		t.Fatalf("binding GET: %d %s", response.Code, response.Body)
+	}
+	body := `{"action":"unbind","project_id":"project-a","expected_revision":2,"operation_id":"unbind-2","actor":"owner"}`
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/internal/v1/companies/company-a/projects/project-a/binding", strings.NewReader(body)))
+	if response.Code != http.StatusOK || service.request.Actor != "owner" || service.request.ExpectedRevision != 2 || service.request.Action != "unbind" {
+		t.Fatalf("binding mutation: %d request=%+v body=%s", response.Code, service.request, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/internal/v1/companies/company-a/projects/project-a/binding", strings.NewReader(`{"action":"bind","project_id":"other-project"}`)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("cross-Project request identity status=%d body=%s", response.Code, response.Body)
+	}
+}
+
 func (s *testCanonicalHistoryService) CanonicalHistory(_ context.Context, _, _, cursor string, limit int) (CanonicalHistoryPage, error) {
 	s.calls++
 	s.cursor, s.limit = cursor, limit
@@ -51,6 +85,16 @@ type testService struct {
 	registerCalls    int
 	lastRegistration Registration
 	lastTenant       TenantRequest
+}
+
+func TestLegacyBindingFirstRouteReturnsScopedTeach(t *testing.T) {
+	service := &testService{}
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/company-a/projects/project-a/binding/first", strings.NewReader(`{"binding":{}}`)))
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusBadRequest || !strings.Contains(body.Teach, "PUT /binding") {
+		t.Fatalf("retired binding/first response status=%d body=%s decode=%v", response.Code, response.Body, err)
+	}
 }
 
 func (s *testService) Catalog(context.Context) (Catalog, error) { return s.catalog, nil }

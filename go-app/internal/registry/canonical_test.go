@@ -222,7 +222,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 		_ = store.control.Drop(context.Background())
 		_ = store.Close(context.Background())
 	})
-	if _, err := store.Register(ctx, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := store.CanonicalManifest(ctx, "company-canonical", "builder", "")
@@ -526,7 +526,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if err != nil || len(historyAfter.Events) != len(history.Events)+5 {
 		t.Fatalf("reads changed history: events=%d, %v", len(historyAfter.Events), err)
 	}
-	if _, err := store.Register(ctx, Registration{CompanyID: "company-other", CompanyName: "Other", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-other", CompanyName: "Other", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.ReadCanonical(ctx, "company-other", "builder", FamilyMandate, "builder"); !errors.Is(err, ErrNotFound) {
@@ -535,7 +535,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	if _, err := store.ReadCanonicalAsOf(ctx, "company-other", "builder", FamilyMandate, "builder", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("historical read crossed Company tenant boundary: %v", err)
 	}
-	if _, err := store.Register(ctx, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "parallel", ProjectName: "Parallel", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-canonical", CompanyName: "Canonical", ProjectID: "parallel", ProjectName: "Parallel", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	crossProjectCursor := encodeCanonicalHistoryCursor("company-canonical", "builder", tieTime, tiedIDs[0])

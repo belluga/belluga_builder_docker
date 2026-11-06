@@ -135,3 +135,13 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 		}
 	})
 }
+
+func TestCatalogProjectDoesNotExposeLegacyCutoverMarker(t *testing.T) {
+	data, err := json.Marshal(catalogProject{ID: "builder", LegacySourceDisabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "legacy_source_disabled") {
+		t.Fatalf("internal legacy cutover marker escaped in catalog DTO: %s", data)
+	}
+}

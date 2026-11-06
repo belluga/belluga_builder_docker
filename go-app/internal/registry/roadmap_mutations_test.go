@@ -30,7 +30,7 @@ func TestMongoRoadmapPlanningMutationsAndPlacementShareProjectRevision(t *testin
 		_ = store.control.Drop(context.Background())
 		_ = store.Close(context.Background())
 	})
-	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.ProvisionTODOCollection(ctx, "company-a"); err != nil {

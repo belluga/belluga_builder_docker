@@ -119,6 +119,8 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}", h.project)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects", h.register)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/preference", h.preference)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/snapshot-reference", h.snapshotReference)
@@ -262,11 +264,32 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (h *Handler) bindFirst(w http.ResponseWriter, r *http.Request) {
-	var input FirstBindingRequest
-	if !h.decode(w, r, &input) {
+	h.writeError(w, todoTeach("binding", "register Project identity without paths, then use PUT /binding with action=bind, expected_revision and actor", ErrInvalid))
+}
+func (h *Handler) readRepositoryBinding(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(repositoryBindingService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
 		return
 	}
-	value, err := h.service.BindFirst(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	value, err := service.ReadRepositoryBinding(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
+	h.respond(w, value, err)
+}
+func (h *Handler) changeRepositoryBinding(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(repositoryBindingService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input RepositoryBindingRequest
+	if !h.decodeLimit(w, r, &input, 4096) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) {
+		h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ChangeRepositoryBinding(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
 	h.respond(w, value, err)
 }
 func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {

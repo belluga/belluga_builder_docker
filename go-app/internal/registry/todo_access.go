@@ -1135,7 +1135,7 @@ func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collect
 	for cursor.Next(ctx) {
 		var row struct {
 			TODORecord `bson:",inline"`
-			Latest []TODOContentVersion `bson:"latest_content_version"`
+			Latest     []TODOContentVersion `bson:"latest_content_version"`
 		}
 		if cursor.Decode(&row) != nil || len(row.Latest) > 1 {
 			return nil, ErrUnavailable
