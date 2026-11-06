@@ -67,6 +67,28 @@ func TestVerifyLocalRequirementReferencesRejectsUnmappedRequiredCommand(t *testi
 	}
 }
 
+func TestVerifyLocalRequirementReferencesAllowsSeveralCommandsForOneScenario(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	content := &TODOContent{
+		SchemaVersion: todoContentSchemaVersion,
+		Criteria: []TODOContentItem{{ID: "C-1"}},
+		ValidationScenarios: []TODOValidationScenario{{ID: "S-1", CriterionIDs: []string{"C-1"}}},
+	}
+	result := &LocalProofResult{Commands: []localProofCommand{{ID: "G-TEST"}, {ID: "G-IMAGE"}}}
+	refs := []TODOProofReference{
+		{Kind: "criterion:C-1", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"},
+		{Kind: "scenario:S-1", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"},
+		{Kind: "scenario:S-1", Source: "paced-local-runner", Reference: "G-IMAGE", SourceDigest: digest, VerificationState: "unverified"},
+	}
+	if _, err := verifyLocalRequirementReferences(content, refs, result, digest); err != nil {
+		t.Fatalf("multiple commands for one scenario were rejected: %v", err)
+	}
+	refs = append(refs, refs[1])
+	if _, err := verifyLocalRequirementReferences(content, refs, result, digest); err == nil || !strings.Contains(err.Error(), "do not repeat") {
+		t.Fatalf("duplicate scenario/command reference accepted or lacked TEACH: %v", err)
+	}
+}
+
 func TestVerifyLocalRequirementReferencesRejectsMissingUnknownFailingAndStaleEvidence(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("b", 64)
 	content := &TODOContent{
