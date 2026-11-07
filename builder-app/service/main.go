@@ -85,6 +85,8 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
 	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
 	mux.HandleFunc("/api/roadmap", consumer.apiHandler)
+	mux.HandleFunc("/api/overview", consumer.overviewAPIHandler)
+	mux.HandleFunc("/api/overview/media/", consumer.overviewAPIHandler)
 	mux.HandleFunc("/api/knowledge", consumer.knowledgeAPIHandler)
 	mux.HandleFunc("/api/knowledge/index", consumer.knowledgeIndexAPIHandler)
 	mux.HandleFunc("/api/design-system", consumer.designSystemAPIHandler)

@@ -16,6 +16,7 @@ type Company = { id: string; name: string };
 type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; files?: string[]; diagnostic?: string };
 type Project = { id: string; name: string; company_id: string; source_bound?: boolean; repository_bound?: boolean };
 type Catalog = { companies: Company[]; projects: Project[] };
+type OverviewRead = { state: "available" | "not_authored" | "invalid" | "stale"; company_id: string; project_id: string; revision?: number; content?: { tagline: string; summary: string; desktop_alt: string; mobile_alt: string; sections: Record<"problem" | "proposal" | "impact" | "audience", { heading: string; body: string; points: string[]; image_alt?: string }>; }; media?: { slot: string; digest: string; href: string }[]; teach?: string };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
 type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified"; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[]; investigation?: { title: string } };
@@ -298,45 +299,6 @@ function ReleaseDetailView({ roadmap, companyID, projectID, epicID, releaseID, t
   </article>;
 }
 
-function savedObservationStatus(value: unknown, known: Record<string, string>) {
-  return typeof value === "string" && Object.hasOwn(known, value) ? known[value] : "Unavailable";
-}
-
-function savedObservationTime(value?: string) {
-  const parts = value?.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/);
-  if (!value || !parts) return "Observation time unavailable";
-  const date = new Date(value);
-  if (Number.isNaN(date.valueOf()) || date.getUTCFullYear() !== Number(parts[1]) || date.getUTCMonth() + 1 !== Number(parts[2]) ||
-    date.getUTCDate() !== Number(parts[3]) || date.getUTCHours() !== Number(parts[4]) || date.getUTCMinutes() !== Number(parts[5]) ||
-    date.getUTCSeconds() !== Number(parts[6])) return "Observation time unavailable";
-  return value;
-}
-
-function SnapshotStatus({ detail }: { detail: Detail }) {
-  const knowledge = detail.snapshot_observations?.knowledge_status;
-  const visual = detail.snapshot_observations?.visual_origin;
-  const canonical = knowledge?.schema_version === "2" && visual?.source_authority === "canonical_api";
-  const reviewLabels = { current: "Current against reviewed source", review_required: "Review required", unverifiable: "Unverifiable" };
-  const originLabels = { matching: "Matches saved source observations", mismatch: "Mismatch", unverifiable: "Unverifiable" };
-  const observedAt = savedObservationTime(detail.snapshot_observed_at);
-  const timestampAvailable = observedAt !== "Observation time unavailable";
-  const landing = timestampAvailable ? savedObservationStatus(knowledge?.landing?.status, reviewLabels) : "Unavailable";
-  const overview = timestampAvailable ? savedObservationStatus(knowledge?.overview?.status, reviewLabels) : "Unavailable";
-  const roadmap = timestampAvailable ? savedObservationStatus(knowledge?.roadmap?.status, reviewLabels) : "Unavailable";
-  const origin = timestampAvailable ? savedObservationStatus(visual?.state, originLabels) : "Unavailable";
-  const needsAttention = canonical ? landing !== reviewLabels.current || overview !== reviewLabels.current : landing !== reviewLabels.current || roadmap !== reviewLabels.current || origin !== originLabels.matching;
-  const reason = (value?: unknown) => typeof value === "string" && value ? ` (${value.replaceAll("_", " ")})` : "";
-  return <section className="overview-status" aria-labelledby="snapshot-status-title">
-    <div className="overview-status-heading"><div><span className="project-page-tag">{canonical ? "Canonical API · loaded revision" : "Published source · loaded revision"}</span><h2 id="snapshot-status-title">Snapshot status</h2></div><span>{canonical ? `Observations saved ${observedAt}` : `Observations saved ${observedAt} · Foundation ${detail.project_sha?.slice(0, 12) || "revision unavailable"}`}</span></div>
-    <dl className="overview-status-grid">
-      <div><dt>Landing review</dt><dd>{landing}{landing !== "Unavailable" && reason(knowledge?.landing?.reason_code)}</dd></div>
-      {canonical ? <div><dt>Overview review</dt><dd>{overview}{overview !== "Unavailable" && reason(knowledge?.overview?.reason_code)}</dd></div> : <><div><dt>Roadmap review</dt><dd>{roadmap}{roadmap !== "Unavailable" && reason(knowledge?.roadmap?.reason_code)}</dd></div><div><dt>Visual origin</dt><dd>{origin}</dd></div></>}
-    </dl>
-    <p className="overview-status-note">{canonical ? "These observations compare visual artifacts with canonical API documents. They do not establish human approval." : "These observations were extracted from the published Foundation revision shown above. They do not establish human approval."}</p>
-    {needsAttention && <p className="overview-status-next" role="status">{canonical ? "TEACH: Review the selected Project’s canonical API documents and update the affected visual artifact through Delphi; then reload this Project." : "TEACH: Check the selected Project’s published Foundation branch through Delphi. Correct the source, publish the change, then reload this Project to read the current branch."}</p>}
-  </section>;
-}
-
 function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: RoadmapProjection; companyID: string; projectID: string; todoID: string }) {
   const [mongoRead, setMongoRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: MongoTODORead; message?: string }>({ key: "", state: "loading" });
   const mongoSummary = [...(roadmap?.epics.flatMap((epic) => epic.releases.flatMap((release) => release.todos)) || []), ...(roadmap?.backlog.todos || []), ...(roadmap?.backlog.folders.flatMap(flattenBacklogTodos) || [])].find((todo) => todo.id === todoID && todo.todo_revision !== undefined);
@@ -364,31 +326,34 @@ function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: R
   return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>TEACH: Este item não possui uma revisão exata no Mongo Roadmap. Markdown Foundation é proveniência de migração e não será usado como conteúdo atual.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
 }
 
-function OverviewEditorial({ detail, projectName }: { detail: Detail; projectName: string }) {
-  const overview = detail.overview;
-  const landing = detail.artifacts.find((item) => item.kind === "landing" && item.state === "available");
+function OverviewEditorial({ read, projectName, detail }: { read: { state: "loading" | "ready" | "error"; value?: OverviewRead }; projectName: string; detail: Detail | null }) {
+  const overview = read.value?.content;
+  const media = Object.fromEntries((read.value?.media || []).map((item) => [item.slot, item.href]));
+  if (read.state === "loading") return <section className="project-notice" role="status"><h2>Carregando Overview atual…</h2></section>;
+  if (read.state === "error" || !read.value) return <section className="project-notice" role="alert"><h2>Overview indisponível</h2><p>TEACH: A leitura independente do Overview Mongo falhou. Tente novamente; dados Foundation não são usados como fallback.</p></section>;
+  if (read.value.state !== "available" && read.value.state !== "stale") return <section className="project-notice" role={read.value.state === "not_authored" ? "status" : "alert"}><h2>{read.value.state === "not_authored" ? "Project Overview not authored yet" : "Project Overview is invalid"}</h2><p>{read.value.teach || "TEACH: Verifique o contrato Overview e a Registry."}</p></section>;
+  const landing = detail?.artifacts.find((item) => item.kind === "landing" && item.state === "available");
   const landingHref = landing ? artifactURL(detail, landing) : "";
   const landingLink = landingHref ? <a className="overview-landing-link" href={landingHref} target="_blank" rel="noreferrer">Ver landing independente <span aria-hidden="true">→</span></a> : null;
-  if (!overview || overview.schema_version !== "1") return <section className="project-notice" role="status">
-    <h2>Project Overview not available yet</h2><p>{detail.artifacts.find((item) => item.kind === "overview")?.diagnostic || "Create project_overview.json in this Project's Foundation and validate it before publishing the branch."}</p>{landingLink}
-  </section>;
+  if (!overview) return <section className="project-notice" role="alert"><h2>Project Overview invalid</h2><p>TEACH: Registry returned no content for an authored Overview revision.</p></section>;
   const sections = ["problem", "proposal", "impact", "audience"] as const;
   const labels = { problem: "Problema", proposal: "Proposta", impact: "Impacto", audience: "Para quem" };
   return <>
+    {read.value.state === "stale" && <p className="project-notice" role="status">{read.value.teach || "TEACH: Esta revisão do Overview está stale em relação à sua origem documental; revise a paridade antes de tratá-la como atual."}</p>}
     <section className="project-hero overview-hero" aria-label="Project introduction">
       <div className="project-hero-copy"><span className="overview-eyebrow">VISÃO DO PROJETO</span><h1>{projectName}</h1><h2 className="overview-hero-tagline">{overview.tagline}</h2><p className="overview-hero-summary">{overview.summary}</p>{landingLink}</div>
-      {(overview.media?.desktop && overview.media?.mobile) ? <div className="overview-device-pair" aria-label="Project preview images">
+      {(media.desktop && media.mobile) ? <div className="overview-device-pair" aria-label="Project preview images">
         <span className="overview-visual-note">CONCEITO · DADOS ILUSTRATIVOS</span>
-        {overview.media.desktop && <img className="overview-desktop" src={overview.media.desktop} alt={overview.desktop_alt || ""} />}
-        {overview.media.mobile && <img className="overview-mobile" src={overview.media.mobile} alt={overview.mobile_alt || ""} />}
-      </div> : <p className="project-notice" role="alert">Hero images are missing from the loaded Overview. Create desktop.png and mobile.png, then publish the branch.</p>}
+        {media.desktop && <img className="overview-desktop" src={media.desktop} alt={overview.desktop_alt || ""} />}
+        {media.mobile && <img className="overview-mobile" src={media.mobile} alt={overview.mobile_alt || ""} />}
+      </div> : <p className="project-notice" role="alert">TEACH: Registry não retornou ambos os PNGs de hero para esta revisão exata do Overview.</p>}
     </section>
     <div className="overview-editorial" aria-label="Project at a glance">{sections.map((key) => {
       const section = overview.sections[key];
       return <section className={`overview-editorial-section overview-editorial-${key}`} key={key}>
         <div className="overview-section-copy"><div className="overview-section-heading"><span>{labels[key].toUpperCase()}</span><h2>{section.heading}</h2></div><div className="overview-section-body"><p>{section.body}</p>{(key === "proposal" || key === "audience") && section.points.length > 0 && <ul>{section.points.map((point) => <li key={point}>{point}</li>)}</ul>}</div></div>
         {(key === "problem" || key === "impact") && section.points.length > 0 && <div className="overview-section-aside">{key === "problem" && <strong>Consequências no dia a dia:</strong>}<ul>{section.points.map((point) => <li key={point}>{point}</li>)}</ul></div>}
-        {overview.media?.[key] && <img src={overview.media[key]} alt={section.image_alt || ""} />}
+        {media[key] && <img src={media[key]} alt={section.image_alt || ""} />}
       </section>;
     })}</div>
   </>;
@@ -594,6 +559,8 @@ export function Projects() {
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<ProjectView | null>(null);
   const [roadmapRead, setRoadmapRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: RoadmapProjection }>({ key: "", state: "loading" });
+  const [overviewRead, setOverviewRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: OverviewRead }>({ key: "", state: "loading" });
+  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string }>({ key: "", state: "loading" });
   const [viewState, setViewState] = useState<"loading" | "ready" | "error">("loading");
   const [viewError, setViewError] = useState<"unavailable" | "registration">("unavailable");
   const [loadStage, setLoadStage] = useState<"foundation" | "design" | "error">("foundation");
@@ -617,6 +584,35 @@ export function Projects() {
   const project = catalog.projects.find((item) => item.company_id === selection.companyID && item.id === selection.projectID);
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
   const viewKey = project ? `${project.company_id}/${project.id}` : "";
+  useEffect(() => {
+    if (!project || selection.page !== "overview") { setOverviewRead({ key: "", state: "loading" }); return; }
+    const controller = new AbortController(); const key = viewKey;
+    setOverviewRead({ key, state: "loading" });
+    const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
+    fetch(`/api/overview?${query}`, { signal: controller.signal }).then(async (response) => {
+      const value = await response.json() as OverviewRead;
+      if (!response.ok || value.company_id !== project.company_id || value.project_id !== project.id || !["available", "not_authored", "invalid", "stale"].includes(value.state)) throw new Error("Overview unavailable");
+      if ((value.state === "available" || value.state === "stale") && (!value.content || !Array.isArray(value.media) || value.media.length < 2 || value.media.some((item) => !item.href.startsWith("/api/overview/media/")))) throw new Error("Overview response invalid");
+      return value;
+    }).then((value) => { if (!controller.signal.aborted) setOverviewRead({ key, state: "ready", value }); })
+      .catch(() => { if (!controller.signal.aborted) setOverviewRead({ key, state: "error" }); });
+    return () => controller.abort();
+  }, [viewKey, reloadCounter, selection.page]);
+  useEffect(() => {
+    if (!project) { setThemeRead({ key: "", state: "loading" }); return; }
+    const controller = new AbortController(); const key = viewKey;
+    setThemeRead({ key, state: "loading" });
+    const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
+    fetch(`/api/design-system?${query}`, { signal: controller.signal }).then(async (response) => {
+      if (!response.ok) throw new Error("Design System unavailable");
+      const selected = await response.json() as { selection?: { state?: string; sha?: string; inventory_digest?: string }; evaluation?: { company_id?: string; project_id?: string; mode?: string; outcome?: string; design_system_validation?: string; revision?: string; inventory_digest?: string; items?: unknown[] } };
+      const evaluation = selected.evaluation;
+      if (!evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
+      return resolveProjectTheme(evaluation.items[0]);
+    }).then((resolved) => { if (!controller.signal.aborted) setThemeRead({ key, state: "ready", theme: resolved.style, diagnostic: resolved.diagnostic }); })
+      .catch(() => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: "The selected Design System definition could not be read." }); });
+    return () => controller.abort();
+  }, [viewKey, reloadCounter]);
   useEffect(() => {
     if (!project || !["overview", "roadmap", "backlog", "release", "todo"].includes(selection.page)) { setRoadmapRead({ key: "", state: "loading" }); return; }
     const controller = new AbortController();
@@ -647,27 +643,7 @@ export function Projects() {
         }
         const detail = await response.json() as Detail;
         if (detail.company_id !== project!.company_id || detail.project_id !== project!.id || detail.consumer_readiness !== "ready" || !detail.snapshot_fingerprint) throw new Error("Published Project is unavailable");
-        if (!controller.signal.aborted) setLoadStage("design");
-        let theme: ProjectTheme | undefined;
-        let themeDiagnostic: string | undefined;
-        if (detail.consumer_readiness === "ready") {
-          try {
-            const query = new URLSearchParams({ company_id: detail.company_id, project_id: detail.project_id });
-            const response = await fetch(`/api/design-system?${query}`, { signal: controller.signal });
-            if (!response.ok) throw new Error("Design System selection unavailable");
-            const selected = await response.json() as {
-              selection?: { state?: string; sha?: string; inventory_digest?: string };
-              evaluation?: { company_id?: string; project_id?: string; mode?: string; outcome?: string; design_system_validation?: string; revision?: string; inventory_digest?: string; items?: unknown[] };
-            };
-            const evaluation = selected.evaluation;
-            if (!evaluation || evaluation.company_id !== detail.company_id || evaluation.project_id !== detail.project_id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System selection mismatch");
-            const resolved = resolveProjectTheme(evaluation.items[0]);
-            theme = resolved.style; themeDiagnostic = resolved.diagnostic;
-          } catch {
-            themeDiagnostic = "The selected Design System definition could not be read.";
-          }
-        }
-        if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
+        if (!controller.signal.aborted) { setView({ key: viewKey, detail }); setLoadStage("design"); setViewState("ready"); }
       } catch (error) {
         if (!controller.signal.aborted) { setViewError(error instanceof Error && error.message === "registration" ? "registration" : "unavailable"); setLoadStage("error"); setViewState("error"); }
       }
@@ -679,9 +655,11 @@ export function Projects() {
   const roadFamilyPage = ["roadmap", "backlog", "release", "todo"].includes(selection.page);
   const roadmapPage = roadFamilyPage || selection.page === "overview";
   const roadData = roadmapRead.key === viewKey && roadmapRead.state === "ready" ? roadmapRead.value : undefined;
-  const readerIndependentRoadPage = (roadFamilyPage || selection.page === "documents") && (!activeView || viewState !== "ready");
+  const readerIndependentRoadPage = (roadFamilyPage || selection.page === "documents" || selection.page === "overview") && (!activeView || viewState !== "ready");
   const designSystemPage = selection.page === "design-system";
   const detail = activeView?.detail || (readerIndependentRoadPage || designSystemPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
+  const activeTheme = themeRead.key === viewKey ? themeRead.theme : undefined;
+  const themeDiagnostic = themeRead.key === viewKey && themeRead.state === "error" ? themeRead.diagnostic : undefined;
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
   const invalidArtifacts = available.filter((item) => item.state === "invalid");
@@ -696,15 +674,15 @@ export function Projects() {
 
   if (!selection.companyID) return <main className="projects-page projects-portal"><PortalHeader><p>Registered Companies and their Projects</p></PortalHeader><div className="portal-main"><p className="projects-eyebrow">01 / Project directory</p><h1>Choose a company to explore its projects.</h1><p className="portal-intro">Select a registered company to view its Projects and their available snapshot information.</p><section className="company-grid">{catalog.companies.map((item) => { const count = catalog.projects.filter((p) => p.company_id === item.id).length; return <button key={item.id} className="company-card" onClick={() => navigate({ company_id: item.id, project_id: null, page: null })}><span className="company-card-mark" aria-hidden="true">{item.name.slice(0, 1)}</span><small>COMPANY</small><strong>{item.name}</strong><span className="company-card-count">{count} registered {count === 1 ? "Project" : "Projects"}</span><span className="company-card-cta">Open company portfolio <b aria-hidden="true">↗</b></span></button>; })}</section>{!catalog.companies.length && <p>No Companies are registered yet.</p>}</div></main>;
   if (!selection.projectID) return <main className="projects-page projects-portal"><PortalHeader><p>Company portfolio · registered Projects</p></PortalHeader><div className="portal-main"><a className="portal-breadcrumb" href="/">← All Companies</a><div className="portfolio-hero"><div><p className="projects-eyebrow">02 / {company?.name}</p><h1>Explore registered Projects for {company?.name}.</h1><p className="portal-intro">Open a registered Project to review its available artifacts and snapshot information.</p></div><aside>Registered Projects<strong>{projects.length}</strong></aside></div><section className="project-cards" aria-label={`${company?.name} Projects`}>{projects.map((item) => <ProjectCard key={`${item.company_id}/${item.id}`} project={item} onOpen={() => navigate({ project_id: item.id, page: "overview" })} />)}</section>{!projects.length && <p>No Projects are registered under this Company yet.</p>}</div></main>;
-	if (project?.source_bound === false && !["roadmap", "backlog", "release", "todo", "documents", "design-system"].includes(selection.page)) return <main className="projects-page"><section className="project-notice" role="status"><h1>{project.name}</h1><p>Project registrado. Os artefatos publicados estão pendentes até que um repositório seja vinculado para a capacidade que precisa dele.</p><button onClick={() => navigate({ page: "roadmap" })}>Abrir Roadmap</button><button onClick={() => navigate({ page: "documents" })}>Abrir conhecimento</button></section></main>;
+	if (project?.source_bound === false && !["overview", "roadmap", "backlog", "release", "todo", "documents", "design-system"].includes(selection.page)) return <main className="projects-page"><section className="project-notice" role="status"><h1>{project.name}</h1><p>Project registrado. Os artefatos publicados estão pendentes até que um repositório seja vinculado para a capacidade que precisa dele.</p><button onClick={() => navigate({ page: "roadmap" })}>Abrir Roadmap</button><button onClick={() => navigate({ page: "documents" })}>Abrir conhecimento</button></section></main>;
 
   if ((!readerIndependentRoadPage && !designSystemPage && (viewState !== "ready" || !detail || !activeView)) || !detail) return <ProjectLoadingShell key={`${viewKey}/${reloadCounter}`} company={company!} project={project!} stage={loadStage} error={viewState === "error" ? (viewError === "registration" ? "Este Project tem um registro antigo inválido. Confirme o repositório e a branch Foundation publicados e registre o Project novamente. Não há migração nem leitura por compatibilidade." : "Não foi possível ler os dados publicados deste Project. Verifique a branch Foundation vinculada e o acesso do reader Delphi, depois tente novamente. Nenhum snapshot antigo é exibido como atual.") : ""} onRetry={() => setReloadCounter((value) => value + 1)} />;
   const previewProps = { companyID: selection.companyID, projectID: selection.projectID, companyName: company?.name || "Company", projectName: project?.name || "Project", detail, selection: selection.prototype, onNavigate: navigate };
-  if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeView?.theme}><LocalArtifactPreview {...previewProps} /></div>;
+  if (selection.prototype.mode === "presentation") return <div className="project-theme" style={activeTheme}><LocalArtifactPreview {...previewProps} /></div>;
   const tentativeProjects = catalog.projects.filter((item) => item.company_id === (pendingCompanyID || selection.companyID));
   const selectedTODOInBacklog = (roadData?.backlog?.todos || []).concat((roadData?.backlog?.folders || []).flatMap(flattenBacklogTodos)).some((todo) => todo.id === selection.todoID);
   const roadmapPending = roadmapPage && (roadmapRead.key !== viewKey || roadmapRead.state === "loading");
-  return <main className="projects-page projects-project" style={designSystemPage ? undefined : activeView?.theme}>
+  return <main className="projects-page projects-project" style={designSystemPage ? undefined : activeTheme}>
     <div className="project-bar"><span className="project-bar-context">CONTEXTO</span>
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -712,9 +690,8 @@ export function Projects() {
     </div>
     <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{page !== "design-system" && activeView?.themeDiagnostic && <p className="project-theme-warning" role="alert">Design System indisponível: {activeView.themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
-        {page === "overview" && <div className="project-overview"><OverviewEditorial detail={detail} projectName={project?.name || "Project"} />
-          <SnapshotStatus detail={detail} />
+      <section className="project-content">{page !== "design-system" && themeDiagnostic && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Snapshot salvo · aprovação humana não inferida</span></>}</header>}
+        {page === "overview" && <div className="project-overview"><OverviewEditorial read={overviewRead.key === viewKey ? overviewRead : { key: viewKey, state: "loading" }} projectName={project?.name || "Project"} detail={activeView?.detail || null} />
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
         {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}

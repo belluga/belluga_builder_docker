@@ -1172,27 +1172,6 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		result["external_source_revision"] = snapshot.ExternalSourceRevision
 	}
 	for _, artifact := range snapshot.Artifacts {
-		if artifact.Kind == "overview" && artifact.State == "available" && artifact.Entry == "project_overview.json" {
-			if data, ok := snapshot.Files[artifact.Entry]; ok {
-				var overview overviewSource
-				decoder := json.NewDecoder(strings.NewReader(string(data)))
-				decoder.DisallowUnknownFields()
-				if rejectDuplicateJSONKeys(data) == nil && decoder.Decode(&overview) == nil && overview.SchemaVersion == "1" && len(overview.Sections) == 4 && overview.Media == nil {
-					media := map[string]string{}
-					for _, name := range artifact.Files {
-						if name == "project_overview/desktop.png" || name == "project_overview/mobile.png" || name == "project_overview/problem.png" || name == "project_overview/proposal.png" || name == "project_overview/impact.png" || name == "project_overview/audience.png" {
-							if snapshotHasFile(snapshot, name) {
-								media[strings.TrimSuffix(path.Base(name), ".png")] = snapshotFileURL(snapshot, fingerprint, name)
-							}
-						}
-					}
-					if media["desktop"] != "" && media["mobile"] != "" && strings.TrimSpace(overview.DesktopAlt) != "" && strings.TrimSpace(overview.MobileAlt) != "" {
-						overview.Media = media
-						result["overview"] = overview
-					}
-				}
-			}
-		}
 		if artifact.Kind == "portfolio" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "project_portfolio.json" {

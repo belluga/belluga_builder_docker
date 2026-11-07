@@ -827,17 +827,16 @@ func TestRegisteredProjectDetailKeepsStaleExecutableBlockingAndPlanningDiagnosti
 	}
 }
 
-func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
+func TestRegisteredProjectDetailNeverExposesFoundationOverview(t *testing.T) {
 	data := []byte(`{"schema_version":"1","tagline":"Purpose","summary":"Summary","desktop_alt":"Desktop preview","mobile_alt":"Mobile preview","sections":{"problem":{"heading":"Problem","body":"Body","points":[]},"proposal":{"heading":"Proposal","body":"Body","points":[]},"impact":{"heading":"Impact","body":"Body","points":[]},"audience":{"heading":"Audience","body":"Body","points":[]}}}`)
 	snapshot := registeredSnapshot{ProjectID: "project-a", CompanyID: "company-a", Files: map[string][]byte{"project_overview.json": data, "project_overview/desktop.png": []byte("png"), "project_overview/mobile.png": []byte("png")}, Artifacts: []registeredArtifact{{ID: "overview", Kind: "overview", State: "available", Entry: "project_overview.json", Files: []string{"project_overview.json", "project_overview/desktop.png", "project_overview/mobile.png"}}}}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
-	overview, ok := detail["overview"].(overviewSource)
-	if !ok || overview.Summary != "Summary" || !strings.Contains(overview.Media["desktop"], "fingerprint-a") || !strings.Contains(overview.Media["mobile"], "fingerprint-a") {
-		t.Fatalf("Overview not bound to snapshot: %#v", detail["overview"])
+	if _, ok := detail["overview"]; ok {
+		t.Fatalf("Foundation Overview leaked into scoped Reader detail: %#v", detail["overview"])
 	}
 	delete(snapshot.Files, "project_overview/mobile.png")
 	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
-		t.Fatal("Overview without mobile hero image was exposed")
+		t.Fatal("Foundation Overview was exposed without mobile hero image")
 	}
 	snapshot.Artifacts[0].State = "invalid"
 	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
@@ -1671,9 +1670,8 @@ func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
 		},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint")
-	projected, ok := detail["overview"].(overviewSource)
-	if !ok || projected.Media["desktop"] == "" || projected.Media["mobile"] == "" {
-		t.Fatalf("v2 Overview image references were not projected: %#v", detail["overview"])
+	if _, ok := detail["overview"]; ok {
+		t.Fatalf("v2 Foundation Overview image references leaked into Reader detail: %#v", detail["overview"])
 	}
 	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1], parseTodoSourceMap(snapshot)) {
 		t.Fatal("v2 Prototype image reference was not admitted")

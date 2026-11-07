@@ -16,6 +16,7 @@ const maxTODOImportRequestBytes = 4 << 20
 const maxDesignSystemMutationRequestBytes = 8 << 10
 const designSystemRecoveryTimeout = 15 * time.Second
 const designSystemReadTimeout = 15 * time.Second
+const overviewReadTimeout = 15 * time.Second
 
 type Handler struct{ service Service }
 
@@ -120,6 +121,12 @@ type designSystemHistoryService interface {
 	ReadDesignSystemAsOf(context.Context, string, string, string) (DesignSystemAsOfResponse, error)
 }
 
+type overviewService interface {
+	WriteOverview(context.Context, string, string, OverviewWriteRequest) (OverviewReadResponse, error)
+	ReadOverview(context.Context, string, string, int64) (OverviewReadResponse, error)
+	ReadOverviewMedia(context.Context, string, string, int64, string) ([]byte, string, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -146,6 +153,10 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state", h.readDesignSystemState)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.readOverview)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}", h.readOverview)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}/media/{slot}", h.readOverviewMedia)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.writeOverview)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history", h.listDesignSystemHistory)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history/{revision}", h.readDesignSystemAsOf)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/validate/{revision}", h.readDesignSystemAsOf)
@@ -454,6 +465,88 @@ func (h *Handler) designSystemReadService(w http.ResponseWriter) (designSystemRe
 	}
 	return service, ok
 }
+
+func (h *Handler) overviewReadService(w http.ResponseWriter) (overviewService, bool) {
+	service, ok := h.service.(overviewService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+	}
+	return service, ok
+}
+
+func (h *Handler) writeOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" {
+		h.writeError(w, todoTeach("request", "omit query parameters; Project and operation identity belong in the typed request", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	var input OverviewWriteRequest
+	if !h.decodeLimit(w, r, &input, maxOverviewWriteBytes) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	value, err := service.WriteOverview(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; use the revision path for exact reads", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	revision := int64(0)
+	if raw := r.PathValue("revision"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			h.writeError(w, todoTeach("revision", "use a positive exact Overview revision", ErrInvalid))
+			return
+		}
+		revision = parsed
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	value, err := service.ReadOverview(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), revision)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readOverviewMedia(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; revision and fixed media slot are in the path", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	revision, err := strconv.ParseInt(r.PathValue("revision"), 10, 64)
+	if err != nil || revision <= 0 {
+		h.writeError(w, todoTeach("revision", "use a positive exact Overview revision", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	data, digest, err := service.ReadOverviewMedia(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), revision, r.PathValue("slot"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("ETag", `"`+digest+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Binding Binding `json:"binding"`
