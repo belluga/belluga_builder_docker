@@ -58,11 +58,13 @@ type registrationCatalog struct {
 	Projects      []catalogProject    `json:"projects"`
 }
 type catalogProject struct {
-	ID                  string `json:"id"`
-	Name                string `json:"name"`
-	CompanyID           string `json:"company_id"`
-	SourceBound         bool   `json:"source_bound"`
-	SnapshotFingerprint string `json:"snapshot_fingerprint,omitempty"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	CompanyID            string `json:"company_id"`
+	SourceBound          bool   `json:"source_bound"`
+	RepositoryBound      bool   `json:"repository_bound"`
+	LegacySourceDisabled bool   `json:"-"`
+	SnapshotFingerprint  string `json:"snapshot_fingerprint,omitempty"`
 }
 type persistedRegistration struct {
 	SchemaVersion string                         `json:"schema_version"`
@@ -76,14 +78,17 @@ type persistedPreference struct {
 	DeclinedAt string            `json:"declined_at"`
 }
 type persistedBinding struct {
-	WorkspaceRoot        string `json:"workspace_root"`
-	ProjectRoot          string `json:"project_root"`
-	FoundationRoot       string `json:"foundation_root"`
-	RepositoryID         string `json:"repository_id,omitempty"`
-	PublicationBranch    string `json:"publication_branch,omitempty"`
-	SourceBindingsPath   string `json:"source_bindings_path,omitempty"`
-	SourceBindingsDigest string `json:"source_bindings_digest,omitempty"`
-	DefaultOwnerID       string `json:"default_owner_id,omitempty"`
+	WorkspaceRoot                  string `json:"workspace_root"`
+	ProjectRoot                    string `json:"project_root"`
+	FoundationRoot                 string `json:"foundation_root"`
+	RepositoryID                   string `json:"repository_id,omitempty"`
+	PublicationBranch              string `json:"publication_branch,omitempty"`
+	SourceBindingsPath             string `json:"source_bindings_path,omitempty"`
+	SourceBindingsStatePath        string `json:"source_bindings_state_path,omitempty"`
+	SourceBindingsDigest           string `json:"source_bindings_digest,omitempty"`
+	DockerRepositoryID             string `json:"docker_repository_id,omitempty"`
+	DefaultOwnerID                 string `json:"default_owner_id,omitempty"`
+	LegacyFoundationSourceDisabled bool   `json:"legacy_foundation_source_disabled,omitempty"`
 }
 type persistedProject struct {
 	registeredProject
@@ -279,7 +284,9 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 		if !validRegistrationID(p.ID) || key != p.ID || !validRegistrationName(p.Name) || !hasCompany(stored.Companies, p.CompanyID) || !validStoredBinding(storedProject.Binding) {
 			return registrationCatalog{}, errors.New("registration project identity invalid")
 		}
-		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID, SourceBound: true})
+		sourceBound := legacyFoundationSourceEligible(storedProject.Binding)
+		repositoryBound := storedProject.Binding != nil && storedProject.Binding.RepositoryID != "" && storedProject.Binding.PublicationBranch != ""
+		result.Projects = append(result.Projects, catalogProject{ID: p.ID, Name: p.Name, CompanyID: p.CompanyID, SourceBound: sourceBound, RepositoryBound: repositoryBound, LegacySourceDisabled: storedProject.Binding != nil && storedProject.Binding.LegacyFoundationSourceDisabled})
 	}
 	for key, preference := range stored.Preferences {
 		if !validRegistrationID(key) || key != preference.ProjectID || !validStoredBinding(preference.Binding) || preference.DeclinedAt == "" {
@@ -289,6 +296,14 @@ func (p *registeredPreview) catalog() (registrationCatalog, error) {
 	sort.Slice(result.Companies, func(i, j int) bool { return result.Companies[i].ID < result.Companies[j].ID })
 	sort.Slice(result.Projects, func(i, j int) bool { return result.Projects[i].ID < result.Projects[j].ID })
 	return result, nil
+}
+
+func legacyFoundationSourceEligible(binding *persistedBinding) bool {
+	return binding != nil && legacyFoundationSourceEligibleValues(binding.FoundationRoot, binding.RepositoryID, binding.PublicationBranch, binding.LegacyFoundationSourceDisabled)
+}
+
+func legacyFoundationSourceEligibleValues(foundationRoot, repositoryID, publicationBranch string, disabled bool) bool {
+	return foundationRoot != "" && !disabled && repositoryID != "" && publicationBranch != ""
 }
 
 func (p *registeredPreview) currentFingerprint(projectID, companyID string) (string, error) {
@@ -437,7 +452,14 @@ func validRegistrationName(value string) bool {
 	return strings.TrimSpace(value) != "" && utf8.ValidString(value) && utf8.RuneCountInString(value) <= 160
 }
 func validStoredBinding(binding *persistedBinding) bool {
-	if binding == nil || !filepath.IsAbs(binding.WorkspaceRoot) || binding.ProjectRoot == "" || binding.FoundationRoot == "" {
+	if binding == nil {
+		return false
+	}
+	pathless := binding.WorkspaceRoot == "" && binding.ProjectRoot == "" && binding.FoundationRoot == ""
+	if pathless {
+		return validRepositoryBinding(binding.RepositoryID, binding.PublicationBranch) && !binding.LegacyFoundationSourceDisabled
+	}
+	if !filepath.IsAbs(binding.WorkspaceRoot) || binding.ProjectRoot == "" || binding.FoundationRoot == "" {
 		return false
 	}
 	validContextPath := func(value string, allowDot bool) bool {
@@ -454,8 +476,13 @@ func validStoredBinding(binding *persistedBinding) bool {
 		}
 		return true
 	}
-	if !validContextPath(binding.ProjectRoot, true) || !validContextPath(binding.FoundationRoot, false) || binding.SourceBindingsPath == "" && binding.SourceBindingsDigest != "" {
+	if !validContextPath(binding.ProjectRoot, true) || !validContextPath(binding.FoundationRoot, false) || binding.SourceBindingsPath == "" && binding.SourceBindingsDigest != "" || binding.SourceBindingsStatePath != "" && !validContextPath(binding.SourceBindingsStatePath, false) {
 		return false
+	}
+	if binding.RepositoryID != "" || binding.PublicationBranch != "" {
+		if !validRepositoryBinding(binding.RepositoryID, binding.PublicationBranch) {
+			return false
+		}
 	}
 	if binding.SourceBindingsPath != "" {
 		digest := strings.TrimPrefix(binding.SourceBindingsDigest, "sha256:")
@@ -467,6 +494,34 @@ func validStoredBinding(binding *persistedBinding) bool {
 		}
 	}
 	return binding.DefaultOwnerID == "" || validRegistrationID(binding.DefaultOwnerID)
+}
+
+func validRepositoryBinding(repositoryID, branch string) bool {
+	parts := strings.Split(repositoryID, "/")
+	if len(parts) != 2 || branch == "" || len(branch) > 255 || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") || strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.Contains(branch, "@{") || strings.Contains(branch, "\\") {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".git") {
+			return false
+		}
+		for _, r := range part {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' && r != '.' {
+				return false
+			}
+		}
+	}
+	for _, component := range strings.Split(branch, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
+		}
+		for _, r := range component {
+			if !(r >= 'a' && r <= 'z') && !(r >= 'A' && r <= 'Z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' && r != '.' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func hasCompany(companies map[string]registeredCompany, id string) bool {
@@ -548,8 +603,16 @@ func (p *registeredPreview) apiHandler(w http.ResponseWriter, r *http.Request) {
 		if project.ID != projectID || project.CompanyID != companyID {
 			continue
 		}
-		if registryCutoverEnabled() && !project.SourceBound {
+		if registryCutoverEnabled() && !project.RepositoryBound {
 			writeJSON(w, 200, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "pending", "artifacts": []any{}, "diagnostic": "TEACH: This Project is registered without a repository binding. Published artifacts remain pending until a source is explicitly bound."})
+			return
+		}
+		if registryCutoverEnabled() && !project.SourceBound {
+			if project.LegacySourceDisabled {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "unavailable", "artifacts": []any{}, "diagnostic": "TEACH: legacy Foundation reading is disabled after a Project repository binding change; revalidate the Foundation source before retrying."})
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"schema_version": "1", "company_id": companyID, "project_id": projectID, "registration_state": "registered", "consumer_readiness": "pending", "artifacts": []any{}, "diagnostic": "TEACH: this repository binding has no eligible legacy Foundation source context; the supported Project artifact reader is not activated yet."})
 			return
 		}
 		snapshot, fingerprint, e := p.readCurrent(project.ID, project.CompanyID)
@@ -1109,27 +1172,6 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		result["external_source_revision"] = snapshot.ExternalSourceRevision
 	}
 	for _, artifact := range snapshot.Artifacts {
-		if artifact.Kind == "overview" && artifact.State == "available" && artifact.Entry == "project_overview.json" {
-			if data, ok := snapshot.Files[artifact.Entry]; ok {
-				var overview overviewSource
-				decoder := json.NewDecoder(strings.NewReader(string(data)))
-				decoder.DisallowUnknownFields()
-				if rejectDuplicateJSONKeys(data) == nil && decoder.Decode(&overview) == nil && overview.SchemaVersion == "1" && len(overview.Sections) == 4 && overview.Media == nil {
-					media := map[string]string{}
-					for _, name := range artifact.Files {
-						if name == "project_overview/desktop.png" || name == "project_overview/mobile.png" || name == "project_overview/problem.png" || name == "project_overview/proposal.png" || name == "project_overview/impact.png" || name == "project_overview/audience.png" {
-							if snapshotHasFile(snapshot, name) {
-								media[strings.TrimSuffix(path.Base(name), ".png")] = snapshotFileURL(snapshot, fingerprint, name)
-							}
-						}
-					}
-					if media["desktop"] != "" && media["mobile"] != "" && strings.TrimSpace(overview.DesktopAlt) != "" && strings.TrimSpace(overview.MobileAlt) != "" {
-						overview.Media = media
-						result["overview"] = overview
-					}
-				}
-			}
-		}
 		if artifact.Kind == "portfolio" && artifact.State == "available" {
 			for _, name := range artifact.Files {
 				if name == "project_portfolio.json" {

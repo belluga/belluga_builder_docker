@@ -265,7 +265,7 @@ func validateGenericTODOAdmission(record TODORecord) error {
 	}
 	foundationSource := validID(record.Source.Foundation) && validGitCommit(record.Source.Revision) && validRepositoryPattern(record.Source.Path) && validSourceDigest(record.Source.Digest) && record.Source.Kind == "" && record.Source.Ref == ""
 	mongoSourceAbsent := record.Source == (TODOSource{})
-	if (!foundationSource && !mongoSourceAbsent) || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.ObjectID != bson.NilObjectID || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil {
+	if (!foundationSource && !mongoSourceAbsent) || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.ObjectID != bson.NilObjectID || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil || record.Removed {
 		return todoTeach("todo.source/operational_metadata", "provide valid Foundation provenance for legacy admission or omit provenance for Mongo creation, and leave Mongo-owned metadata unset", ErrInvalid)
 	}
 	data, err := bson.Marshal(record)

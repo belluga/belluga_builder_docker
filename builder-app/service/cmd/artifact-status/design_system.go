@@ -10,7 +10,7 @@ import (
 	"strings"
 	"syscall"
 
-	ac "belluga-builder-viewer/internal/artifact_catalog"
+	ac "belluga-builder-viewer/artifact_catalog"
 )
 
 const defaultSourceBindings = "local-api/source-bindings.json"

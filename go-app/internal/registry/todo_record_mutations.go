@@ -90,6 +90,9 @@ func (m *MongoStore) NormalizeTODOSectionOwnership(ctx context.Context, companyI
 	if !errors.Is(findErr, mongo.ErrNoDocuments) {
 		return TODOContentEditResponse{}, ErrUnavailable
 	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	if record.Revision != *request.ExpectedRevision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
@@ -411,6 +414,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	}
 	if !errors.Is(findErr, mongo.ErrNoDocuments) {
 		return TODOContentEditResponse{}, ErrUnavailable
+	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOContentEditResponse{}, err
 	}
 	if record.Revision != expected {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}

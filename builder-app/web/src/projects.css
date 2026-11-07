@@ -1483,3 +1483,10 @@
     max-width: 145px;
   }
 }
+.design-system-viewer {
+  display: grid;
+  gap: 24px;
+}
+.design-system-viewer a {
+  color: var(--project-accent, #2457d6);
+}

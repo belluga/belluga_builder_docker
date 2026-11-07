@@ -101,10 +101,15 @@ func (p *registeredPreview) knowledgeCatalog(r *http.Request) (registrationCatal
 		SchemaVersion string              `json:"schema_version"`
 		Companies     []registeredCompany `json:"companies"`
 		Projects      []struct {
-			ID        string           `json:"id"`
-			Name      string           `json:"name"`
-			CompanyID string           `json:"company_id"`
-			Binding   *json.RawMessage `json:"binding"`
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			CompanyID string `json:"company_id"`
+			Binding   *struct {
+				FoundationRoot                 string `json:"foundation_root"`
+				RepositoryID                   string `json:"repository_id"`
+				PublicationBranch              string `json:"publication_branch"`
+				LegacyFoundationSourceDisabled bool   `json:"legacy_foundation_source_disabled"`
+			} `json:"binding"`
 		} `json:"projects"`
 	}
 	if err != nil || status != http.StatusOK || json.Unmarshal(data, &source) != nil || source.SchemaVersion != "1" || source.Companies == nil || source.Projects == nil {
@@ -124,7 +129,12 @@ func (p *registeredPreview) knowledgeCatalog(r *http.Request) (registrationCatal
 			return registrationCatalog{}, errors.New("Registry Project invalid")
 		}
 		projects[key] = true
-		result.Projects = append(result.Projects, catalogProject{ID: project.ID, Name: project.Name, CompanyID: project.CompanyID, SourceBound: project.Binding != nil})
+		sourceBound, repositoryBound := false, false
+		if project.Binding != nil {
+			sourceBound = project.Binding.FoundationRoot != "" && legacyFoundationSourceEligibleValues(project.Binding.FoundationRoot, project.Binding.RepositoryID, project.Binding.PublicationBranch, project.Binding.LegacyFoundationSourceDisabled)
+			repositoryBound = project.Binding.RepositoryID != "" && project.Binding.PublicationBranch != ""
+		}
+		result.Projects = append(result.Projects, catalogProject{ID: project.ID, Name: project.Name, CompanyID: project.CompanyID, SourceBound: sourceBound, RepositoryBound: repositoryBound, LegacySourceDisabled: project.Binding != nil && project.Binding.LegacyFoundationSourceDisabled})
 	}
 	return result, nil
 }

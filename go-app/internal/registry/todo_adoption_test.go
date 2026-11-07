@@ -331,7 +331,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		_ = store.control.Drop(context.Background())
 		_ = store.Close(context.Background())
 	})
-	if _, err := store.Register(ctx, Registration{CompanyID: "belluga-solutions", CompanyName: "Belluga Solutions", ProjectID: "boora", ProjectName: "Bóora", Binding: validTestBinding()}); err != nil {
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "belluga-solutions", CompanyName: "Belluga Solutions", ProjectID: "boora", ProjectName: "Bóora", Binding: validTestBinding()}); err != nil {
 		t.Fatal(err)
 	}
 	database := store.client.Database(databaseName)

@@ -1,0 +1,15 @@
+**
+!go-app/
+!go-app/go.mod
+!go-app/go.sum
+!go-app/cmd/
+!go-app/cmd/**
+!go-app/internal/
+!go-app/internal/**
+!go-app/config/
+!go-app/config/**
+!builder-app/
+!builder-app/service/
+!builder-app/service/go.mod
+!builder-app/service/artifact_catalog/
+!builder-app/service/artifact_catalog/**

@@ -149,6 +149,28 @@ describe("canonical Documents without Foundation", () => {
     expect(fetcher.mock.calls.filter(([url]) => String(url).includes("record_id="))).toHaveLength(0);
   });
 
+  it("rejects an invalid successful Knowledge manifest without Foundation fallback", async () => {
+    const fetcher = setup(() => reply({ ...manifest, generation_id: "", documents: [entry] }));
+    open("&doc_family=module&doc_id=knowledge-viewer");
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Verifique a API do Project");
+    expect(screen.queryByText(record.payload.purpose)).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([url]) => String(url).startsWith("/snapshot/"))).toBe(false);
+  });
+
+  it("rejects an invalid successful Knowledge index without showing unverified cards", async () => {
+    setup((url) => reply(url.searchParams.has("record_id") ? record : manifest), "Knowledge is owned by the typed API.");
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/knowledge/index") return reply({ project_id: "builder", generation_id: "launch", write_epoch: 1, items: [{ ...entry, content_digest: `sha256:${"b".repeat(64)}` }] });
+      if (url.pathname === "/api/knowledge") return reply(manifest);
+      if (url.pathname === "/api/local-preview" && !url.search) return reply(catalog);
+      return reply({ diagnostic: "Foundation reader unavailable" }, 503);
+    }));
+    open("&doc_family=module");
+    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: O índice mudou ou está indisponível");
+    expect(screen.queryByRole("link", { name: /knowledge-viewer/ })).not.toBeInTheDocument();
+  });
+
   it("reports unknown IDs without replacing them with another document", async () => {
     setup((url) => reply(url.searchParams.has("record_id") ? { error: "canonical_not_found" } : manifest, url.searchParams.has("record_id") ? 404 : 200));
     open("&doc_family=module&doc_id=missing");

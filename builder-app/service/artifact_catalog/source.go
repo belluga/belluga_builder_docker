@@ -2,6 +2,7 @@ package artifact_catalog
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -317,6 +318,7 @@ func (s *WorkingTree) safePath(rel string) (string, error) {
 }
 
 type GitTree struct {
+	ctx      context.Context
 	root     string
 	revision string
 	mu       sync.Mutex
@@ -329,6 +331,16 @@ type gitObject struct {
 }
 
 func NewGitTree(root, revision string) (*GitTree, error) {
+	return NewGitTreeContext(context.Background(), root, revision)
+}
+
+// NewGitTreeContext binds all Git subprocesses used by this exact-revision
+// reader to the caller's lifetime. The context is retained only for the
+// returned Source's synchronous reads.
+func NewGitTreeContext(ctx context.Context, root, revision string) (*GitTree, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	absolute, err := filepath.Abs(root)
 	if err != nil {
 		return nil, err
@@ -342,15 +354,18 @@ func NewGitTree(root, revision string) (*GitTree, error) {
 	if revision == "" {
 		revision = "HEAD"
 	}
-	resolved, err := gitRun(absolute, "rev-parse", "--verify", revision+"^{commit}")
+	resolved, err := gitRunContext(ctx, absolute, "rev-parse", "--verify", revision+"^{commit}")
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, ErrRevisionUnavailable
 	}
 	resolved = strings.TrimSpace(resolved)
 	if revision != "HEAD" && revision != resolved {
 		return nil, errors.New("revision must be a full commit SHA")
 	}
-	return &GitTree{root: absolute, revision: resolved, cache: make(map[string]gitObject)}, nil
+	return &GitTree{ctx: ctx, root: absolute, revision: resolved, cache: make(map[string]gitObject)}, nil
 }
 
 func (s *GitTree) Mode() string        { return "committed" }
@@ -362,7 +377,7 @@ func (s *GitTree) List(prefix string) ([]Entry, error) {
 		return nil, err
 	}
 	const maxTreeOutputBytes = int64(MaxFiles+1) * (2*MaxPathBytes + 128)
-	out, err := gitRunBytesLimit(s.root, maxTreeOutputBytes, "ls-tree", "-r", "-l", "-z", "--full-tree", s.revision, "--", ":(literal)"+prefix)
+	out, err := gitRunBytesLimitContext(s.ctx, s.root, maxTreeOutputBytes, "ls-tree", "-r", "-l", "-z", "--full-tree", s.revision, "--", ":(literal)"+prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -442,7 +457,7 @@ func (s *GitTree) Read(path string, limit int64) ([]byte, FileMode, error) {
 		return data, mode, nil
 	}
 	s.mu.Unlock()
-	out, err := gitRunBytesLimit(s.root, int64(2*MaxPathBytes+256), "ls-tree", "-l", "-z", s.revision, "--", ":(literal)"+path)
+	out, err := gitRunBytesLimitContext(s.ctx, s.root, int64(2*MaxPathBytes+256), "ls-tree", "-l", "-z", s.revision, "--", ":(literal)"+path)
 	if err != nil {
 		return nil, ModeSpecial, err
 	}
@@ -485,7 +500,7 @@ func (s *GitTree) Read(path string, limit int64) ([]byte, FileMode, error) {
 	if mode != ModeRegular {
 		return nil, mode, fmt.Errorf("%w: committed path is not a regular blob", ErrUnsafePath)
 	}
-	data, err := gitRunBytesLimit(s.root, limit, "cat-file", "blob", object)
+	data, err := gitRunBytesLimitContext(s.ctx, s.root, limit, "cat-file", "blob", object)
 	if err != nil {
 		return nil, mode, err
 	}
@@ -504,7 +519,7 @@ func (s *GitTree) CheckRegular(path string, limit int64) error {
 	if err := ValidateRelativePath(path); err != nil || hasGitSegment(path) {
 		return ErrUnsafePath
 	}
-	out, err := gitRunBytesLimit(s.root, int64(2*MaxPathBytes+256), "ls-tree", "-l", "-z", s.revision, "--", ":(literal)"+path)
+	out, err := gitRunBytesLimitContext(s.ctx, s.root, int64(2*MaxPathBytes+256), "ls-tree", "-l", "-z", s.revision, "--", ":(literal)"+path)
 	if err != nil {
 		return err
 	}
@@ -555,13 +570,24 @@ func gitRun(root string, args ...string) (string, error) {
 	out, err := gitRunBytes(root, args...)
 	return string(out), err
 }
+func gitRunContext(ctx context.Context, root string, args ...string) (string, error) {
+	out, err := gitRunBytesLimitContext(ctx, root, 4096, args...)
+	return string(out), err
+}
 func gitRunBytes(root string, args ...string) ([]byte, error) {
 	return gitRunBytesLimit(root, 4096, args...)
 }
 
 func gitRunBytesLimit(root string, limit int64, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", root}, args...)...)
-	cmd.Env = append(os.Environ(), "GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0")
+	return gitRunBytesLimitContext(context.Background(), root, limit, args...)
+}
+
+func gitRunBytesLimitContext(ctx context.Context, root string, limit int64, args ...string) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-replace-objects", "-C", root}, args...)...)
+	cmd.Env = gitCommandEnvironment()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, errors.New("Git operation could not be started")
@@ -582,9 +608,31 @@ func gitRunBytesLimit(root string, limit int64, args ...string) ([]byte, error) 
 		return nil, ErrLimit
 	}
 	if err := cmd.Wait(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errors.New("Git operation failed")
 	}
 	return out, nil
+}
+
+func gitCommandEnvironment() []string {
+	environment := make([]string, 0, len(os.Environ())+7)
+	for _, entry := range os.Environ() {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS" || key == "DELPHI_GITHUB_READ_TOKEN" {
+			continue
+		}
+		environment = append(environment, entry)
+	}
+	return append(environment,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_OPTIONAL_LOCKS=0",
+		"GIT_TERMINAL_PROMPT=0",
+		"GIT_ATTR_NOSYSTEM=1",
+	)
 }
 
 func rejectSymlinkComponents(path string) error {

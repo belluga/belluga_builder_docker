@@ -50,6 +50,58 @@ func TestCutoverSnapshotServesPrototypeBesideAPIOnlyDocuments(t *testing.T) {
 	}
 }
 
+func TestLocalPreviewSeparatesFreshLegacyAndInvalidatedRepositorySources(t *testing.T) {
+	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
+	type bindingState struct {
+		RepositoryID                   string `json:"repository_id"`
+		PublicationBranch              string `json:"publication_branch"`
+		FoundationRoot                 string `json:"foundation_root,omitempty"`
+		LegacyFoundationSourceDisabled bool   `json:"legacy_foundation_source_disabled,omitempty"`
+	}
+	state := bindingState{RepositoryID: "belluga/fresh", PublicationBranch: "main"}
+	readerCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/catalog":
+			writeJSON(w, http.StatusOK, map[string]any{
+				"schema_version": "1",
+				"companies":      []any{map[string]string{"id": "company-a", "name": "Company A"}},
+				"projects": []any{map[string]any{
+					"id": "project-a", "name": "Project A", "company_id": "company-a", "binding": state,
+				}},
+			})
+		case "/internal/v1/projects/project-a":
+			readerCalls++
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"state":"unavailable","teach":"synthetic reader outage"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	preview := &registeredPreview{registryURL: upstream.URL, readerURL: upstream.URL, readerToken: strings.Repeat("t", 32), client: upstream.Client()}
+	read := func() *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		preview.apiHandler(response, httptest.NewRequest(http.MethodGet, "/api/local-preview?company_id=company-a&project_id=project-a", nil))
+		return response
+	}
+	response := read()
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "supported Project artifact reader is not activated") || readerCalls != 0 {
+		t.Fatalf("fresh path-free binding did not remain pending/API-only: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+	state.FoundationRoot = "foundation"
+	response = read()
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "Check the governed published Foundation branch") || strings.Contains(response.Body.String(), "disabled after a Project repository binding change") || readerCalls != 1 {
+		t.Fatalf("unchanged historical binding did not route through legacy reader: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+	state.LegacyFoundationSourceDisabled = true
+	response = read()
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "disabled after a Project repository binding change") || readerCalls != 1 {
+		t.Fatalf("invalidated legacy source did not fail closed without reader fallback: status=%d calls=%d body=%s", response.Code, readerCalls, response.Body.String())
+	}
+}
+
 func TestTodoSourceRequestRejectsDuplicateSelectorsAndInvalidMappings(t *testing.T) {
 	for _, raw := range []string{
 		"company_id=c&project_id=p&todo_id=one&todo_id=two&fingerprint=" + strings.Repeat("a", 64),
@@ -775,17 +827,16 @@ func TestRegisteredProjectDetailKeepsStaleExecutableBlockingAndPlanningDiagnosti
 	}
 }
 
-func TestRegisteredProjectDetailExposesAdmittedOverviewOnly(t *testing.T) {
+func TestRegisteredProjectDetailNeverExposesFoundationOverview(t *testing.T) {
 	data := []byte(`{"schema_version":"1","tagline":"Purpose","summary":"Summary","desktop_alt":"Desktop preview","mobile_alt":"Mobile preview","sections":{"problem":{"heading":"Problem","body":"Body","points":[]},"proposal":{"heading":"Proposal","body":"Body","points":[]},"impact":{"heading":"Impact","body":"Body","points":[]},"audience":{"heading":"Audience","body":"Body","points":[]}}}`)
 	snapshot := registeredSnapshot{ProjectID: "project-a", CompanyID: "company-a", Files: map[string][]byte{"project_overview.json": data, "project_overview/desktop.png": []byte("png"), "project_overview/mobile.png": []byte("png")}, Artifacts: []registeredArtifact{{ID: "overview", Kind: "overview", State: "available", Entry: "project_overview.json", Files: []string{"project_overview.json", "project_overview/desktop.png", "project_overview/mobile.png"}}}}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
-	overview, ok := detail["overview"].(overviewSource)
-	if !ok || overview.Summary != "Summary" || !strings.Contains(overview.Media["desktop"], "fingerprint-a") || !strings.Contains(overview.Media["mobile"], "fingerprint-a") {
-		t.Fatalf("Overview not bound to snapshot: %#v", detail["overview"])
+	if _, ok := detail["overview"]; ok {
+		t.Fatalf("Foundation Overview leaked into scoped Reader detail: %#v", detail["overview"])
 	}
 	delete(snapshot.Files, "project_overview/mobile.png")
 	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
-		t.Fatal("Overview without mobile hero image was exposed")
+		t.Fatal("Foundation Overview was exposed without mobile hero image")
 	}
 	snapshot.Artifacts[0].State = "invalid"
 	if _, ok := registeredProjectDetail(snapshot, "fingerprint-a")["overview"]; ok {
@@ -1619,9 +1670,8 @@ func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
 		},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint")
-	projected, ok := detail["overview"].(overviewSource)
-	if !ok || projected.Media["desktop"] == "" || projected.Media["mobile"] == "" {
-		t.Fatalf("v2 Overview image references were not projected: %#v", detail["overview"])
+	if _, ok := detail["overview"]; ok {
+		t.Fatalf("v2 Foundation Overview image references leaked into Reader detail: %#v", detail["overview"])
 	}
 	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1], parseTodoSourceMap(snapshot)) {
 		t.Fatal("v2 Prototype image reference was not admitted")

@@ -8,10 +8,15 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const maxRequestBody = maxSnapshotReferenceBytes
 const maxTODOImportRequestBytes = 4 << 20
+const maxDesignSystemMutationRequestBytes = 8 << 10
+const designSystemRecoveryTimeout = 15 * time.Second
+const designSystemReadTimeout = 15 * time.Second
+const overviewReadTimeout = 15 * time.Second
 
 type Handler struct{ service Service }
 
@@ -43,6 +48,10 @@ type selectedTODOLifecycle interface {
 	ReadTODO(context.Context, string, string, string, *int64) (TODOReadResponse, error)
 	TransitionTODO(context.Context, string, TODOActionRequest) (TODOActionResponse, error)
 	VerifyCurrentTODOStage(context.Context, string, VerifyCurrentTODOStageRequest) (TODOActionResponse, error)
+}
+
+type todoRemovalService interface {
+	RemoveTODO(context.Context, string, TODORemovalRequest) (TODORemovalResponse, error)
 }
 
 type todoHistoryService interface {
@@ -96,6 +105,28 @@ type canonicalIndexReader interface {
 	CanonicalIndex(context.Context, string, string, CanonicalIndexQuery) (CanonicalIndexPage, error)
 }
 
+type designSystemMutationService interface {
+	ReadDesignSystemState(context.Context, string, string) (DesignSystemState, error)
+	BeginDesignSystemMutation(context.Context, string, string, DesignSystemMutationIntent) (DesignSystemMutationIntent, error)
+	RecoverDesignSystemMutation(context.Context, string, string, string) (DesignSystemMutationResult, error)
+}
+
+type designSystemReadService interface {
+	ReadDesignSystem(context.Context, string, string, string) (DesignSystemReadResponse, error)
+	ReadDesignSystemAsset(context.Context, string, string, string, string) (designSystemAssetResponse, error)
+}
+
+type designSystemHistoryService interface {
+	ListDesignSystemHistory(context.Context, string, string, int) (DesignSystemHistoryResponse, error)
+	ReadDesignSystemAsOf(context.Context, string, string, string) (DesignSystemAsOfResponse, error)
+}
+
+type overviewService interface {
+	WriteOverview(context.Context, string, string, OverviewWriteRequest) (OverviewReadResponse, error)
+	ReadOverview(context.Context, string, string, int64) (OverviewReadResponse, error)
+	ReadOverviewMedia(context.Context, string, string, int64, string) ([]byte, string, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -119,6 +150,21 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}", h.project)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects", h.register)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state", h.readDesignSystemState)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.readOverview)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}", h.readOverview)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}/media/{slot}", h.readOverviewMedia)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.writeOverview)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history", h.listDesignSystemHistory)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history/{revision}", h.readDesignSystemAsOf)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/validate/{revision}", h.readDesignSystemAsOf)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system", h.readDesignSystem)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}", h.readDesignSystem)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}/assets/{path...}", h.readDesignSystemAsset)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations", h.beginDesignSystemMutation)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover", h.recoverDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/preference", h.preference)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/snapshot-reference", h.snapshotReference)
@@ -144,6 +190,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/historical-adoption", h.adoptHistoricalTODOStages)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", h.todoCreationTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}", h.readTODO)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove", h.removeTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition", h.transitionTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage", h.verifyCurrentTODOStage)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare", h.compareTODOHistory)
@@ -262,13 +309,244 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 	}
 }
 func (h *Handler) bindFirst(w http.ResponseWriter, r *http.Request) {
-	var input FirstBindingRequest
-	if !h.decode(w, r, &input) {
+	h.writeError(w, todoTeach("binding", "register Project identity without paths, then use PUT /binding with action=bind, expected_revision and actor", ErrInvalid))
+}
+func (h *Handler) readRepositoryBinding(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(repositoryBindingService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
 		return
 	}
-	value, err := h.service.BindFirst(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	value, err := service.ReadRepositoryBinding(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
 	h.respond(w, value, err)
 }
+func (h *Handler) changeRepositoryBinding(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(repositoryBindingService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input RepositoryBindingRequest
+	if !h.decodeLimit(w, r, &input, 4096) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) {
+		h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.ChangeRepositoryBinding(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+func (h *Handler) designSystemService(w http.ResponseWriter) (designSystemMutationService, bool) {
+	service, ok := h.service.(designSystemMutationService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+	}
+	return service, ok
+}
+func (h *Handler) readDesignSystemState(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemService(w)
+	if !ok {
+		return
+	}
+	value, err := service.ReadDesignSystemState(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
+	h.respond(w, value, err)
+}
+func (h *Handler) beginDesignSystemMutation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemService(w)
+	if !ok {
+		return
+	}
+	var input DesignSystemMutationIntent
+	if !h.decodeLimit(w, r, &input, maxDesignSystemMutationRequestBytes) {
+		return
+	}
+	value, err := service.BeginDesignSystemMutation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+func (h *Handler) recoverDesignSystemMutation(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemService(w)
+	if !ok {
+		return
+	}
+	if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		h.writeError(w, todoTeach("body", "omit the body; remote state is verified only by the Registry", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), designSystemRecoveryTimeout)
+	defer cancel()
+	value, err := service.RecoverDesignSystemMutation(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("operationID")))
+	h.respond(w, value, err)
+}
+func (h *Handler) readDesignSystem(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemReadService(w)
+	if !ok {
+		return
+	}
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; revision is selected by Registry state or the exact path SHA", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), designSystemReadTimeout)
+	defer cancel()
+	value, err := service.ReadDesignSystem(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("revision")))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) listDesignSystemHistory(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemHistoryService(w)
+	if !ok {
+		return
+	}
+	limit := 50
+	query := r.URL.Query()
+	if len(query) > 1 || len(query["limit"]) > 1 || len(query) == 1 && query.Get("limit") == "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		h.writeError(w, todoTeach("limit", "be one integer from 1 through 100; omit body and other query parameters", ErrInvalid))
+		return
+	}
+	if raw := query.Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > designSystemHistoryMaxPage {
+			h.writeError(w, todoTeach("limit", "be an integer from 1 through 100", ErrInvalid))
+			return
+		}
+		limit = parsed
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), designSystemReadTimeout)
+	defer cancel()
+	value, err := service.ListDesignSystemHistory(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), limit)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readDesignSystemAsOf(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemHistoryService(w)
+	if !ok {
+		return
+	}
+	if r.URL.RawQuery != "" || r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and body; provide the exact revision in the path", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), designSystemReadTimeout)
+	defer cancel()
+	value, err := service.ReadDesignSystemAsOf(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("revision")))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) designSystemHistoryService(w http.ResponseWriter) (designSystemHistoryService, bool) {
+	service, ok := h.service.(designSystemHistoryService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+	}
+	return service, ok
+}
+func (h *Handler) readDesignSystemAsset(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.designSystemReadService(w)
+	if !ok {
+		return
+	}
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; revision is the exact path SHA", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), designSystemReadTimeout)
+	defer cancel()
+	asset, err := service.ReadDesignSystemAsset(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("revision")), r.PathValue("path"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeDesignSystemAsset(w, r, asset)
+}
+func (h *Handler) designSystemReadService(w http.ResponseWriter) (designSystemReadService, bool) {
+	service, ok := h.service.(designSystemReadService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+	}
+	return service, ok
+}
+
+func (h *Handler) overviewReadService(w http.ResponseWriter) (overviewService, bool) {
+	service, ok := h.service.(overviewService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+	}
+	return service, ok
+}
+
+func (h *Handler) writeOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" {
+		h.writeError(w, todoTeach("request", "omit query parameters; Project and operation identity belong in the typed request", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	var input OverviewWriteRequest
+	if !h.decodeLimit(w, r, &input, maxOverviewWriteBytes) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	value, err := service.WriteOverview(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readOverview(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; use the revision path for exact reads", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	revision := int64(0)
+	if raw := r.PathValue("revision"); raw != "" {
+		parsed, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || parsed <= 0 {
+			h.writeError(w, todoTeach("revision", "use a positive exact Overview revision", ErrInvalid))
+			return
+		}
+		revision = parsed
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	value, err := service.ReadOverview(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), revision)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) readOverviewMedia(w http.ResponseWriter, r *http.Request) {
+	if r.URL.RawQuery != "" || r.ContentLength > 0 {
+		h.writeError(w, todoTeach("request", "omit query parameters and request body; revision and fixed media slot are in the path", ErrInvalid))
+		return
+	}
+	service, ok := h.overviewReadService(w)
+	if !ok {
+		return
+	}
+	revision, err := strconv.ParseInt(r.PathValue("revision"), 10, 64)
+	if err != nil || revision <= 0 {
+		h.writeError(w, todoTeach("revision", "use a positive exact Overview revision", ErrInvalid))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
+	defer cancel()
+	data, digest, err := service.ReadOverviewMedia(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), revision, r.PathValue("slot"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("ETag", `"`+digest+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
 func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Binding Binding `json:"binding"`
@@ -393,6 +671,24 @@ func (h *Handler) readTODO(w http.ResponseWriter, r *http.Request) {
 		expectedRevision = &revision
 	}
 	value, err := lifecycle.ReadTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("todoID")), expectedRevision)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) removeTODO(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRemovalService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODORemovalRequest
+	if !h.decode(w, r, &input) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.RemoveTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

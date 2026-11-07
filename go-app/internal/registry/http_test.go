@@ -20,6 +20,163 @@ type testCanonicalHistoryService struct {
 	calls  int
 }
 
+type testRepositoryBindingService struct {
+	*testService
+	request RepositoryBindingRequest
+}
+
+type testDesignSystemMutationService struct {
+	*testService
+	state            DesignSystemState
+	intent           DesignSystemMutationIntent
+	result           DesignSystemMutationResult
+	readCompany      string
+	readProject      string
+	beginCompany     string
+	beginProject     string
+	recoverCompany   string
+	recoverProject   string
+	recoverOperation string
+	recoverDeadline  bool
+	recoverCalls     int
+}
+
+type testDesignSystemReadService struct {
+	*testService
+	companyID  string
+	projectID  string
+	revision   string
+	assetPath  string
+	readCalls  int
+	assetCalls int
+	deadline   bool
+}
+
+func (s *testDesignSystemReadService) ReadDesignSystem(ctx context.Context, companyID, projectID, revision string) (DesignSystemReadResponse, error) {
+	s.readCalls++
+	_, s.deadline = ctx.Deadline()
+	s.companyID, s.projectID, s.revision = companyID, projectID, revision
+	return DesignSystemReadResponse{Selection: DesignSystemSelection{State: "selected", SHA: strings.Repeat("a", 40)}}, nil
+}
+func (s *testDesignSystemReadService) ReadDesignSystemAsset(_ context.Context, companyID, projectID, revision, assetPath string) (designSystemAssetResponse, error) {
+	s.assetCalls++
+	s.companyID, s.projectID, s.revision, s.assetPath = companyID, projectID, revision, assetPath
+	return designSystemAssetResponse{Data: []byte("fixture"), ContentType: "image/svg+xml", ETag: `"fixture-etag"`, Revision: revision, InventoryDigest: "sha256:" + strings.Repeat("b", 64)}, nil
+}
+
+func (s *testDesignSystemMutationService) ReadDesignSystemState(_ context.Context, companyID, projectID string) (DesignSystemState, error) {
+	s.readCompany, s.readProject = companyID, projectID
+	return s.state, nil
+}
+func (s *testDesignSystemMutationService) BeginDesignSystemMutation(_ context.Context, companyID, projectID string, intent DesignSystemMutationIntent) (DesignSystemMutationIntent, error) {
+	s.beginCompany, s.beginProject, s.intent = companyID, projectID, intent
+	return intent, nil
+}
+func (s *testDesignSystemMutationService) RecoverDesignSystemMutation(ctx context.Context, companyID, projectID, operationID string) (DesignSystemMutationResult, error) {
+	s.recoverCalls++
+	_, s.recoverDeadline = ctx.Deadline()
+	s.recoverCompany, s.recoverProject, s.recoverOperation = companyID, projectID, operationID
+	return s.result, nil
+}
+
+func (s *testRepositoryBindingService) ReadRepositoryBinding(context.Context, string, string) (RepositoryBinding, error) {
+	return RepositoryBinding{RepositoryID: "belluga/repo", PublicationBranch: "main", State: "configured", Revision: 2}, nil
+}
+func (s *testRepositoryBindingService) ChangeRepositoryBinding(_ context.Context, _, _ string, request RepositoryBindingRequest) (RepositoryBinding, error) {
+	s.request = request
+	return RepositoryBinding{State: "absent", Revision: request.ExpectedRevision + 1}, nil
+}
+
+func TestRepositoryBindingRoutesAreProjectScopedAndPathFree(t *testing.T) {
+	service := &testRepositoryBindingService{testService: &testService{}}
+	handler := NewHandler(service)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/binding", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"configured"`) || strings.Contains(response.Body.String(), "foundation_root") {
+		t.Fatalf("binding GET: %d %s", response.Code, response.Body)
+	}
+	body := `{"action":"unbind","project_id":"project-a","expected_revision":2,"operation_id":"unbind-2","actor":"owner"}`
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/internal/v1/companies/company-a/projects/project-a/binding", strings.NewReader(body)))
+	if response.Code != http.StatusOK || service.request.Actor != "owner" || service.request.ExpectedRevision != 2 || service.request.Action != "unbind" {
+		t.Fatalf("binding mutation: %d request=%+v body=%s", response.Code, service.request, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/internal/v1/companies/company-a/projects/project-a/binding", strings.NewReader(`{"action":"bind","project_id":"other-project"}`)))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("cross-Project request identity status=%d body=%s", response.Code, response.Body)
+	}
+}
+
+func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
+	intent := DesignSystemMutationIntent{Operation: "create", OperationID: "ds-op-1", Actor: "owner", PayloadDigest: "sha256:" + strings.Repeat("e", 64), ExpectedBindingRevision: 1, ExpectedHead: strings.Repeat("b", 40), CandidateTreeSHA: strings.Repeat("c", 40), PreparedCommitSHA: strings.Repeat("d", 40), InventoryDigest: "sha256:" + strings.Repeat("e", 64)}
+	service := &testDesignSystemMutationService{testService: &testService{}, intent: intent, state: DesignSystemState{
+		Selection:        DesignSystemSelection{State: "unselected", RepositoryID: "belluga/repo", PublicationBranch: "main", BindingRevision: 1},
+		PendingOperation: &intent,
+	}, result: DesignSystemMutationResult{OperationID: intent.OperationID, Outcome: "published", State: "selected", SelectedSHA: intent.PreparedCommitSHA, InventoryHash: intent.InventoryDigest}}
+	handler := NewHandler(service)
+	base := "/internal/v1/companies/company-a/projects/project-a/design-system"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+"/state", nil))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"repository_id":"belluga/repo"`) || !strings.Contains(response.Body.String(), `"pending_operation"`) || service.readCompany != "company-a" || service.readProject != "project-a" {
+		t.Fatalf("Design System state GET status=%d scope=%s/%s body=%s", response.Code, service.readCompany, service.readProject, response.Body)
+	}
+
+	body, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(string(body))))
+	if response.Code != http.StatusOK || service.beginCompany != "company-a" || service.beginProject != "project-a" || service.intent != intent {
+		t.Fatalf("Design System begin route status=%d scope=%s/%s intent=%+v body=%s", response.Code, service.beginCompany, service.beginProject, service.intent, response.Body)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", nil))
+	if response.Code != http.StatusOK || !service.recoverDeadline || service.recoverCalls != 1 || service.recoverCompany != "company-a" || service.recoverProject != "project-a" || service.recoverOperation != intent.OperationID || !strings.Contains(response.Body.String(), `"outcome":"published"`) {
+		t.Fatalf("Design System recover route status=%d service=%+v body=%s", response.Code, service, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", strings.NewReader(`{"remote_head":"`+strings.Repeat("f", 40)+`"}`)))
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"teach"`) || service.recoverCalls != 1 {
+		t.Fatalf("client proof was not rejected before recovery: status=%d calls=%d body=%s", response.Code, service.recoverCalls, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(`{"operation":"create","remote_head":"`+strings.Repeat("f", 40)+`"}`)))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("begin route accepted caller-supplied verification fields: %d %s", response.Code, response.Body)
+	}
+}
+
+func TestDesignSystemReadRoutesUseExactProjectRevisionAndDeclaredAssetPath(t *testing.T) {
+	service := &testDesignSystemReadService{testService: &testService{}}
+	handler := NewHandler(service)
+	base := "/internal/v1/companies/company-a/projects/project-a/design-system"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base, nil))
+	if response.Code != http.StatusOK || !service.deadline || service.readCalls != 1 || service.companyID != "company-a" || service.projectID != "project-a" || service.revision != "" {
+		t.Fatalf("effective Design System read status=%d service=%+v body=%s", response.Code, service, response.Body)
+	}
+	sha := strings.Repeat("a", 40)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+"/"+sha, nil))
+	if response.Code != http.StatusOK || service.revision != sha || service.readCalls != 2 {
+		t.Fatalf("exact Design System read status=%d service=%+v body=%s", response.Code, service, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+"/"+sha+"/assets/assets/logo.svg", nil))
+	if response.Code != http.StatusOK || response.Body.String() != "fixture" || response.Header().Get("ETag") != `"fixture-etag"` || response.Header().Get("X-Design-System-Revision") != sha || service.assetPath != "assets/logo.svg" || service.assetCalls != 1 {
+		t.Fatalf("exact Design System asset status=%d service=%+v headers=%v body=%s", response.Code, service, response.Header(), response.Body)
+	}
+	response = httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, base+"/"+sha+"?revision=other", nil)
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || service.readCalls != 2 {
+		t.Fatalf("Design System read accepted unscoped query: status=%d calls=%d body=%s", response.Code, service.readCalls, response.Body)
+	}
+}
+
 func (s *testCanonicalHistoryService) CanonicalHistory(_ context.Context, _, _, cursor string, limit int) (CanonicalHistoryPage, error) {
 	s.calls++
 	s.cursor, s.limit = cursor, limit
@@ -51,6 +208,16 @@ type testService struct {
 	registerCalls    int
 	lastRegistration Registration
 	lastTenant       TenantRequest
+}
+
+func TestLegacyBindingFirstRouteReturnsScopedTeach(t *testing.T) {
+	service := &testService{}
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/company-a/projects/project-a/binding/first", strings.NewReader(`{"binding":{}}`)))
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusBadRequest || !strings.Contains(body.Teach, "PUT /binding") {
+		t.Fatalf("retired binding/first response status=%d body=%s decode=%v", response.Code, response.Body, err)
+	}
 }
 
 func (s *testService) Catalog(context.Context) (Catalog, error) { return s.catalog, nil }

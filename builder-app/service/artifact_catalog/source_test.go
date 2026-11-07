@@ -1,6 +1,7 @@
 package artifact_catalog
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -8,6 +9,23 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestGitTreeContextCancellationStopsRevisionRead(t *testing.T) {
+	root := t.TempDir()
+	runGitFixture(t, root, "init", "-q")
+	runGitFixture(t, root, "config", "user.email", "fixture@example.invalid")
+	runGitFixture(t, root, "config", "user.name", "Fixture")
+	if err := os.WriteFile(filepath.Join(root, "README"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGitFixture(t, root, "add", "README")
+	runGitFixture(t, root, "commit", "-qm", "fixture")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := NewGitTreeContext(ctx, root, "HEAD"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled exact-revision read error = %v, want context.Canceled", err)
+	}
+}
 
 func TestGitTreeRejectsOversizedBlobBeforeRead(t *testing.T) {
 	root := t.TempDir()
@@ -221,6 +239,49 @@ func TestGitTreeRequiresRepositoryRootAndFullRevision(t *testing.T) {
 	}
 }
 
+func TestGitTreeIgnoresAmbientGitDirectoryAndConfig(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload.txt"), []byte("trusted tree"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitFixture(t, root, "init", "-q")
+	runGitFixture(t, root, "config", "user.email", "fixture@example.invalid")
+	runGitFixture(t, root, "config", "user.name", "Fixture")
+	runGitFixture(t, root, "add", "payload.txt")
+	runGitFixture(t, root, "commit", "-qm", "trusted")
+	revision := strings.TrimSpace(string(runGitOutput(t, root, "rev-parse", "HEAD")))
+
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "payload.txt"), []byte("untrusted tree"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGitFixture(t, other, "init", "-q")
+	runGitFixture(t, other, "config", "user.email", "fixture@example.invalid")
+	runGitFixture(t, other, "config", "user.name", "Fixture")
+	runGitFixture(t, other, "add", "payload.txt")
+	runGitFixture(t, other, "commit", "-qm", "untrusted")
+
+	globalConfig := filepath.Join(t.TempDir(), "hostile-gitconfig")
+	if err := os.WriteFile(globalConfig, []byte("[core]\n\tbare = true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_DIR", filepath.Join(other, ".git"))
+	t.Setenv("GIT_WORK_TREE", other)
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("GIT_CONFIG_COUNT", "1")
+	t.Setenv("GIT_CONFIG_KEY_0", "core.bare")
+	t.Setenv("GIT_CONFIG_VALUE_0", "true")
+
+	source, err := NewGitTree(root, revision)
+	if err != nil {
+		t.Fatalf("ambient Git configuration redirected exact source selection: %v", err)
+	}
+	contents, mode, err := source.Read("payload.txt", 64)
+	if err != nil || mode != ModeRegular || string(contents) != "trusted tree" {
+		t.Fatalf("ambient Git configuration changed the selected tree bytes: %q mode=%d err=%v", contents, mode, err)
+	}
+}
+
 func TestWorkingTreeFinalCheckDetectsInventoryAndReadChanges(t *testing.T) {
 	root := t.TempDir()
 	runGitFixture(t, root, "init", "-q")
@@ -303,4 +364,14 @@ func runGitFixture(t *testing.T, root string, args ...string) {
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("git fixture command %v failed: %v: %s", args, err, output)
 	}
+}
+
+func runGitOutput(t *testing.T, root string, args ...string) []byte {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", root}, args...)...)
+	output, err := command.Output()
+	if err != nil {
+		t.Fatalf("git fixture command %v failed: %v", args, err)
+	}
+	return output
 }

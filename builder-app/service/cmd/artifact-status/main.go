@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	ac "belluga-builder-viewer/internal/artifact_catalog"
+	ac "belluga-builder-viewer/artifact_catalog"
 )
 
 const snapshotRelativePath = "local-api/v1/projects/builder/artifact-status.json"

@@ -66,6 +66,9 @@ func (m *MongoStore) GrantTODOReviewWaiver(ctx context.Context, companyID string
 	if record.Revision != *request.ExpectedRevision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	var version TODOContentVersion
 	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&version); err != nil {
 		return TODOContentEditResponse{}, ErrUnavailable

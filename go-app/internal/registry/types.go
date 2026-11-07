@@ -16,16 +16,17 @@ var (
 )
 
 type Binding struct {
-	WorkspaceRoot           string `json:"workspace_root"`
-	ProjectRoot             string `json:"project_root"`
-	FoundationRoot          string `json:"foundation_root"`
-	RepositoryID            string `json:"repository_id,omitempty"`
-	DockerRepositoryID      string `json:"docker_repository_id,omitempty"`
-	PublicationBranch       string `json:"publication_branch,omitempty"`
-	SourceBindingsPath      string `json:"source_bindings_path,omitempty"`
-	SourceBindingsStatePath string `json:"source_bindings_state_path,omitempty"`
-	SourceBindingsDigest    string `json:"source_bindings_digest,omitempty"`
-	DefaultOwnerID          string `json:"default_owner_id,omitempty"`
+	WorkspaceRoot                  string `json:"workspace_root"`
+	ProjectRoot                    string `json:"project_root"`
+	FoundationRoot                 string `json:"foundation_root"`
+	RepositoryID                   string `json:"repository_id,omitempty"`
+	DockerRepositoryID             string `json:"docker_repository_id,omitempty"`
+	PublicationBranch              string `json:"publication_branch,omitempty"`
+	SourceBindingsPath             string `json:"source_bindings_path,omitempty"`
+	SourceBindingsStatePath        string `json:"source_bindings_state_path,omitempty"`
+	SourceBindingsDigest           string `json:"source_bindings_digest,omitempty"`
+	DefaultOwnerID                 string `json:"default_owner_id,omitempty"`
+	LegacyFoundationSourceDisabled bool   `json:"legacy_foundation_source_disabled,omitempty" bson:"legacy_foundation_source_disabled,omitempty"`
 }
 
 type Artifact struct {
@@ -97,8 +98,63 @@ type FirstBindingRequest struct {
 	Binding          Binding `json:"binding"`
 }
 
+// RepositoryBinding is the Project-facing Git capability configuration. The
+// legacy Binding remains private persistence data for consumers still reading
+// Foundation snapshots; its host paths are never returned by this API.
+type RepositoryBinding struct {
+	RepositoryID      string `json:"repository_id"`
+	PublicationBranch string `json:"publication_branch"`
+	State             string `json:"state"`
+	Revision          int64  `json:"binding_revision"`
+}
+
+type RepositoryBindingRequest struct {
+	Action           string `json:"action"`
+	ProjectID        string `json:"project_id"`
+	ExpectedRevision int64  `json:"expected_revision"`
+	OperationID      string `json:"operation_id"`
+	Actor            string `json:"actor"`
+	RepositoryID     string `json:"repository_id,omitempty"`
+	Branch           string `json:"publication_branch,omitempty"`
+}
+
+// DesignSystemMutationIntent is the durable Git/Mongo crash-recovery record.
+// It is persisted before the prepared commit is pushed and is not caller proof
+// that the remote contains that commit.
+type DesignSystemMutationIntent struct {
+	Operation               string `json:"operation" bson:"operation"`
+	OperationID             string `json:"operation_id" bson:"operation_id"`
+	Actor                   string `json:"actor" bson:"actor"`
+	PayloadDigest           string `json:"payload_digest" bson:"payload_digest"`
+	ExpectedBindingRevision int64  `json:"expected_binding_revision" bson:"expected_binding_revision"`
+	ExpectedSelectedSHA     string `json:"expected_selected_sha,omitempty" bson:"expected_selected_sha,omitempty"`
+	ExpectedInventoryDigest string `json:"expected_inventory_digest,omitempty" bson:"expected_inventory_digest,omitempty"`
+	ExpectedHead            string `json:"expected_head" bson:"expected_head"`
+	CandidateTreeSHA        string `json:"candidate_tree_sha" bson:"candidate_tree_sha"`
+	PreparedCommitSHA       string `json:"prepared_commit_sha" bson:"prepared_commit_sha"`
+	InventoryDigest         string `json:"inventory_digest" bson:"inventory_digest"`
+}
+
+type DesignSystemSelection struct {
+	State             string `json:"state"`
+	RepositoryID      string `json:"repository_id,omitempty"`
+	PublicationBranch string `json:"publication_branch,omitempty"`
+	SHA               string `json:"sha,omitempty"`
+	InventoryDigest   string `json:"inventory_digest,omitempty"`
+	BindingRevision   int64  `json:"binding_revision"`
+}
+
+// DesignSystemState is a read-only Project-scoped view of selected Git state
+// and the minimal durable operation required for crash recovery.
+type DesignSystemState struct {
+	Selection        DesignSystemSelection       `json:"selection"`
+	PendingOperation *DesignSystemMutationIntent `json:"pending_operation,omitempty"`
+	LastOperation    *DesignSystemMutationResult `json:"last_operation,omitempty"`
+}
+
 type SnapshotReference struct {
 	CompanyID           string `json:"company_id"`
+	BindingRevision     int64  `json:"binding_revision"`
 	BindingDigest       string `json:"binding_digest"`
 	ExpectedFingerprint string `json:"expected_fingerprint"`
 	Fingerprint         string `json:"fingerprint"`
@@ -133,4 +189,9 @@ type Service interface {
 	UpdateLifecycleControl(context.Context, int64, json.RawMessage) (LifecycleControl, error)
 	Roadmap(context.Context, string, string) (json.RawMessage, error)
 	ResolveTenant(context.Context, TenantRequest) (TenantResolution, error)
+}
+
+type repositoryBindingService interface {
+	ReadRepositoryBinding(context.Context, string, string) (RepositoryBinding, error)
+	ChangeRepositoryBinding(context.Context, string, string, RepositoryBindingRequest) (RepositoryBinding, error)
 }

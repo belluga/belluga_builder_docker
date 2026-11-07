@@ -193,6 +193,7 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 		required["scenario:"+scenario.ID] = false
 	}
 	verified := append([]TODOProofReference(nil), references...)
+	seenScenarioReference := make(map[string]bool)
 	for i := range verified {
 		ref := &verified[i]
 		if _, applies := required[ref.Kind]; !applies {
@@ -203,8 +204,12 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 		if ref.SourceDigest != contentDigest {
 			continue
 		}
-		if required[ref.Kind] {
-			return nil, todoTeach("proof_refs."+ref.Kind, "provide exactly one command reference for each criterion and validation scenario", ErrConflict)
+		scenario := strings.HasPrefix(ref.Kind, "scenario:")
+		if required[ref.Kind] && !scenario {
+			return nil, todoTeach("proof_refs."+ref.Kind, "provide exactly one command reference for each criterion", ErrConflict)
+		}
+		if scenario && seenScenarioReference[ref.Kind+"\x00"+ref.Reference] {
+			return nil, todoTeach("proof_refs."+ref.Kind, "do not repeat the same command reference for a validation scenario", ErrConflict)
 		}
 		if ref.Source != "paced-local-runner" || ref.Reference == "" ||
 			(ref.VerificationState != "unverified" && ref.VerificationState != "verified") {
@@ -218,7 +223,8 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 			return nil, todoTeach("proof_refs."+ref.Kind+".ref", "name a fixed matrix command that exited zero in this exact local result", ErrConflict)
 		}
 		required[ref.Kind] = true
-		if strings.HasPrefix(ref.Kind, "scenario:") {
+		if scenario {
+			seenScenarioReference[ref.Kind+"\x00"+ref.Reference] = true
 			scenarioCommands[ref.Reference] = true
 		}
 		ref.VerificationState = "verified"
