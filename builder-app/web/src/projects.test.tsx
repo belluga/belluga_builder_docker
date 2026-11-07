@@ -425,6 +425,7 @@ describe("single root Project experience", () => {
     const calls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) {
         calls.push(url);
         return { ok: false, json: async () => ({ teach: "TEACH: TODO revision is now 1; reload the Project Roadmap." }) };
@@ -488,6 +489,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog");
     const fetchSpy = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return Promise.resolve({ ok: true, json: async () => designSystemRead("belluga", "builder") });
       if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => detail("belluga", url.searchParams.get("project_id") || "builder").roadmap });
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
       if (url.pathname === "/api/local-preview") return Promise.resolve({ ok: true, json: async () => detail("belluga", "builder") });
@@ -661,7 +663,7 @@ describe("single root Project experience", () => {
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Builder genesis ledger");
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-02&release_id=r-01");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByRole("alert", {}, { timeout: 5000 })).toHaveTextContent("Release indisponível");
+    expect(await screen.findByText("Release indisponível", {}, { timeout: 5000 })).toBeInTheDocument();
   });
   it("keeps superseded history visible without counting it as delivered work", async () => {
     const saved = detail("belluga", "builder");
@@ -1000,6 +1002,7 @@ describe("single root Project experience", () => {
   it("keeps the Overview honest when its Roadmap catalog is absent", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap") return { ok: false, status: 503, json: async () => ({ error: "roadmap_api_unavailable" }) };
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
@@ -1066,6 +1069,11 @@ describe("single root Project experience", () => {
     const booraTheme = { tokens: theme.tokens.map((item) => item.id === "color-accent" ? { ...item, value: "#cc99ee" } : item) };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") {
+        const selected = designSystemRead("belluga", url.searchParams.get("project_id") || "builder");
+        selected.evaluation.items[0].tokens = booraTheme.tokens;
+        return { ok: true, json: async () => selected };
+      }
       if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": booraFingerprint }), json: async () => booraTheme };
       if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects: booraProjects }) };
       if (url.searchParams.get("project_id") === "builder") return lateBuilder;
@@ -1097,6 +1105,7 @@ describe("single root Project experience", () => {
     const registered = projects.map((item) => item.id === "boora" ? { ...item, snapshot_fingerprint: booraFingerprint } : item);
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", url.searchParams.get("project_id") || "builder") };
       if (url.pathname.startsWith("/snapshot/")) {
         const boora = url.pathname.includes("/boora/");
         return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": boora ? booraFingerprint : fingerprint }), json: async () => theme };
@@ -1122,7 +1131,7 @@ describe("single root Project experience", () => {
     expect(screen.queryByRole("heading", { name: "builder Screen / Default" })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Prototype inspector")).toHaveLength(1);
     expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
-    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(false);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(true);
   });
   it("restores the visual catalogue and opens the rendered presentation at the selected SHA", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
@@ -1148,6 +1157,66 @@ describe("single root Project experience", () => {
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
     expect(screen.getByRole("main")).not.toHaveAttribute("style");
+  });
+  it("uses the selected Design System for Project theming when raw snapshot reads fail", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id") || "", url.searchParams.get("project_id") || "") };
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
+      if (url.pathname.endsWith("/design/system/design-system.json")) return { ok: false, status: 404, headers: new Headers(), json: async () => ({ error: "snapshot_unavailable" }) };
+      return { ok: true, json: async () => theme };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Design System indisponível:/)).not.toBeInTheDocument());
+    expect(screen.getByRole("main")).toHaveStyle({ "--project-accent": "#32bbdd" });
+    expect(fetcher.mock.calls.some(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === "/api/design-system" && url.searchParams.get("company_id") === "belluga" && url.searchParams.get("project_id") === "builder";
+    })).toBe(true);
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/design/system/design-system.json"))).toBe(false);
+  });
+  it("uses a valid inherited Company Design System without a Project selection", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") {
+        const inherited = designSystemRead("belluga", "builder");
+        inherited.selection.state = "never_bound";
+        inherited.evaluation.selected_level = "company";
+        inherited.evaluation.items[0].owner = { level: "company", id: "belluga" };
+        return { ok: true, json: async () => inherited };
+      }
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
+      return { ok: true, json: async () => theme };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByText(/Design System indisponível:/)).not.toBeInTheDocument());
+    expect(screen.getByRole("main")).toHaveStyle({ "--project-accent": "#32bbdd" });
+  });
+  it("refuses a Design System response from a different selected revision", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") {
+        const selected = designSystemRead("belluga", "builder");
+        selected.selection.sha = "f".repeat(40);
+        return { ok: true, json: async () => selected };
+      }
+      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
+      return { ok: true, json: async () => theme };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
+    expect(await screen.findByText(/Design System indisponível:/)).toBeInTheDocument();
+    expect(screen.getByRole("main").style.getPropertyValue("--project-accent")).toBe("");
   });
   it("loads Design System independently for a source-unbound Project", async () => {
     const unbound = { id: "builder", name: "Builder", company_id: "belluga", source_bound: false, repository_bound: true };

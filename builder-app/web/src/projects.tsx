@@ -651,17 +651,20 @@ export function Projects() {
         let theme: ProjectTheme | undefined;
         let themeDiagnostic: string | undefined;
         if (detail.consumer_readiness === "ready") {
-          const design = detail.artifacts.find((item) => item.kind === "design_system" && item.state === "available" && item.files?.includes("design/system/design-system.json"));
-          if (!design || !detail.snapshot_fingerprint) themeDiagnostic = "The loaded Design System definition is unavailable.";
-          else {
-            try {
-              const definition = await fetch(snapshotFileURL(detail, "design/system/design-system.json"), { signal: controller.signal });
-              if (!definition.ok || definition.headers.get("X-Builder-Snapshot-Fingerprint") !== detail.snapshot_fingerprint) throw new Error("Design System snapshot mismatch");
-              const resolved = resolveProjectTheme(await definition.json());
-              theme = resolved.style; themeDiagnostic = resolved.diagnostic;
-            } catch {
-              themeDiagnostic = "The loaded Design System definition could not be read.";
-            }
+          try {
+            const query = new URLSearchParams({ company_id: detail.company_id, project_id: detail.project_id });
+            const response = await fetch(`/api/design-system?${query}`, { signal: controller.signal });
+            if (!response.ok) throw new Error("Design System selection unavailable");
+            const selected = await response.json() as {
+              selection?: { state?: string; sha?: string; inventory_digest?: string };
+              evaluation?: { company_id?: string; project_id?: string; mode?: string; outcome?: string; design_system_validation?: string; revision?: string; inventory_digest?: string; items?: unknown[] };
+            };
+            const evaluation = selected.evaluation;
+            if (!evaluation || evaluation.company_id !== detail.company_id || evaluation.project_id !== detail.project_id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System selection mismatch");
+            const resolved = resolveProjectTheme(evaluation.items[0]);
+            theme = resolved.style; themeDiagnostic = resolved.diagnostic;
+          } catch {
+            themeDiagnostic = "The selected Design System definition could not be read.";
           }
         }
         if (!controller.signal.aborted) { setView({ key: viewKey, detail, theme, themeDiagnostic }); setViewState("ready"); }
