@@ -24,6 +24,17 @@ type RoadmapEpic = { id: string; name: string; description: string; releases: Ro
 type BacklogFolder = { name: string; path: string; description?: string; todos: RoadmapTodo[]; folders: BacklogFolder[] };
 type RoadmapDiagnostic = { code: string; path?: string; message: string };
 type RoadmapProjection = { schema_version: string; project_id: string; focus_release_id: string; epics: RoadmapEpic[]; backlog: { todos: RoadmapTodo[]; folders: BacklogFolder[] }; unclassified: { path: string; reason: string }[]; diagnostics: RoadmapDiagnostic[] };
+
+function validRoadmapProjection(value: unknown, projectID: string): value is RoadmapProjection {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<RoadmapProjection>;
+  const validTODO = (todo: RoadmapTodo): boolean => Boolean(todo && typeof todo.id === "string" && typeof todo.title === "string" && (todo.kind === "executable" || todo.kind === "planning"));
+  const validFolder = (folder: BacklogFolder): boolean => Boolean(folder && typeof folder.name === "string" && Array.isArray(folder.todos) && folder.todos.every(validTODO) && Array.isArray(folder.folders) && folder.folders.every(validFolder));
+  return item.schema_version === "builder-roadmap-projection-v3" && item.project_id === projectID && typeof item.focus_release_id === "string"
+    && Array.isArray(item.epics) && item.epics.every((epic) => epic && typeof epic.id === "string" && typeof epic.name === "string" && Array.isArray(epic.releases) && epic.releases.every((release) => release && typeof release.id === "string" && typeof release.name === "string" && Array.isArray(release.todos) && release.todos.every(validTODO)))
+    && Boolean(item.backlog && Array.isArray(item.backlog.todos) && item.backlog.todos.every(validTODO) && Array.isArray(item.backlog.folders) && item.backlog.folders.every(validFolder))
+    && Array.isArray(item.unclassified) && Array.isArray(item.diagnostics);
+}
 type MongoTODOContentItem = { id: string; text: string };
 type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included: string[]; excluded: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
 type ReleaseStatus = "delivered" | "blocked" | "in-progress" | "planned" | "unknown";
@@ -613,8 +624,8 @@ export function Projects() {
     setRoadmapRead({ key, state: "loading" });
     const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
     fetch(`/api/roadmap?${query}`, { signal: controller.signal }).then(async (response) => {
-      const value = await response.json() as RoadmapProjection;
-      if (!response.ok || value.project_id !== project.id || value.schema_version !== "builder-roadmap-projection-v3") throw new Error("Roadmap unavailable");
+      const value = await response.json() as unknown;
+      if (!response.ok || !validRoadmapProjection(value, project.id)) throw new Error("Roadmap unavailable");
       return value;
     }).then((value) => { if (!controller.signal.aborted) setRoadmapRead({ key, state: "ready", value }); })
       .catch(() => { if (!controller.signal.aborted) setRoadmapRead({ key, state: "error" }); });

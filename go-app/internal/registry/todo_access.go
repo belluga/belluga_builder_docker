@@ -21,18 +21,19 @@ import (
 var todoOperationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 func validTODOOperationKind(value string) bool {
-	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "next-step-edit" || value == "historical-adoption" || value == "content-migration" || value == "grant-todo-review-waiver"
+	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "next-step-edit" || value == "historical-adoption" || value == "content-migration" || value == "grant-todo-review-waiver" || value == "remove-todo"
 }
 
 type TODOReadResponse struct {
-	CompanyID           string            `json:"company_id"`
-	ProjectID           string            `json:"project_id"`
-	SnapshotFingerprint string            `json:"snapshot_fingerprint"`
-	TODO                TODORecord        `json:"todo"`
-	TODORevision        int64             `json:"todo_revision"`
-	ContentRevision     *int64            `json:"content_revision,omitempty"`
-	ContentDigest       string            `json:"content_digest,omitempty"`
-	AuditFloors         map[string]string `json:"audit_floors,omitempty"`
+	CompanyID           string              `json:"company_id"`
+	ProjectID           string              `json:"project_id"`
+	SnapshotFingerprint string              `json:"snapshot_fingerprint"`
+	TODO                TODORecord          `json:"todo"`
+	Removal             *TODORemovalDetails `json:"removal,omitempty"`
+	TODORevision        int64               `json:"todo_revision"`
+	ContentRevision     *int64              `json:"content_revision,omitempty"`
+	ContentDigest       string              `json:"content_digest,omitempty"`
+	AuditFloors         map[string]string   `json:"audit_floors,omitempty"`
 }
 
 type TODOActionRequest struct {
@@ -89,6 +90,13 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		return TODOReadResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
 	response := TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: project.SnapshotFingerprint, TODO: record, TODORevision: record.Revision}
+	if record.Removed {
+		var event TODOHistoryEvent
+		if err := collection.Database().Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "kind", Value: "todo-removed"}}).Decode(&event); err != nil || event.ActorClaim == nil || event.Changes.Removed == nil || !*event.Changes.Removed {
+			return TODOReadResponse{}, todoTeach("removal", "resolve to the immutable removal event for this stable TODO ID", ErrConflict)
+		}
+		response.Removal = &TODORemovalDetails{Reason: event.Reason, OccurredAt: event.OccurredAt, ActorClaim: *event.ActorClaim, PermissionDecision: event.PermissionDecision}
+	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
 		return TODOReadResponse{}, err
@@ -170,6 +178,9 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	}
 	if record.Revision != *request.ExpectedRevision {
 		return TODOActionResponse{}, &todoRevisionConflict{Revision: record.Revision}
+	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOActionResponse{}, err
 	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
@@ -758,6 +769,9 @@ func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID strin
 	if record.Revision != *request.ExpectedRevision {
 		return TODOActionResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOActionResponse{}, err
+	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
 		return TODOActionResponse{}, err
@@ -1108,7 +1122,7 @@ func validProofReference(proof TODOProofReference) bool {
 
 func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collection, projectID string, releases []roadmapRelease) ([]roadmapTODOView, error) {
 	pipeline := mongo.Pipeline{
-		bson.D{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}}}},
+		bson.D{{Key: "$match", Value: bson.D{{Key: "project_id", Value: projectID}, {Key: "removed", Value: bson.D{{Key: "$ne", Value: true}}}}}},
 		bson.D{{Key: "$sort", Value: bson.D{{Key: "position", Value: 1}, {Key: "id", Value: 1}}}},
 		bson.D{{Key: "$lookup", Value: bson.D{
 			{Key: "from", Value: todoContentVersionsCollection},
@@ -1177,6 +1191,9 @@ func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collect
 }
 
 func (m *MongoStore) exactTODORelease(ctx context.Context, companyID string, project Project, todo TODORecord) error {
+	if todo.Removed {
+		return nil
+	}
 	if todo.Source.Kind == "mongo-content-revision" && todo.ReleaseID == "" && todo.Position == nil {
 		company, err := m.company(ctx, companyID)
 		if err != nil {

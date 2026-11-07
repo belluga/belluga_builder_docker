@@ -47,6 +47,7 @@ func TestValidateGenericTODOAdmission(t *testing.T) {
 		"unstable identity":         func(record *TODORecord) { record.ID = "Not a stable ID" },
 		"invalid source path":       func(record *TODORecord) { record.Source.Path = "../outside.md" },
 		"caller supplied revision":  func(record *TODORecord) { record.Revision = 1 },
+		"caller supplied tombstone": func(record *TODORecord) { record.Removed = true },
 		"caller asserted proof":     func(record *TODORecord) { record.StageVerification = "verified" },
 		"ambiguous section order":   func(record *TODORecord) { record.Sections[0].Position = 1 },
 		"missing section ownership": func(record *TODORecord) { record.Sections[0].Ownership = "" },

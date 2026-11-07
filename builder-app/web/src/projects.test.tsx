@@ -130,6 +130,39 @@ describe("single root Project experience", () => {
     expect(screen.queryByRole("button", { name: /Project UI and real Roadmap/ })).not.toBeInTheDocument();
   });
 
+  it("rejects an invalid successful Roadmap response without rendering Foundation data", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, status: 200, json: async () => ({ schema_version: "builder-roadmap-projection-v3", project_id: "builder", epics: null, backlog: null }) };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: true, json: async () => detail("belluga", "builder") };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText(/TEACH: Mongo Roadmap indisponível/)).toHaveAttribute("role", "alert");
+    expect(screen.queryByRole("button", { name: /Project UI and real Roadmap/ })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+
+  it.each(["release", "backlog"])("rejects an invalid nested %s TODO without a crash or Foundation fallback", async (placement) => {
+    const invalid = roadmap("builder");
+    if (placement === "release") invalid.epics[0].releases[0].todos = [null] as never;
+    else invalid.backlog.todos = [null] as never;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => invalid };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) return { ok: true, json: async () => detail("belluga", "builder") };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText(/TEACH: Mongo Roadmap indisponível/)).toHaveAttribute("role", "alert");
+    expect(screen.queryByRole("button", { name: /Project UI and real Roadmap/ })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
+  });
+
   it("reads a Planning Backlog TODO from its exact Mongo revision without approval or Reader", async () => {
     const registryRoadmap = roadmap("builder");
     registryRoadmap.backlog.todos.push({ id: "schema-study", title: "Schema study", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Inspect schema", objective_state: "complete", next_step: "Review fields", next_step_state: "complete", ...verifiedStage("Planning") } as typeof registryRoadmap.backlog.todos[number]);

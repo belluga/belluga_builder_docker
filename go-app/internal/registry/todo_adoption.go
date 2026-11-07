@@ -145,6 +145,9 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 			if record.Revision != item.ExpectedRevision {
 				return HistoricalTODOAdoptionResponse{}, &todoRevisionConflict{Revision: record.Revision}
 			}
+			if err := requireActiveTODO(record); err != nil {
+				return HistoricalTODOAdoptionResponse{}, err
+			}
 			contentRevision, contentDigest, contentRef, authorityErr := requireCurrentTypedTODOStageAuthority(ctx, database, record)
 			if authorityErr != nil {
 				return HistoricalTODOAdoptionResponse{}, authorityErr

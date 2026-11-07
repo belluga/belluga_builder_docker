@@ -155,6 +155,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 
 func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeRemoval(),
 		TODOCollectionValidatorBeforeEvidenceCapacity(),
 		TODOCollectionValidatorBeforeMVPParentUpgrade(),
 		TODOCollectionValidatorBeforeRepositoryIdentity(), TODOCollectionValidatorBeforeReviewWaiver(), TODOCollectionValidatorBeforeNextStepEdit(), priorTODOCollectionValidator(),
@@ -177,7 +178,7 @@ func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 // Earlier validator fixtures must retain that bound even after the current
 // collection increases its bounded evidence capacity.
 func TODOCollectionValidatorBeforeEvidenceCapacity() bson.D {
-	return todoValidatorWithEvidenceCapacity(TODOCollectionValidator(), 64)
+	return todoValidatorWithEvidenceCapacity(TODOCollectionValidatorBeforeRemoval(), 64)
 }
 
 func todoValidatorWithEvidenceCapacity(validator bson.D, limit int) bson.D {
@@ -194,6 +195,7 @@ func todoValidatorWithEvidenceCapacity(validator bson.D, limit int) bson.D {
 func TODOCollectionValidatorBeforeMVPParentUpgrade() bson.D {
 	// MVP parent merge 03ba3dc carried the original seven operation kinds.
 	validator := todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
 	return todoCollectionValidatorWithoutReviewOutcome(validator)
 }

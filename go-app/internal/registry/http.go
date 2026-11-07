@@ -49,6 +49,10 @@ type selectedTODOLifecycle interface {
 	VerifyCurrentTODOStage(context.Context, string, VerifyCurrentTODOStageRequest) (TODOActionResponse, error)
 }
 
+type todoRemovalService interface {
+	RemoveTODO(context.Context, string, TODORemovalRequest) (TODORemovalResponse, error)
+}
+
 type todoHistoryService interface {
 	ReadTODOHistory(context.Context, string, string, string, int64, int) (TODOHistoryPage, error)
 	ReadTODOAsOf(context.Context, string, string, string, int64) (TODOAsOfResponse, error)
@@ -175,6 +179,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/historical-adoption", h.adoptHistoricalTODOStages)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", h.todoCreationTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}", h.readTODO)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove", h.removeTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition", h.transitionTODO)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage", h.verifyCurrentTODOStage)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare", h.compareTODOHistory)
@@ -573,6 +578,24 @@ func (h *Handler) readTODO(w http.ResponseWriter, r *http.Request) {
 		expectedRevision = &revision
 	}
 	value, err := lifecycle.ReadTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("todoID")), expectedRevision)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) removeTODO(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(todoRemovalService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input TODORemovalRequest
+	if !h.decode(w, r, &input) {
+		return
+	}
+	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
+		h.writeError(w, todoTeach("project_id/todo_id", "match the exact Project and TODO path identity", ErrConflict))
+		return
+	}
+	value, err := service.RemoveTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
 	h.respond(w, value, err)
 }
 

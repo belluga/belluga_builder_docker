@@ -158,6 +158,7 @@ type TODORecord struct {
 	NextExactStep         string                `json:"next_exact_step" bson:"next_exact_step"`
 	ArtifactType          string                `json:"artifact_type" bson:"artifact_type"`
 	Stage                 string                `json:"stage" bson:"stage"`
+	Removed               bool                  `json:"removed,omitempty" bson:"removed,omitempty"`
 	Qualifiers            []string              `json:"qualifiers" bson:"qualifiers"`
 	WorkState             string                `json:"work_state,omitempty" bson:"work_state,omitempty"`
 	Sections              []TODOSection         `json:"sections" bson:"sections"`
@@ -266,7 +267,7 @@ func validateTODORecord(record TODORecord, source selectedTODOSourceContract) er
 		}
 		seenQualifiers[qualifier] = true
 	}
-	if record.Source.Foundation != source.Foundation || record.Source.Revision != source.FoundationSHA || record.Source.Path != source.Path || record.Source.Digest != source.SourceDigest || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || !record.ObjectID.IsZero() {
+	if record.Source.Foundation != source.Foundation || record.Source.Revision != source.FoundationSHA || record.Source.Path != source.Path || record.Source.Digest != source.SourceDigest || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil || record.Removed || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || !record.ObjectID.IsZero() {
 		return todoTeach("todos["+record.ID+"].source", "match Foundation "+source.Foundation+" revision "+source.FoundationSHA+", path "+source.Path+", and digest "+source.SourceDigest, ErrConflict)
 	}
 	if len(record.Sections) > maxTODOSections || len(record.ProofReferences)+len(record.WaiverReferences)+len(record.ImplementationCommits) > maxTODOProofs {
@@ -358,19 +359,33 @@ func TODOCollectionValidator() bson.D {
 	return todoCollectionValidator(true, true, true)
 }
 
+func TODOCollectionValidatorBeforeRemoval() bson.D {
+	validator := TODOCollectionValidator()
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
+	return replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", "last_operation", "properties", "kind", "enum"}, bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver"})
+}
+
 func TODOCollectionValidatorBeforeCreation() bson.D {
-	return todoCollectionValidatorWithCreation(true, true, true, false)
+	return todoValidatorBeforeRemoval(todoCollectionValidatorWithCreation(true, true, true, false), true)
 }
 
 func priorTODOCollectionValidator() bson.D {
-	return todoCollectionValidator(false, false, false)
+	return todoValidatorBeforeRemoval(todoCollectionValidator(false, false, false), false)
 }
 
 func TODOCollectionValidatorBeforeRecordEvents() bson.D {
-	return todoCollectionValidator(true, false, true)
+	return todoValidatorBeforeRemoval(todoCollectionValidator(true, false, true), false)
 }
 func TODOCollectionValidatorBeforeOwnership() bson.D {
-	return todoCollectionValidator(true, false, false)
+	return todoValidatorBeforeRemoval(todoCollectionValidator(true, false, false), false)
+}
+
+func todoValidatorBeforeRemoval(validator bson.D, allowRecordEvents bool) bson.D {
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
+	if !allowRecordEvents {
+		return validator
+	}
+	return replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", "last_operation", "properties", "kind", "enum"}, bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver"})
 }
 
 func todoCollectionValidator(allowContentEdit, allowRecordEvents, allowOwnership bool) bson.D {
@@ -389,6 +404,7 @@ func todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, al
 		{Key: "next_exact_step", Value: nonemptyStringSchema()},
 		{Key: "artifact_type", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"tactical_execution_contract"}}}},
 		{Key: "stage", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOStages)}}},
+		{Key: "removed", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 		{Key: "qualifiers", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "uniqueItems", Value: true}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOQualifiers)}}}}},
 		{Key: "work_state", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 		{Key: "sections", Value: sectionsSchema(allowOwnership)},
@@ -435,7 +451,7 @@ func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
 		kinds = append(kinds, "content-edit")
 	}
 	if allowRecordEvents {
-		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver")
+		kinds = append(kinds, "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver", "remove-todo")
 	}
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"id", "kind", "request_digest", "result_revision"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "id", Value: nonemptyStringSchema()}, {Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: kinds}}},
@@ -524,7 +540,7 @@ func todoCollectionValidatorWithoutReviewOutcome(validator bson.D) bson.D {
 }
 
 func TODOCollectionValidatorBeforeReviewOutcome() bson.D {
-	return todoCollectionValidatorWithoutReviewOutcome(TODOCollectionValidator())
+	return todoCollectionValidatorWithoutReviewOutcome(TODOCollectionValidatorBeforeRemoval())
 }
 
 func diffArraySchema() bson.D {

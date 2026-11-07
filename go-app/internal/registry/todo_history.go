@@ -90,6 +90,7 @@ type TODOContentVersion struct {
 }
 
 type TODOHistoryChanges struct {
+	Removed                    *bool                  `json:"removed,omitempty" bson:"removed,omitempty"`
 	Stage                      *string                `json:"stage,omitempty" bson:"stage,omitempty"`
 	Qualifiers                 *[]string              `json:"qualifiers,omitempty" bson:"qualifiers,omitempty"`
 	WorkState                  *string                `json:"work_state,omitempty" bson:"work_state,omitempty"`
@@ -141,6 +142,7 @@ type TODOHistoryPage struct {
 }
 
 type TODOAsOfState struct {
+	Removed               bool                  `json:"removed,omitempty"`
 	Stage                 string                `json:"stage"`
 	Qualifiers            []string              `json:"qualifiers"`
 	WorkState             string                `json:"work_state"`
@@ -567,19 +569,27 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		return todoTeach(name+".validator", "match the strict/error closed history schema", ErrConflict)
 	}
 	if !bsonValidatorEqual(actualValidator.Document(), validator) {
+		beforeRemoval := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeRemoval())
 		prior := historyValidatorBeforeOwnership(validator)
 		priorV2 := historyValidatorBeforeSchemaV2(validator)
+		preRemovalEvents := TODOEventsValidatorBeforeRemoval()
+		matchesPredecessor := func(current, preRemoval bson.D) bool {
+			return bsonValidatorEqual(actualValidator.Document(), current) ||
+				(name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), preRemoval))
+		}
+		priorMatch := matchesPredecessor(prior, historyValidatorBeforeOwnership(preRemovalEvents))
+		priorV2Match := matchesPredecessor(priorV2, historyValidatorBeforeSchemaV2(preRemovalEvents))
 		beforeRepositoryIdentity := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforePlanningAndRepositoryIdentity())
 		beforeAuditTriggers := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeAuditTriggers())
 		beforeDigest := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentDigest(validator))
-		beforePlacement := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeClearPlacement(validator))
-		beforeAdoption := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeHistoricalAdoption(validator))
-		beforeContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(validator))
-		beforeReviewOutcome := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewOutcome(validator))
-		beforeReviewWaiver := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewWaiver(validator))
-		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)))
-		beforeAdoptionAndContentMigration := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)))
-		if !bsonValidatorEqual(actualValidator.Document(), prior) && !bsonValidatorEqual(actualValidator.Document(), priorV2) && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
+		beforePlacement := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeClearPlacement(validator), historyValidatorBeforeClearPlacement(preRemovalEvents))
+		beforeAdoption := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeHistoricalAdoption(validator), historyValidatorBeforeHistoricalAdoption(preRemovalEvents))
+		beforeContentMigration := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeContentMigration(validator), historyValidatorBeforeContentMigration(preRemovalEvents))
+		beforeReviewOutcome := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewOutcome(validator), historyValidatorBeforeReviewOutcome(preRemovalEvents))
+		beforeReviewWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewWaiver(validator), historyValidatorBeforeReviewWaiver(preRemovalEvents))
+		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(preRemovalEvents)))
+		beforeAdoptionAndContentMigration := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(preRemovalEvents)))
+		if !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
 		if !beforeDigest && !beforePlacement {
@@ -777,11 +787,14 @@ func scanLegacyHistoryOwnership(ctx context.Context, database *mongo.Database, n
 			}
 		} else {
 			var event TODOHistoryEvent
-			if cursor.Decode(&event) != nil || event.ObjectID.IsZero() || !validID(event.ProjectID) || !validID(event.TODOID) || event.Revision < 0 || !containsTODOString([]string{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"}, event.Kind) || !todoOperationIDPattern.MatchString(event.OperationID) || !validSourceDigest(event.RequestDigest) {
+			if cursor.Decode(&event) != nil || event.ObjectID.IsZero() || !validID(event.ProjectID) || !validID(event.TODOID) || event.Revision < 0 || !containsTODOString([]string{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted", "todo-removed"}, event.Kind) || !todoOperationIDPattern.MatchString(event.OperationID) || !validSourceDigest(event.RequestDigest) {
 				return todoTeach(name+".existing_records", "pass the typed immutable event contract before additive ownership validator upgrade", ErrConflict)
 			}
 			if (event.Kind == "historical-adoption" || event.Kind == "review-waiver-granted") && (event.PermissionDecision != "pre-iam-private-api-allow-all" || event.ActorClaim != nil) {
 				return todoTeach(name+".existing_records", "record the explicit pre-IAM permission decision without inventing an authenticated actor", ErrConflict)
+			}
+			if event.Kind == "todo-removed" && (event.PermissionDecision != "pre-iam-private-api-allow-all" || event.ActorClaim == nil || event.ActorClaim.VerificationStatus != "unverified" || event.Changes.Removed == nil || !*event.Changes.Removed || !validSummaryField(event.Reason, 512)) {
+				return todoTeach(name+".existing_records", "retain a truthful permission decision, claimed actor, reason and removed state", ErrConflict)
 			}
 			for _, section := range derefSections(event.Changes.RecordSections) {
 				if section.Ownership != "" && section.Ownership != "record" {
@@ -1145,6 +1158,9 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if !errors.Is(findErr, mongo.ErrNoDocuments) {
 		return TODOContentEditResponse{}, ErrUnavailable
 	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	if request.ExpectedRevision == nil || *request.ExpectedRevision != record.Revision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
@@ -1456,6 +1472,9 @@ func (m *MongoStore) contentAtRevision(ctx context.Context, database *mongo.Data
 }
 
 func applyTODOHistoryChanges(state *TODOAsOfState, changes TODOHistoryChanges) {
+	if changes.Removed != nil {
+		state.Removed = *changes.Removed
+	}
 	if changes.Stage != nil {
 		state.Stage = *changes.Stage
 	}
@@ -1774,7 +1793,7 @@ func TODOEventsValidator() bson.D {
 			{Key: "project_id", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 			{Key: "todo_id", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 			{Key: "revision", Value: bson.D{{Key: "bsonType", Value: "long"}, {Key: "minimum", Value: 0}}},
-			{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"}}}},
+			{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted", "todo-removed"}}}},
 			{Key: "occurred_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
 			{Key: "operation_id", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "minLength", Value: 1}, {Key: "maxLength", Value: 128}}},
 			{Key: "request_digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}},
@@ -1790,6 +1809,12 @@ func TODOEventsValidator() bson.D {
 			{Key: "proof_reference", Value: TODOProofReferenceValidator()},
 		}},
 	}}}
+}
+
+func TODOEventsValidatorBeforeRemoval() bson.D {
+	validator := TODOEventsValidator()
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties", "changes", "properties"}, "removed")
+	return replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", "kind", "enum"}, bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"})
 }
 
 func historyStringArraySchema() bson.D {
@@ -1917,6 +1942,7 @@ func TODOActorClaimValidator() bson.D {
 
 func TODOHistoryChangesValidator() bson.D {
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
+		{Key: "removed", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 		{Key: "stage", Value: bson.D{{Key: "enum", Value: bson.A{"Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"}}}},
 		{Key: "qualifiers", Value: historyStringArraySchema()}, {Key: "work_state", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "next_exact_step", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 		{Key: "stage_verification", Value: bson.D{{Key: "enum", Value: bson.A{"unverified", "verified"}}}}, {Key: "proof_refs", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: TODOProofReferenceValidator()}}},

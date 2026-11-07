@@ -75,6 +75,9 @@ func (m *MongoStore) MigrateTODOContent(ctx context.Context, companyID string, r
 	if record.Revision != *request.ExpectedRevision {
 		return TODOContentEditResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
+	if err := requireActiveTODO(record); err != nil {
+		return TODOContentEditResponse{}, err
+	}
 	if err := m.exactTODORelease(ctx, companyID, projectID, record); err != nil {
 		return TODOContentEditResponse{}, err
 	}

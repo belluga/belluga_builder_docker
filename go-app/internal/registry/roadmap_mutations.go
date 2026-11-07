@@ -197,7 +197,7 @@ func changeRoadmapCollections(ctx context.Context, db *mongo.Database, projectID
 		}
 		return updateRoadmapFields(ctx, releases, identity(req.ID), fields, "release_id")
 	case "delete-release":
-		if count, err := todos.CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "release_id", Value: req.ID}}); err != nil {
+		if count, err := todos.CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "release_id", Value: req.ID}, {Key: "removed", Value: bson.D{{Key: "$ne", Value: true}}}}); err != nil {
 			return ErrUnavailable
 		} else if count != 0 {
 			return todoTeach("release_id", "detach or move member TODOs before deleting a Release", ErrConflict)
