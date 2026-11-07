@@ -1487,36 +1487,6 @@
   display: grid;
   gap: 24px;
 }
-.design-system-viewer > section {
-  padding: 20px;
-  border: 1px solid var(--project-border, #d7dde4);
-  border-radius: 12px;
-  background: var(--project-surface, #fff);
-}
-.design-system-viewer h2,
-.design-system-viewer h3 {
-  margin-top: 0;
-}
-.design-system-viewer ul {
-  display: grid;
-  gap: 10px;
-  padding-left: 20px;
-}
-.design-system-token-list {
-  padding-left: 0 !important;
-  list-style: none;
-}
-.design-system-token-list li {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.design-system-token-swatch {
-  width: 24px;
-  height: 24px;
-  border: 1px solid var(--project-border, #d7dde4);
-  border-radius: 5px;
-}
 .design-system-viewer a {
   color: var(--project-accent, #2457d6);
 }

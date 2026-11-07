@@ -234,7 +234,7 @@ func designSystemSelectionMatchesBinding(selection DesignSystemSelection, bindin
 
 func (m *MongoStore) ReadDesignSystemAsset(ctx context.Context, companyID, projectID, requestedSHA, assetPath string) (designSystemAssetResponse, error) {
 	if ac.ValidateRelativePath(assetPath) != nil || len([]byte(assetPath)) > ac.MaxPathBytes {
-		return designSystemAssetResponse{}, todoTeach("asset_path", "use a safe relative path declared in the selected Design System", ErrInvalid)
+		return designSystemAssetResponse{}, todoTeach("asset_path", "use a safe relative path declared by the selected Design System", ErrInvalid)
 	}
 	resolved, err := m.resolveDesignSystemSource(ctx, companyID, projectID, requestedSHA)
 	if err != nil {
@@ -293,16 +293,8 @@ func (m *MongoStore) readResolvedDesignSystem(ctx context.Context, projectID, co
 		return ac.DesignSystemResponse{}, nil, todoTeach("design_system_source", "the exact selected Design System revision is unavailable or fails shared structural validation", ErrUnavailable)
 	}
 	if assetPath != "" {
-		listed := false
-		for _, item := range evaluation.Items {
-			for _, asset := range item.Assets {
-				if asset == assetPath {
-					listed = true
-				}
-			}
-		}
-		if !listed {
-			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only an asset registered by the selected Design System", ErrNotFound)
+		if !designSystemAssetRegistered(evaluation, assetPath) {
+			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only a file registered by the selected Design System", ErrNotFound)
 		}
 	}
 	return evaluation, asset, nil

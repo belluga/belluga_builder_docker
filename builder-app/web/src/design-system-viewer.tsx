@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { resolveProjectTheme } from "./project-theme";
 
 type DesignToken = { id: string; type: string; value?: unknown; ref?: string };
 type DesignComponent = { id: string; name: string; documentation?: string; token_ids: string[]; states: string[]; variants: { id: string; name: string; token_ids: string[] }[]; examples: string[] };
@@ -18,17 +19,6 @@ async function responseTeach(response: Response): Promise<string | undefined> {
   } catch {
     return undefined;
   }
-}
-
-function assetURL(companyID: string, projectID: string, revision: string, asset: string) {
-  const query = new URLSearchParams({ company_id: companyID, project_id: projectID, revision, path: asset });
-  return `/api/design-system/assets?${query}`;
-}
-
-function displayValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return value === undefined ? "—" : JSON.stringify(value);
 }
 
 export function DesignSystemViewer({ companyID, projectID }: { companyID: string; projectID: string }) {
@@ -61,10 +51,18 @@ export function DesignSystemViewer({ companyID, projectID }: { companyID: string
   const { evaluation } = current.value;
   const definition = evaluation.items[0];
   const revision = evaluation.revision!;
-  return <section className="design-system-viewer" aria-label="Design System">
-    <div className="design-system-source"><div><h2>{definition.name}</h2><p>Fonte {evaluation.selected_level || definition.owner.level} · revisão <code>{revision}</code></p><p>Inventário <code>{evaluation.inventory_digest}</code></p></div><span className="project-page-tag">ESTRUTURALMENTE VÁLIDO</span></div>
-    <section aria-label="Tokens"><h3>Tokens</h3><ul className="design-system-token-list">{definition.tokens.map((token) => <li key={token.id}>{token.type === "color" && typeof token.value === "string" && /^#[0-9a-fA-F]{6}$/.test(token.value) && <span aria-hidden="true" className="design-system-token-swatch" style={{ backgroundColor: token.value }} />}<strong>{token.id}</strong><code>{token.ref ? `↗ ${token.ref}` : displayValue(token.value)}</code></li>)}</ul></section>
-    <section aria-label="Components"><h3>Components</h3>{definition.components.length ? <ul>{definition.components.map((component) => <li key={component.id}><strong>{component.name}</strong> <code>{component.id}</code>{component.states.length > 0 && <span> · {component.states.length} states</span>}</li>)}</ul> : <p>No components are registered.</p>}</section>
-    <section aria-label="Assets"><h3>Assets</h3>{definition.assets.length ? <ul>{definition.assets.map((asset) => <li key={asset}><a href={assetURL(companyID, projectID, revision, asset)} target="_blank" rel="noreferrer">{asset} ↗</a></li>)}</ul> : <p>No assets are registered.</p>}</section>
+  const theme = resolveProjectTheme(definition).style;
+  const value = (role: string) => theme?.[`--project-${role}`] || "—";
+  const palette = ["canvas", "surface", "border", "accent", "focus"] as const;
+  const example = definition.components.flatMap((component) => component.examples).find((path) => path.endsWith(".html"));
+  const presentationURL = example ? `/api/design-system/presentation/${encodeURIComponent(companyID)}/${encodeURIComponent(projectID)}/${revision}/${example.split("/").map(encodeURIComponent).join("/")}` : undefined;
+  return <section className="design-system-view design-system-viewer" aria-label="Design System" style={theme}>
+    <section className="design-system-palette"><small>PALETA ESTRUTURAL</small><h2>Paleta estrutural</h2><p>Tokens visuais do Design System selecionado de {definition.name}.</p><div className="design-system-swatches">{palette.map((role) => <div className="design-system-swatch" key={role} style={{ backgroundColor: value(role), color: role === "accent" || role === "focus" || role === "border" ? value("canvas") : value("text") }}><strong>{role[0].toUpperCase() + role.slice(1)}</strong><code>{value(role)}</code></div>)}</div></section>
+    <div className="design-system-cards">
+      <article><h2>Hierarquia</h2><p className="design-system-type-sample">Clareza para decidir.</p><p>Títulos e conteúdo seguem os tokens deste projeto: {value("displaySize")} / {value("bodySize")}.</p></article>
+      <article><h2>Componentes</h2><div className="design-system-controls"><button disabled>Primário</button><button disabled>Secundário</button><span className="project-page-tag">{definition.components.length} COMPONENTES</span></div></article>
+      <article><h2>Princípio</h2><p>Cor de destaque orienta ação e foco; superfícies organizam a informação sem competir com ela.</p><p>Raio dos cartões: {value("cardRadius")}.</p></article>
+    </div>
+    <section className="design-system-source"><div><small>FONTE AUTORADA</small><h2>{definition.name}</h2><p>Revisão selecionada <code>{revision.slice(0, 12)}</code> · validação estrutural concluída. Esta tela apresenta o catálogo, mas não o edita.</p></div>{presentationURL && <a href={presentationURL} target="_blank" rel="noreferrer">Abrir Design System ↗</a>}</section>
   </section>;
 }

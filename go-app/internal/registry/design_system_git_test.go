@@ -287,6 +287,15 @@ func TestGitDesignSystemVerifierChecksReachabilityTreeManifestAndInventory(t *te
 	if err != nil || !state.Reachable || state.RemoteHead != prepared || state.CommitSHA != prepared || state.ParentSHA != expectedHead || state.TreeSHA != tree || state.InventoryDigest != digest {
 		t.Fatalf("valid pushed Design System commit was not verified: %+v, %v", state, err)
 	}
+	// Once another commit lands, the prepared commit is the shallow boundary
+	// of the verifier's depth-2 fetch. Its raw parent must remain verifiable.
+	runFixtureGit(t, work, "commit", "--allow-empty", "--quiet", "-m", "unrelated later publication")
+	laterHead := fixtureGitOutput(t, work, "rev-parse", "HEAD")
+	runFixtureGit(t, work, "push", "--quiet", "origin", "main")
+	state, err = verifier.VerifyDesignSystemMutation(context.Background(), "company-a", "fixture-project", binding, intent)
+	if err != nil || !state.Reachable || state.RemoteHead != laterHead || state.CommitSHA != prepared || state.ParentSHA != expectedHead {
+		t.Fatalf("prepared commit at shallow boundary was not verified: %+v, %v", state, err)
+	}
 
 	badDigest := intent
 	badDigest.InventoryDigest = "sha256:" + strings.Repeat("f", 64)
@@ -412,8 +421,8 @@ func TestGitDesignSystemVerifierProvesNoPushOnlyAtExpectedRemoteHead(t *testing.
 	if err != nil || state.Reachable || state.RemoteHead != expected {
 		t.Fatalf("unchanged remote did not prove no push: %+v, %v", state, err)
 	}
-	// Advance the publication branch without the prepared commit. This is not
-	// conclusive no-push evidence, so recovery must remain pending.
+	// Advance the publication branch without the prepared commit. The full
+	// history proves the candidate unreachable, so it can be superseded.
 	runFixtureGit(t, work, "reset", "--hard", expected)
 	if err := os.WriteFile(filepath.Join(work, "sibling.txt"), []byte("advance"), 0o600); err != nil {
 		t.Fatal(err)
@@ -423,8 +432,25 @@ func TestGitDesignSystemVerifierProvesNoPushOnlyAtExpectedRemoteHead(t *testing.
 	advanced := fixtureGitOutput(t, work, "rev-parse", "HEAD")
 	runFixtureGit(t, work, "push", "--quiet", "--force", "origin", "main")
 	state, err = verifier.VerifyDesignSystemMutation(context.Background(), "company-a", "fixture-project", binding, intent)
-	if err != nil || state.RemoteHead != advanced || state.Reachable {
-		t.Fatalf("advanced remote state not surfaced as uncertain: %+v, %v", state, err)
+	if err != nil || state.RemoteHead != advanced || state.Reachable || !state.ReachabilityVerified {
+		t.Fatalf("advanced remote state was not proved unreachable: %+v, %v", state, err)
+	}
+}
+
+func TestGitDesignSystemAncestorCheckKeepsOperationalFailuresPending(t *testing.T) {
+	root := t.TempDir()
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrapper := filepath.Join(root, "git-wrapper")
+	program := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = merge-base ]; then exit 128; fi\nexec %s \"$@\"\n", gitPath)
+	if err := os.WriteFile(wrapper, []byte(program), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	verifier := gitDesignSystemVerifier{gitExecutable: wrapper}
+	if reachable, err := verifier.gitIsAncestor(context.Background(), root, strings.Repeat("a", 40), strings.Repeat("b", 40)); err == nil || reachable {
+		t.Fatalf("Git execution failure must not prove non-reachability: reachable=%v err=%v", reachable, err)
 	}
 }
 

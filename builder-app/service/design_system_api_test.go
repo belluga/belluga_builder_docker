@@ -46,6 +46,12 @@ func TestDesignSystemAPIWorksWhenLocalPreviewIsPendingAndForwardsExactSHAAssets(
 			w.Header().Set("X-Design-System-Revision", revision)
 			w.Header().Set("X-Design-System-Inventory-Digest", "sha256:"+strings.Repeat("b", 64))
 			_, _ = w.Write([]byte("<svg>selected</svg>"))
+		case "/internal/v1/companies/belluga/projects/builder/design-system/" + revision + "/assets/examples.html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("ETag", `"`+revision+`-example"`)
+			w.Header().Set("X-Design-System-Revision", revision)
+			w.Header().Set("X-Design-System-Inventory-Digest", "sha256:"+strings.Repeat("b", 64))
+			_, _ = w.Write([]byte(`<html><link rel="stylesheet" href="catalog.css"><body>Selected example</body></html>`))
 		default:
 			t.Errorf("unexpected Registry path %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -84,6 +90,10 @@ func TestDesignSystemAPIWorksWhenLocalPreviewIsPendingAndForwardsExactSHAAssets(
 	}
 	if !strings.Contains(strings.Join(registryPaths, "\n"), "/internal/v1/companies/belluga/projects/builder/design-system/"+revision+"/assets/design/system/assets/mark.svg") {
 		t.Fatalf("asset did not use exact selected SHA path: %v", registryPaths)
+	}
+	presentation := read("/api/design-system/presentation/belluga/builder/"+revision+"/examples.html", nil)
+	if presentation.Code != http.StatusOK || !strings.Contains(presentation.Body.String(), "Selected example") || !strings.Contains(presentation.Header().Get("Content-Security-Policy"), "style-src 'self'") || !strings.Contains(presentation.Header().Get("Content-Security-Policy"), "sandbox") || presentation.Header().Get("X-Design-System-Revision") != revision {
+		t.Fatalf("selected HTML presentation was not safely rendered: %d headers=%v body=%s", presentation.Code, presentation.Header(), presentation.Body.String())
 	}
 }
 

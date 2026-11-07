@@ -17,7 +17,7 @@ const theme = { tokens: [
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
 const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
-function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ id: "system", name, owner: { level: "project", id: projectID }, tokens: [{ id: "ink", type: "color", value: "#112233" }], components: [{ id: "button", name: "Button", token_ids: ["ink"], states: [], variants: [], examples: [] }], assets: ["design/system/assets/mark.svg"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid" } }; }
+function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ id: "system", name, owner: { level: "project", id: projectID }, tokens: theme.tokens, components: [{ id: "button", name: "Button", token_ids: ["color-accent"], states: [], variants: [], examples: ["examples.html"] }], assets: ["catalog.css"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid" } }; }
 function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
   return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
 }
@@ -1091,16 +1091,15 @@ describe("single root Project experience", () => {
     expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
     expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(false);
   });
-  it("reads the current selected Design System and pins asset links to its SHA", async () => {
+  it("restores the visual catalogue and opens the rendered presentation at the selected SHA", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
-    expect(screen.getByText("#112233")).toBeInTheDocument();
-    const asset = screen.getByRole("link", { name: /design\/system\/assets\/mark\.svg/ });
-    const assetURL = new URL(asset.getAttribute("href")!, location.origin);
-    expect(assetURL.pathname).toBe("/api/design-system/assets");
-    expect(assetURL.searchParams.get("revision")).toBe(designRevision);
-    expect(assetURL.searchParams.get("path")).toBe("design/system/assets/mark.svg");
+    expect(screen.getByRole("heading", { name: "Paleta estrutural" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Hierarquia" })).toBeInTheDocument();
+    const presentation = screen.getByRole("link", { name: "Abrir Design System ↗" });
+    expect(presentation).toHaveAttribute("href", `/api/design-system/presentation/belluga/builder/${designRevision}/examples.html`);
+    expect(presentation).toHaveAttribute("target", "_blank");
   });
   it("does not apply the Foundation snapshot theme as the Design System page theme", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {

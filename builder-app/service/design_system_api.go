@@ -30,10 +30,18 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 	projectID, projectOK := oneQueryValue(query, "project_id")
 	revision, revisionOK := oneQueryValue(query, "revision")
 	assetPath, assetOK := oneQueryValue(query, "path")
-	assetRequest := r.URL.Path == "/api/design-system/assets"
+	presentation := strings.HasPrefix(r.URL.Path, "/api/design-system/presentation/")
+	if presentation {
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/api/design-system/presentation/"), "/", 4)
+		if len(parts) == 4 {
+			companyID, projectID, revision, assetPath = parts[0], parts[1], parts[2], parts[3]
+			companyOK, projectOK, revisionOK, assetOK = true, true, true, true
+		}
+	}
+	assetRequest := r.URL.Path == "/api/design-system/assets" || presentation
 	validQuery := !assetRequest && len(query) == 2 || !assetRequest && len(query) == 3 && revisionOK
 	if assetRequest {
-		validQuery = len(query) == 4 && revisionOK && assetOK && designSystemSHA.MatchString(revision) && ac.ValidateRelativePath(assetPath) == nil && len([]byte(assetPath)) <= ac.MaxPathBytes
+		validQuery = (presentation && len(query) == 0 || !presentation && len(query) == 4) && revisionOK && assetOK && designSystemSHA.MatchString(revision) && ac.ValidateRelativePath(assetPath) == nil && len([]byte(assetPath)) <= ac.MaxPathBytes
 	}
 	if r.Method != http.MethodGet || r.ContentLength != 0 || len(r.TransferEncoding) != 0 || len(r.URL.RawQuery) > 4096 || !companyOK || !projectOK || !validRegistrationID(companyID) || !validRegistrationID(projectID) || !validQuery || revisionOK && (revision == "" || !designSystemSHA.MatchString(revision)) {
 		designSystemError(w, http.StatusBadRequest, "design_system_request_invalid", "TEACH: Informe Company e Project uma única vez e, para conteúdo ou assets, uma SHA Git exata.")
@@ -66,7 +74,7 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 		return
 	}
 	if assetRequest {
-		p.forwardDesignSystemAsset(w, response, revision)
+		p.forwardDesignSystemAsset(w, response, revision, presentation)
 		return
 	}
 	p.forwardDesignSystemDetail(w, response, companyID, projectID, revision)
@@ -154,7 +162,7 @@ func boundedRegistryDesignSystemTeach(body io.Reader) string {
 	return response.Teach
 }
 
-func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, response *http.Response, requestedRevision string) {
+func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, response *http.Response, requestedRevision string, presentation bool) {
 	if response.StatusCode == http.StatusNotModified {
 		etag := response.Header.Get("ETag")
 		digest := response.Header.Get("X-Design-System-Inventory-Digest")
@@ -167,7 +175,7 @@ func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, resp
 				w.Header().Set(name, value)
 			}
 		}
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+		w.Header().Set("Content-Security-Policy", designSystemFilePolicy(presentation, ""))
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -190,7 +198,14 @@ func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, resp
 	w.Header().Set("X-Design-System-Revision", revision)
 	w.Header().Set("X-Design-System-Inventory-Digest", digest)
 	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
-	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	w.Header().Set("Content-Security-Policy", designSystemFilePolicy(presentation, contentType))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
+}
+
+func designSystemFilePolicy(presentation bool, contentType string) string {
+	if presentation && strings.HasPrefix(contentType, "text/html") {
+		return "default-src 'none'; style-src 'self'; img-src 'self' data:; sandbox; frame-ancestors 'self'"
+	}
+	return "default-src 'none'; sandbox"
 }

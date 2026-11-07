@@ -89,6 +89,7 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/knowledge/index", consumer.knowledgeIndexAPIHandler)
 	mux.HandleFunc("/api/design-system", consumer.designSystemAPIHandler)
 	mux.HandleFunc("/api/design-system/assets", consumer.designSystemAPIHandler)
+	mux.HandleFunc("/api/design-system/presentation/", consumer.designSystemAPIHandler)
 	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))

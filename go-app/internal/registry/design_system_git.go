@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -80,7 +81,8 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 		state.ReachabilityVerified = true
 		return state, nil
 	}
-	if _, err := v.git(ctx, workspace, false, "merge-base", "--is-ancestor", intent.PreparedCommitSHA, remoteHead); err != nil {
+	isAncestor, ancestryErr := v.gitIsAncestor(ctx, workspace, intent.PreparedCommitSHA, remoteHead)
+	if !isAncestor {
 		// A shallow boundary cannot prove that an older prepared commit is
 		// unreachable. Complete the history before returning `superseded`;
 		// if that cannot finish, leave the intent pending for another retry.
@@ -92,13 +94,25 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 			if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--unshallow", "origin", "+"+branchRef+":"+remoteRef); err != nil {
 				return designSystemRemoteState{}, ErrUnavailable
 			}
-			if _, err := v.git(ctx, workspace, false, "merge-base", "--is-ancestor", intent.PreparedCommitSHA, remoteHead); err == nil {
-				state.Reachable = true
+			state.Reachable, err = v.gitIsAncestor(ctx, workspace, intent.PreparedCommitSHA, remoteHead)
+			if err != nil {
+				// A missing candidate object makes merge-base exit 128, even
+				// after a complete fetch. Traverse the complete branch as an
+				// independent proof instead of treating any Git error as absence.
+				state.Reachable, err = v.gitHistoryContains(ctx, workspace, remoteRef, intent.PreparedCommitSHA)
+				if err != nil {
+					return designSystemRemoteState{}, ErrUnavailable
+				}
+			}
+		} else {
+			if ancestryErr != nil {
+				state.Reachable, err = v.gitHistoryContains(ctx, workspace, remoteRef, intent.PreparedCommitSHA)
+				if err != nil {
+					return designSystemRemoteState{}, ErrUnavailable
+				}
 			} else {
 				state.Reachable = false
 			}
-		} else {
-			state.Reachable = false
 		}
 		if confirmErr := v.confirmRemoteHead(ctx, remote, binding.PublicationBranch, remoteHead); confirmErr != nil {
 			return designSystemRemoteState{}, confirmErr
@@ -109,12 +123,26 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 		}
 	}
 	state.Reachable = true
-	parents, err := v.git(ctx, workspace, false, "rev-list", "--parents", "-n", "1", intent.PreparedCommitSHA)
+	// rev-list hides parents of a shallow boundary commit. Read the immutable
+	// commit object's header instead: the prepared commit may be one behind the
+	// published head and therefore sit exactly at the depth-2 boundary.
+	commitObject, err := v.git(ctx, workspace, false, "cat-file", "-p", intent.PreparedCommitSHA)
 	if err != nil {
 		return designSystemRemoteState{}, ErrUnavailable
 	}
-	parentFields := strings.Fields(string(parents))
-	if len(parentFields) != 2 || parentFields[0] != intent.PreparedCommitSHA || parentFields[1] != intent.ExpectedHead {
+	var parentSHA string
+	for _, line := range strings.Split(string(commitObject), "\n") {
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, "parent ") {
+			if parentSHA != "" {
+				return designSystemRemoteState{}, ErrUnavailable
+			}
+			parentSHA = strings.TrimPrefix(line, "parent ")
+		}
+	}
+	if parentSHA != intent.ExpectedHead {
 		return designSystemRemoteState{}, ErrUnavailable
 	}
 	treeBytes, err := v.git(ctx, workspace, false, "rev-parse", "--verify", intent.PreparedCommitSHA+"^{tree}")
@@ -122,7 +150,7 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 		return designSystemRemoteState{}, ErrUnavailable
 	}
 	state.CommitSHA = intent.PreparedCommitSHA
-	state.ParentSHA = strings.TrimSpace(parentFields[1])
+	state.ParentSHA = parentSHA
 	state.TreeSHA = strings.TrimSpace(string(treeBytes))
 	if !validFullGitSHA(state.TreeSHA) || state.TreeSHA != intent.CandidateTreeSHA {
 		return designSystemRemoteState{}, ErrUnavailable
@@ -250,6 +278,16 @@ func designSystemAssetRegistered(evaluation ac.DesignSystemResponse, assetPath s
 				return true
 			}
 		}
+		for _, component := range item.Components {
+			if component.Documentation == assetPath {
+				return true
+			}
+			for _, example := range component.Examples {
+				if example == assetPath {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -258,7 +296,17 @@ func readAllDesignSystemAssets(source ac.Source, evaluation ac.DesignSystemRespo
 	assets := make(map[string][]byte)
 	var total int64
 	for _, item := range evaluation.Items {
-		for _, path := range item.Assets {
+		paths := append([]string(nil), item.Assets...)
+		for _, component := range item.Components {
+			if component.Documentation != "" {
+				paths = append(paths, component.Documentation)
+			}
+			paths = append(paths, component.Examples...)
+		}
+		for _, path := range paths {
+			if _, loaded := assets[path]; loaded {
+				continue
+			}
 			data, mode, err := source.Read(designSystemRoot+"/"+path, ac.MaxFileBytes)
 			if err != nil || mode != ac.ModeRegular || int64(len(data)) > ac.MaxTotalBytes-total {
 				return nil, false
@@ -293,6 +341,60 @@ func hasExactGitTrailer(message, trailer string) bool {
 
 func (v gitDesignSystemVerifier) git(ctx context.Context, dir string, credentialed bool, args ...string) ([]byte, error) {
 	return v.gitLimited(ctx, dir, 8<<20, credentialed, args...)
+}
+
+// gitIsAncestor distinguishes Git's definitive "not an ancestor" (exit 1)
+// from an operational failure. An operational failure must never supersede a
+// pending published mutation.
+func (v gitDesignSystemVerifier) gitIsAncestor(ctx context.Context, dir, ancestor, descendant string) (bool, error) {
+	executable := v.gitExecutable
+	if executable == "" {
+		executable = "git"
+	}
+	command := exec.CommandContext(ctx, executable, "merge-base", "--is-ancestor", ancestor, descendant)
+	command.Dir = dir
+	command.Env = designSystemGitEnvironment(false)
+	command.Stdout = io.Discard
+	command.Stderr = io.Discard
+	if err := command.Run(); err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && ctx.Err() == nil {
+			return false, nil
+		}
+		return false, ErrUnavailable
+	}
+	return true, nil
+}
+
+func (v gitDesignSystemVerifier) gitHistoryContains(ctx context.Context, dir, ref, candidate string) (bool, error) {
+	executable := v.gitExecutable
+	if executable == "" {
+		executable = "git"
+	}
+	command := exec.CommandContext(ctx, executable, "rev-list", ref)
+	command.Dir = dir
+	command.Env = designSystemGitEnvironment(false)
+	command.Stderr = io.Discard
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return false, ErrUnavailable
+	}
+	if err := command.Start(); err != nil {
+		return false, ErrUnavailable
+	}
+	found := false
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		if scanner.Text() == candidate {
+			found = true
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := command.Wait()
+	if scanErr != nil || waitErr != nil || ctx.Err() != nil {
+		return false, ErrUnavailable
+	}
+	return found, nil
 }
 
 func (v gitDesignSystemVerifier) gitLimited(ctx context.Context, dir string, limit int, credentialed bool, args ...string) ([]byte, error) {
