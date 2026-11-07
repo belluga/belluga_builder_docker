@@ -56,7 +56,11 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 	}
 	branchRef := "refs/heads/" + binding.PublicationBranch
 	remoteRef := "refs/remotes/origin/" + binding.PublicationBranch
-	if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "origin", "+"+branchRef+":"+remoteRef); err != nil {
+	// Recovery normally needs only the published candidate and its expected
+	// parent. Avoid fetching an entire historical Foundation before the
+	// bounded API deadline; a non-reachable candidate is deepened below before
+	// declaring a superseded operation.
+	if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--depth=2", "origin", "+"+branchRef+":"+remoteRef); err != nil {
 		return designSystemRemoteState{}, ErrUnavailable
 	}
 	headBytes, err := v.git(ctx, workspace, false, "rev-parse", "--verify", remoteRef+"^{commit}")
@@ -77,11 +81,32 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 		return state, nil
 	}
 	if _, err := v.git(ctx, workspace, false, "merge-base", "--is-ancestor", intent.PreparedCommitSHA, remoteHead); err != nil {
+		// A shallow boundary cannot prove that an older prepared commit is
+		// unreachable. Complete the history before returning `superseded`;
+		// if that cannot finish, leave the intent pending for another retry.
+		shallow, shallowErr := v.git(ctx, workspace, false, "rev-parse", "--is-shallow-repository")
+		if shallowErr != nil {
+			return designSystemRemoteState{}, ErrUnavailable
+		}
+		if strings.TrimSpace(string(shallow)) == "true" {
+			if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--unshallow", "origin", "+"+branchRef+":"+remoteRef); err != nil {
+				return designSystemRemoteState{}, ErrUnavailable
+			}
+			if _, err := v.git(ctx, workspace, false, "merge-base", "--is-ancestor", intent.PreparedCommitSHA, remoteHead); err == nil {
+				state.Reachable = true
+			} else {
+				state.Reachable = false
+			}
+		} else {
+			state.Reachable = false
+		}
 		if confirmErr := v.confirmRemoteHead(ctx, remote, binding.PublicationBranch, remoteHead); confirmErr != nil {
 			return designSystemRemoteState{}, confirmErr
 		}
 		state.ReachabilityVerified = true
-		return state, nil
+		if !state.Reachable {
+			return state, nil
+		}
 	}
 	state.Reachable = true
 	parents, err := v.git(ctx, workspace, false, "rev-list", "--parents", "-n", "1", intent.PreparedCommitSHA)
