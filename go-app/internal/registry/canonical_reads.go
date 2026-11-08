@@ -11,7 +11,7 @@ import (
 func canonicalPending() *canonicalTeachError {
 	return &canonicalTeachError{Diagnostic: CanonicalTeachDiagnostic{
 		Code: "canonical_pending", FieldPath: "knowledge_generation_id",
-		NextAction: "import and validate a typed draft, then explicitly activate this Project's knowledge generation; canonical content is pending",
+		NextAction: "for an unbound Project, read the typed schema with delphi-ai/local-api/run builder-project knowledge-template --company-id <company-id> --project-id <project-id>, then send a typed JSON envelope on stdin to delphi-ai/local-api/run builder-project create-knowledge-draft --company-id <company-id> --project-id <project-id>; omit source_revision. For Git migration, use import-knowledge-draft with its exact source_revision. Read the draft manifest and records by generation ID, then activate explicitly only after validation",
 	}, Cause: ErrNotFound}
 }
 

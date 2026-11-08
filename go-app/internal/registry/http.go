@@ -97,6 +97,10 @@ type canonicalKnowledgeService interface {
 	CanonicalHistory(context.Context, string, string, string, int) (CanonicalHistoryPage, error)
 }
 
+type canonicalDraftCreateService interface {
+	CreateCanonicalDraft(context.Context, string, CanonicalDraftCreate) (CanonicalManifest, error)
+}
+
 type canonicalKnowledgeReader interface {
 	ReadCanonicalEntity(context.Context, string, string, string) (CanonicalProjection, error)
 	ReadCanonicalDecision(context.Context, string, string, CanonicalFamily, string, string) (CanonicalProjection, error)
@@ -143,6 +147,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare", h.canonicalCompare)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}", h.canonicalAsOf)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts", h.canonicalImport)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts/api-born", h.canonicalDraftCreate)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate", h.canonicalActivate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalRead)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalEdit)
@@ -1130,6 +1135,24 @@ func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.ImportCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalDraftCreate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalDraftCreateService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalDraftCreate
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.CreateCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
 	h.respond(w, value, err)
 }
 

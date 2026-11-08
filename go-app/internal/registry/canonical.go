@@ -69,6 +69,7 @@ type CanonicalEvent struct {
 	Revision       int64           `bson:"revision" json:"revision"`
 	OperationID    string          `bson:"operation_id" json:"operation_id"`
 	Actor          string          `bson:"actor" json:"actor"`
+	SourceKind     string          `bson:"source_kind,omitempty" json:"source_kind,omitempty"`
 	SourceRevision string          `bson:"source_revision,omitempty" json:"source_revision,omitempty"`
 	OccurredAt     time.Time       `bson:"occurred_at" json:"occurred_at"`
 }
@@ -108,6 +109,15 @@ type CanonicalImport struct {
 	Records        []CanonicalImportRecord `json:"records"`
 	OperationID    string                  `json:"operation_id"`
 	Actor          string                  `json:"actor"`
+}
+
+// CanonicalDraftCreate starts an initial draft without asserting Git provenance.
+type CanonicalDraftCreate struct {
+	ProjectID    string                  `json:"project_id"`
+	GenerationID string                  `json:"generation_id"`
+	Records      []CanonicalImportRecord `json:"records"`
+	OperationID  string                  `json:"operation_id"`
+	Actor        string                  `json:"actor"`
 }
 
 type CanonicalImportRecord struct {
@@ -476,14 +486,20 @@ func CanonicalTemplate() map[string]any {
 			"Draft import validates record structure but does not prove source-content completeness.",
 			"Map canonical purpose, rules, decisions and backend contracts to typed fields. Prototype presentation details belong to a later visual-artifact migration.",
 			"Compare imported records against the source inventory before activation. Activation verifies structure and references, not editorial parity or product truth.",
-			"Preserve explicit source IDs verbatim. For a source unit without an ID, use only a technical mig- ID derived by the published migration_id_policy; do not infer a semantic ID.",
+			"Preserve explicit source IDs verbatim. For an ID-less Git migration unit, use only the published migration_id_policy; for API-born authoring, use api_born_id_policy without invented Git provenance.",
 			"Keep ambiguous source meanings or duplicate explicit IDs unresolved and request a decision; never silently merge distinct statements.",
 		},
 		"migration_id_policy": map[string]string{
-			"applies_to": "source units requiring an ID but having no explicit source ID; never rewrite an explicit ID",
+			"applies_to": "Git-sourced migration units requiring an ID but having no explicit source ID; never rewrite an explicit ID; not used for API-born authoring",
 			"input":      "source_revision + newline + family + newline + record_id + newline + source_path + newline + heading_outline + newline + zero-based source_position + newline + exact source statement; normalize CRLF to LF and trim only outer whitespace",
 			"output":     "mig- followed by the first 20 lowercase hexadecimal characters of SHA-256 over UTF-8 input; reject duplicate output IDs and ask for a decision",
 			"lifecycle":  "persist the resulting ID in the imported record; do not recompute it after activation",
+		},
+		"api_born_id_policy": map[string]string{
+			"applies_to": "new API-born canonical authoring with no Git source revision or path",
+			"record_id":  "choose a stable lowercase Project-scoped ID matching the template identity rule; preserve it across edits and retries",
+			"nested_id":  "preserve an explicit confirmed semantic ID; otherwise assign a stable owner-local ID from the confirmed concept before the first write, and ask for clarification when distinct meanings cannot be separated",
+			"provenance": "do not invent a Git SHA, source path, or migration ID for API-born content; the operation event records API origin, actor, operation ID and time",
 		},
 		"payload_examples": map[string]any{
 			string(FamilyMandate):      MandatePayload{Purpose: "Product purpose", Scope: []string{"audience"}},
@@ -673,6 +689,17 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 }
 
 func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string, input CanonicalImport) (CanonicalManifest, error) {
+	return m.createCanonicalDraft(ctx, companyID, CanonicalDraftCreate{
+		ProjectID: input.ProjectID, GenerationID: input.GenerationID, Records: input.Records,
+		OperationID: input.OperationID, Actor: input.Actor,
+	}, "git", input.SourceRevision)
+}
+
+func (m *MongoStore) CreateCanonicalDraft(ctx context.Context, companyID string, input CanonicalDraftCreate) (CanonicalManifest, error) {
+	return m.createCanonicalDraft(ctx, companyID, input, "api", "")
+}
+
+func (m *MongoStore) createCanonicalDraft(ctx context.Context, companyID string, input CanonicalDraftCreate, sourceKind, sourceRevision string) (CanonicalManifest, error) {
 	if len(input.Records) == 0 || len(input.Records) > 500 {
 		return CanonicalManifest{}, teachCanonical("", "records", "provide between 1 and 500 typed records in this draft import", ErrInvalid)
 	}
@@ -682,8 +709,11 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 	if !canonicalID.MatchString(input.OperationID) {
 		return CanonicalManifest{}, teachCanonical("", "operation_id", "provide a lowercase stable operation ID", ErrInvalid)
 	}
-	if !canonicalSourceRevision.MatchString(input.SourceRevision) {
+	if sourceKind == "git" && !canonicalSourceRevision.MatchString(sourceRevision) {
 		return CanonicalManifest{}, teachCanonical("", "source_revision", "provide the exact 40-character lowercase Git SHA of the source revision", ErrInvalid)
+	}
+	if sourceKind != "git" && sourceKind != "api" {
+		return CanonicalManifest{}, ErrInvalid
 	}
 	if strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
 		return CanonicalManifest{}, teachCanonical("", "actor", "provide a non-empty actor identifier of at most 200 characters", ErrInvalid)
@@ -711,43 +741,12 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 		item.Record.ContentDigest = canonicalDigest(item.Record.Payload)
 		item.Record.UpdatedAt = canonicalTime()
 	}
-	var priorEvents []CanonicalEvent
-	eventCursor, err := db.Collection(canonicalEvents).Find(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: input.GenerationID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: "draft_imported"}})
-	if err != nil {
-		return CanonicalManifest{}, ErrUnavailable
+	eventKind := "draft_imported"
+	if sourceKind == "api" {
+		eventKind = "draft_api_created"
 	}
-	for eventCursor.Next(ctx) {
-		var event CanonicalEvent
-		if eventCursor.Decode(&event) != nil {
-			eventCursor.Close(ctx)
-			return CanonicalManifest{}, ErrUnavailable
-		}
-		priorEvents = append(priorEvents, event)
-	}
-	eventCursor.Close(ctx)
-	if len(priorEvents) > 0 {
-		if len(priorEvents) != len(input.Records) {
-			return CanonicalManifest{}, ErrConflict
-		}
-		prior := map[string]bool{}
-		for _, event := range priorEvents {
-			if event.SourceRevision != input.SourceRevision {
-				return CanonicalManifest{}, ErrConflict
-			}
-			prior[string(event.Family)+"/"+event.RecordID] = true
-		}
-		for _, item := range input.Records {
-			key := string(item.Family) + "/" + item.Record.ID
-			if !prior[key] {
-				return CanonicalManifest{}, ErrConflict
-			}
-			name, _ := canonicalCollection(item.Family)
-			var stored canonicalStored
-			if e := db.Collection(name).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: input.GenerationID}, {Key: "id", Value: item.Record.ID}}).Decode(&stored); e != nil || stored.ContentDigest != item.Record.ContentDigest {
-				return CanonicalManifest{}, ErrConflict
-			}
-		}
-		return m.CanonicalManifest(ctx, companyID, input.ProjectID, input.GenerationID)
+	if manifest, found, replayErr := m.replayCanonicalDraft(ctx, db, companyID, input, sourceKind, sourceRevision, eventKind); found || replayErr != nil {
+		return manifest, replayErr
 	}
 	// Drafts are invisible through active reads; the generation ID is part of every key.
 	session, err := db.Client().StartSession()
@@ -776,7 +775,7 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 			if _, e := db.Collection(canonicalVersions).InsertOne(sc, canonicalVersion(input.ProjectID, input.GenerationID, item.Family, item.Record)); e != nil {
 				return nil, normalizeMongoError(e)
 			}
-			if _, e := db.Collection(canonicalEvents).InsertOne(sc, CanonicalEvent{ObjectID: bson.NewObjectID(), ProjectID: input.ProjectID, GenerationID: input.GenerationID, Family: item.Family, RecordID: item.Record.ID, Kind: "draft_imported", Revision: 1, OperationID: input.OperationID, Actor: input.Actor, SourceRevision: input.SourceRevision, OccurredAt: item.Record.UpdatedAt}); e != nil {
+			if _, e := db.Collection(canonicalEvents).InsertOne(sc, CanonicalEvent{ObjectID: bson.NewObjectID(), ProjectID: input.ProjectID, GenerationID: input.GenerationID, Family: item.Family, RecordID: item.Record.ID, Kind: eventKind, Revision: 1, OperationID: input.OperationID, Actor: input.Actor, SourceKind: sourceKind, SourceRevision: sourceRevision, OccurredAt: item.Record.UpdatedAt}); e != nil {
 				return nil, normalizeMongoError(e)
 			}
 		}
@@ -784,6 +783,13 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 	})
 	if err != nil {
 		normalized := normalizeMongoError(err)
+		if errors.Is(normalized, ErrConflict) {
+			// A simultaneous exact retry can race the initial event read. The
+			// committed operation is authoritative; a changed request still fails.
+			if manifest, found, replayErr := m.replayCanonicalDraft(ctx, db, companyID, input, sourceKind, sourceRevision, eventKind); found || replayErr != nil {
+				return manifest, replayErr
+			}
+		}
 		var teach *canonicalTeachError
 		if errors.As(normalized, &teach) {
 			return CanonicalManifest{}, normalized
@@ -794,6 +800,53 @@ func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string,
 		return CanonicalManifest{}, normalized
 	}
 	return m.CanonicalManifest(ctx, companyID, input.ProjectID, input.GenerationID)
+}
+
+func (m *MongoStore) replayCanonicalDraft(ctx context.Context, db *mongo.Database, companyID string, input CanonicalDraftCreate, sourceKind, sourceRevision, eventKind string) (CanonicalManifest, bool, error) {
+	var priorEvents []CanonicalEvent
+	eventCursor, err := db.Collection(canonicalEvents).Find(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: bson.M{"$in": bson.A{"draft_imported", "draft_api_created"}}}})
+	if err != nil {
+		return CanonicalManifest{}, false, ErrUnavailable
+	}
+	for eventCursor.Next(ctx) {
+		var event CanonicalEvent
+		if eventCursor.Decode(&event) != nil {
+			eventCursor.Close(ctx)
+			return CanonicalManifest{}, false, ErrUnavailable
+		}
+		priorEvents = append(priorEvents, event)
+	}
+	eventCursor.Close(ctx)
+	if len(priorEvents) > 0 {
+		if len(priorEvents) != len(input.Records) {
+			return CanonicalManifest{}, true, ErrConflict
+		}
+		prior := map[string]bool{}
+		for _, event := range priorEvents {
+			if event.GenerationID != input.GenerationID || event.Kind != eventKind || event.Actor != input.Actor || event.SourceRevision != sourceRevision || (event.SourceKind != "" && event.SourceKind != sourceKind) {
+				return CanonicalManifest{}, true, ErrConflict
+			}
+			prior[string(event.Family)+"/"+event.RecordID] = true
+		}
+		for _, item := range input.Records {
+			key := string(item.Family) + "/" + item.Record.ID
+			if !prior[key] {
+				return CanonicalManifest{}, true, ErrConflict
+			}
+			var initialVersion struct {
+				Record canonicalStored `bson:"record"`
+			}
+			if e := db.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: input.GenerationID}, {Key: "family", Value: item.Family}, {Key: "record_id", Value: item.Record.ID}, {Key: "revision", Value: int64(1)}}).Decode(&initialVersion); e != nil {
+				return CanonicalManifest{}, true, ErrUnavailable
+			}
+			if initialVersion.Record.ContentDigest != item.Record.ContentDigest {
+				return CanonicalManifest{}, true, ErrConflict
+			}
+		}
+		manifest, manifestErr := m.CanonicalManifest(ctx, companyID, input.ProjectID, input.GenerationID)
+		return manifest, true, manifestErr
+	}
+	return CanonicalManifest{}, false, nil
 }
 
 type canonicalStored struct {
