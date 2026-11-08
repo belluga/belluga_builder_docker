@@ -145,36 +145,57 @@ type TODOCommitReference struct {
 	VerificationState string `json:"verification_state" bson:"verification_state"`
 }
 
+// TODOAdministrativeAcceptance is server-owned evidence that an administrator
+// accepted the authored initial state. It is deliberately not a delivery proof.
+type TODOAdministrativeAcceptance struct {
+	AcceptedStage      string          `json:"accepted_stage" bson:"accepted_stage"`
+	OwnerReference     string          `json:"owner_reference" bson:"owner_reference"`
+	Reason             string          `json:"reason" bson:"reason"`
+	PermissionDecision string          `json:"permission_decision" bson:"permission_decision"`
+	ActorClaim         *TODOActorClaim `json:"actor_claim,omitempty" bson:"actor_claim,omitempty"`
+	AcceptedAt         bson.DateTime   `json:"accepted_at" bson:"accepted_at"`
+	ContentDigest      string          `json:"content_digest" bson:"content_digest"`
+}
+
+type TODODisposition struct {
+	Kind            string `json:"kind" bson:"kind"`
+	Reason          string `json:"reason" bson:"reason"`
+	SuccessorTODOID string `json:"successor_todo_id,omitempty" bson:"successor_todo_id,omitempty"`
+}
+
 // TODORecord is the closed typed Mongo document. The executor maps the pinned
 // source sections into these fields; Go validates the envelope and persists it.
 type TODORecord struct {
-	ObjectID              bson.ObjectID         `json:"-" bson:"_id,omitempty"`
-	ID                    string                `json:"id" bson:"id"`
-	ProjectID             string                `json:"project_id" bson:"project_id"`
-	ReleaseID             string                `json:"release_id,omitempty" bson:"release_id,omitempty"`
-	Position              *int                  `json:"position,omitempty" bson:"position,omitempty"`
-	Title                 string                `json:"title" bson:"title"`
-	Objective             string                `json:"objective" bson:"objective"`
-	NextExactStep         string                `json:"next_exact_step" bson:"next_exact_step"`
-	ArtifactType          string                `json:"artifact_type" bson:"artifact_type"`
-	Stage                 string                `json:"stage" bson:"stage"`
-	Removed               bool                  `json:"removed,omitempty" bson:"removed,omitempty"`
-	Qualifiers            []string              `json:"qualifiers" bson:"qualifiers"`
-	WorkState             string                `json:"work_state,omitempty" bson:"work_state,omitempty"`
-	Sections              []TODOSection         `json:"sections" bson:"sections"`
-	ProofReferences       []TODOProofReference  `json:"proof_refs" bson:"proof_refs,omitempty"`
-	WaiverReferences      []TODOProofReference  `json:"waiver_refs" bson:"waiver_refs,omitempty"`
-	DiffExpectation       []TODORepositoryScope `json:"diff_expectation" bson:"diff_expectation,omitempty"`
-	ImplementationCommits []TODOCommitReference `json:"implementation_commits" bson:"implementation_commits,omitempty"`
-	AffectedFiles         []string              `json:"affected_files" bson:"affected_files"`
-	Content               *TODOContent          `json:"content,omitempty" bson:"-"`
-	Source                TODOSource            `json:"source" bson:"source"`
-	StageVerification     string                `json:"stage_verification" bson:"stage_verification"`
-	VerifiedTransitionRef *TODOProofReference   `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
-	LastOperation         *TODOOperationState   `json:"-" bson:"last_operation,omitempty"`
-	Revision              int64                 `json:"revision" bson:"revision"`
-	CreatedAt             bson.DateTime         `json:"-" bson:"created_at"`
-	UpdatedAt             bson.DateTime         `json:"-" bson:"updated_at"`
+	ObjectID                 bson.ObjectID                 `json:"-" bson:"_id,omitempty"`
+	ID                       string                        `json:"id" bson:"id"`
+	ProjectID                string                        `json:"project_id" bson:"project_id"`
+	ReleaseID                string                        `json:"release_id,omitempty" bson:"release_id,omitempty"`
+	Position                 *int                          `json:"position,omitempty" bson:"position,omitempty"`
+	Title                    string                        `json:"title" bson:"title"`
+	Objective                string                        `json:"objective" bson:"objective"`
+	NextExactStep            string                        `json:"next_exact_step" bson:"next_exact_step"`
+	ArtifactType             string                        `json:"artifact_type" bson:"artifact_type"`
+	Stage                    string                        `json:"stage" bson:"stage"`
+	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty" bson:"administrative_acceptance,omitempty"`
+	Disposition              *TODODisposition              `json:"disposition,omitempty" bson:"disposition,omitempty"`
+	DispositionState         string                        `json:"disposition_state,omitempty" bson:"disposition_state,omitempty"`
+	Removed                  bool                          `json:"removed,omitempty" bson:"removed,omitempty"`
+	Qualifiers               []string                      `json:"qualifiers" bson:"qualifiers"`
+	WorkState                string                        `json:"work_state,omitempty" bson:"work_state,omitempty"`
+	Sections                 []TODOSection                 `json:"sections" bson:"sections"`
+	ProofReferences          []TODOProofReference          `json:"proof_refs" bson:"proof_refs,omitempty"`
+	WaiverReferences         []TODOProofReference          `json:"waiver_refs" bson:"waiver_refs,omitempty"`
+	DiffExpectation          []TODORepositoryScope         `json:"diff_expectation" bson:"diff_expectation,omitempty"`
+	ImplementationCommits    []TODOCommitReference         `json:"implementation_commits" bson:"implementation_commits,omitempty"`
+	AffectedFiles            []string                      `json:"affected_files" bson:"affected_files"`
+	Content                  *TODOContent                  `json:"content,omitempty" bson:"-"`
+	Source                   TODOSource                    `json:"source" bson:"source"`
+	StageVerification        string                        `json:"stage_verification" bson:"stage_verification"`
+	VerifiedTransitionRef    *TODOProofReference           `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
+	LastOperation            *TODOOperationState           `json:"-" bson:"last_operation,omitempty"`
+	Revision                 int64                         `json:"revision" bson:"revision"`
+	CreatedAt                bson.DateTime                 `json:"-" bson:"created_at"`
+	UpdatedAt                bson.DateTime                 `json:"-" bson:"updated_at"`
 }
 
 // TODOOperationState makes a retried last CAS operation idempotent without
@@ -404,6 +425,9 @@ func todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, al
 		{Key: "next_exact_step", Value: nonemptyStringSchema()},
 		{Key: "artifact_type", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"tactical_execution_contract"}}}},
 		{Key: "stage", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOStages)}}},
+		{Key: "administrative_acceptance", Value: administrativeAcceptanceSchema()},
+		{Key: "disposition", Value: todoDispositionSchema()},
+		{Key: "disposition_state", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"valid", "invalid"}}}},
 		{Key: "removed", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 		{Key: "qualifiers", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "uniqueItems", Value: true}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOQualifiers)}}}}},
 		{Key: "work_state", Value: bson.D{{Key: "bsonType", Value: "string"}}},
@@ -437,6 +461,28 @@ func todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, al
 	return bson.D{{Key: "$jsonSchema", Value: schema}}
 }
 
+func administrativeAcceptanceSchema() bson.D {
+	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"accepted_stage", "owner_reference", "reason", "permission_decision", "accepted_at", "content_digest"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
+		{Key: "accepted_stage", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: stringTODOArray(canonicalTODOStages)}}},
+		{Key: "owner_reference", Value: nonemptyStringSchema()}, {Key: "reason", Value: nonemptyStringSchema()},
+		{Key: "permission_decision", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"pre-iam-private-api-allow-all"}}}},
+		{Key: "actor_claim", Value: todoActorClaimSchema()}, {Key: "accepted_at", Value: bson.D{{Key: "bsonType", Value: "date"}}}, {Key: "content_digest", Value: nonemptyStringSchema()},
+	}}}
+}
+
+func todoActorClaimSchema() bson.D {
+	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"value", "verification_status"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
+		{Key: "value", Value: nonemptyStringSchema()}, {Key: "verification_status", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"unverified"}}}},
+	}}}
+}
+
+func todoDispositionSchema() bson.D {
+	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"kind", "reason"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
+		{Key: "kind", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"Superseded", "Discarded"}}}},
+		{Key: "reason", Value: nonemptyStringSchema()}, {Key: "successor_todo_id", Value: nonemptyStringSchema()},
+	}}}
+}
+
 func verifiedTransitionSchema() bson.D {
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "required", Value: bson.A{"kind", "source", "ref", "source_digest", "verification_state"}}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "kind", Value: nonemptyStringSchema()}, {Key: "source", Value: nonemptyStringSchema()}, {Key: "ref", Value: nonemptyStringSchema()},
@@ -446,7 +492,7 @@ func verifiedTransitionSchema() bson.D {
 }
 
 func lastTODOOperationSchema(allowContentEdit, allowRecordEvents bool) bson.D {
-	kinds := bson.A{"transition", "verify-current-stage"}
+	kinds := bson.A{"create-todo", "transition", "verify-current-stage"}
 	if allowContentEdit {
 		kinds = append(kinds, "content-edit")
 	}

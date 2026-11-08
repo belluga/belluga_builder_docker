@@ -318,6 +318,11 @@ func placementReopensPlanning(record TODORecord, nextRelease string, nextPositio
 	if (record.Source.Kind != "mongo-content-revision" && (record.Content == nil || record.Content.SchemaVersion != todoContentSchemaVersion)) || record.ReleaseID == nextRelease && reflect.DeepEqual(record.Position, nextPosition) {
 		return false
 	}
+	if record.AdministrativeAcceptance != nil {
+		// Placement does not revise the content digest or revoke the owner's
+		// explicit initial-state decision. Only a substantive content edit does.
+		return false
+	}
 	switch record.Stage {
 	case "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane":
 		return true
@@ -438,7 +443,7 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if (placement.Detach || placement.Action == "detach") && record.ReleaseID == "" && record.Position == nil || !(placement.Detach || placement.Action == "detach") && record.ReleaseID == placement.ReleaseID && record.Position != nil && *record.Position == placement.Position {
 			return TODOContentEditResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: record.Revision, NoOp: true}, nil
 		}
-		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion && record.Stage == "Completed" {
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion && record.Stage == "Completed" && record.AdministrativeAcceptance == nil {
 			return TODOContentEditResponse{}, todoTeach("release_id/position", "retain the completed placement; create a separately reviewed TODO for new work", ErrConflict)
 		}
 	}
@@ -456,6 +461,8 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 	operation := TODOOperationState{ID: operationID, Kind: kind, RequestDigest: digest, ResultRevision: next}
 	set := append(bson.D{}, fields...)
 	set = append(set, extra(record)...)
+	var nextRelease string
+	var nextPosition *int
 	if kind == "placement-edit" {
 		placement := request.(TODOPlacementEditRequest)
 		if record.Source.Kind != "mongo-content-revision" {
@@ -467,13 +474,13 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 				record.Content = &content.TODOContent
 			}
 		}
-		nextRelease := placement.ReleaseID
-		nextPosition := &placement.Position
+		nextRelease = placement.ReleaseID
+		nextPosition = &placement.Position
 		if placement.Detach || placement.Action == "detach" {
 			nextRelease = ""
 			nextPosition = nil
 		}
-		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion {
+		if record.Content != nil && record.Content.SchemaVersion == todoContentSchemaVersion && record.AdministrativeAcceptance == nil {
 			retained := make([]TODOProofReference, 0, len(record.ProofReferences))
 			for _, ref := range record.ProofReferences {
 				if ref.Source != "human-review" || !isTODOAuditDeliveryKind(ref.Kind) && !strings.HasPrefix(ref.Kind, "planning_review_") {
@@ -494,6 +501,9 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 			planning, verified, work := "Planning", "verified", "planning"
 			proof := TODOProofReference{Kind: "planning-stage", Source: "mongo-content-revision", Reference: contentRef, SourceDigest: contentDigest, VerificationState: verified}
 			set = append(set, bson.E{Key: "stage", Value: planning}, bson.E{Key: "stage_verification", Value: verified}, bson.E{Key: "work_state", Value: work}, bson.E{Key: "verified_transition_ref", Value: proof})
+			if record.AdministrativeAcceptance != nil {
+				newChanges.ClearAdministrativeAcceptance = true
+			}
 			newChanges.Stage, newChanges.StageVerification, newChanges.WorkState, newChanges.VerifiedTransitionRef = &planning, &verified, &work, &proof
 		}
 	}
@@ -505,6 +515,10 @@ func (m *MongoStore) writeTODORecordMutation(ctx context.Context, companyID, pro
 		if placement.Detach || placement.Action == "detach" {
 			update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "release_id", Value: ""}, {Key: "position", Value: ""}}})
 			unset = []string{"release_id", "position"}
+		}
+		if placementReopensPlanning(record, nextRelease, nextPosition) && record.AdministrativeAcceptance != nil {
+			update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}}})
+			unset = append(unset, "administrative_acceptance")
 		}
 	}
 	persisted, err := persistedTODORecordBSON(ctx, collection, record)

@@ -139,7 +139,7 @@ func TestMongoRoadmapPlanningMutationsAndPlacementShareProjectRevision(t *testin
 	}
 	created := mongoBornTODOFixture()
 	created.ID, created.ProjectID = "roadmap-attach-test", "builder"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: created}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "roadmap-created-todo", TODO: created}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := change("delete-release", "r-02", "", "", nil, 7); !errors.Is(err, ErrConflict) {

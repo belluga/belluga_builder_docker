@@ -85,7 +85,7 @@ func TestReviewWaiverWithoutPlanningReturnsTeach(t *testing.T) {
 	}
 	record := mongoBornTODOFixture()
 	record.ID = "waiver-without-planning"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "waiver-test-create", TODO: record}); err != nil {
 		t.Fatal(err)
 	}
 	current, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)

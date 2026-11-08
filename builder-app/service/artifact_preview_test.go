@@ -422,6 +422,32 @@ func TestValidMongoPublicRoadmapAcceptsIndividualTODOAdmissions(t *testing.T) {
 	}
 }
 
+func TestValidMongoPublicRoadmapAcceptsAdministrativeStageAndDisposition(t *testing.T) {
+	revision := int64(0)
+	accepted := roadmapTODO{ID: "accepted-complete", TODORevision: &revision, Title: "Accepted delivery", Kind: "executable", RecordState: "active", AuthoredDeliveryStage: "Completed", DeliveryStage: "Completed", DeliveryStageState: "administrative", DeliveryStageBasis: "administrative-acceptance", AdministrativeAcceptance: &struct {
+		AcceptedStage      string `json:"accepted_stage"`
+		OwnerReference     string `json:"owner_reference"`
+		Reason             string `json:"reason"`
+		PermissionDecision string `json:"permission_decision"`
+		ContentDigest      string `json:"content_digest"`
+	}{AcceptedStage: "Completed", OwnerReference: "owner-approval", Reason: "Existing delivery", PermissionDecision: "pre-iam-private-api-allow-all", ContentDigest: "sha256:original"}, QualifierState: "verified"}
+	disposed := roadmapTODO{ID: "discarded", TODORevision: &revision, Title: "Discarded obligation", Kind: "non-delivery", RecordState: "active", AuthoredDeliveryStage: "Planning", DeliveryStageState: "unverified", AdministrativeAcceptance: accepted.AdministrativeAcceptance, Disposition: &struct {
+		Kind            string `json:"kind"`
+		Reason          string `json:"reason"`
+		SuccessorTODOID string `json:"successor_todo_id,omitempty"`
+	}{Kind: "Discarded", Reason: "No longer needed"}, DispositionState: "valid", QualifierState: "verified"}
+	projection := roadmapProjection{SchemaVersion: "builder-roadmap-projection-v3", ProjectID: "example", Epics: []roadmapEpic{{ID: "epic", Name: "Epic", Releases: []roadmapRelease{{ID: "release", Name: "Release", TODOs: []roadmapTODO{accepted, disposed}}}}}, Backlog: roadmapBacklog{TODOs: []roadmapTODO{}, Folders: []roadmapBacklogFolder{}}, Unclassified: []roadmapUnclassified{}, Diagnostics: []roadmapDiagnostic{}}
+	data, _ := json.Marshal(projection)
+	if !validRegistryRoadmap(data, "example") {
+		t.Fatal("administrative and disposition rows must remain readable")
+	}
+	projection.Epics[0].Releases[0].TODOs[0].AdministrativeAcceptance = nil
+	data, _ = json.Marshal(projection)
+	if validRegistryRoadmap(data, "example") {
+		t.Fatal("administrative stage without explicit basis was accepted")
+	}
+}
+
 func TestPrivateReaderPathOnlyRegistrationRequiresFreshRegistration(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

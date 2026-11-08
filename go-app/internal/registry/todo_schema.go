@@ -155,6 +155,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 
 func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeAdministrativeAcceptance(),
 		TODOCollectionValidatorBeforeRemoval(),
 		TODOCollectionValidatorBeforeEvidenceCapacity(),
 		TODOCollectionValidatorBeforeMVPParentUpgrade(),
@@ -170,8 +171,22 @@ func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
 			return true
 		}
+		predecessor = withoutTODOAdministrativeStateFields(predecessor)
+		if bsonValidatorEqual(actual, predecessor) || bsonValidatorEqual(actual, todoCollectionValidatorWithoutReviewOutcome(predecessor)) {
+			return true
+		}
 	}
 	return false
+}
+
+// TODOCollectionValidatorBeforeAdministrativeAcceptance is the exact deployed
+// strict validator before create-todo gained an administrative initial state.
+// Only the three new fields and the new operation kind differ.
+func TODOCollectionValidatorBeforeAdministrativeAcceptance() bson.D {
+	validator := withoutTODOAdministrativeStateFields(TODOCollectionValidator())
+	return replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", "last_operation", "properties", "kind", "enum"}, bson.A{
+		"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration", "next-step-edit", "grant-todo-review-waiver", "remove-todo",
+	})
 }
 
 // Keep the exact deployed 64-reference validator as an upgrade predecessor.
@@ -197,7 +212,15 @@ func TODOCollectionValidatorBeforeMVPParentUpgrade() bson.D {
 	validator := todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	validator = withoutTODOAdministrativeStateFields(validator)
 	return todoCollectionValidatorWithoutReviewOutcome(validator)
+}
+
+func withoutTODOAdministrativeStateFields(validator bson.D) bson.D {
+	for _, field := range []string{"administrative_acceptance", "disposition", "disposition_state"} {
+		validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, field)
+	}
+	return validator
 }
 
 // TODOCollectionValidatorBeforeRepositoryIdentity is the deployed strict

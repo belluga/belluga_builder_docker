@@ -119,6 +119,23 @@ describe("single root Project experience", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/roadmap?"))).toBe(true);
   });
 
+  it("distinguishes administrative completion and non-delivery dispositions in a Release", async () => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.epics[0].releases[0].todos.push({ id: "accepted-complete", title: "Accepted historical delivery", kind: "executable", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Completed", delivery_stage: "Completed", delivery_stage_state: "administrative", delivery_stage_basis: "administrative-acceptance", administrative_acceptance: { accepted_stage: "Completed", owner_reference: "APROVADO", reason: "Already delivered", permission_decision: "pre-iam-private-api-allow-all", accepted_at: "2026-11-07T00:00:00Z", content_digest: "sha256:old" }, blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    registryRoadmap.epics[0].releases[0].todos.push({ id: "discarded", title: "Discarded historical obligation", kind: "non-delivery", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Planning", delivery_stage_state: "unverified", disposition: { kind: "Discarded", reason: "No longer required" }, disposition_state: "valid", blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByText("Concluída por aceite administrativo")).toBeInTheDocument();
+    expect(screen.getByText("Concluído · aceite administrativo")).toBeInTheDocument();
+    expect(screen.getByText("Histórico não entregue")).toBeInTheDocument();
+    expect(screen.getByText("Descartado")).toBeInTheDocument();
+  });
+
   it("loads the Mongo Overview independently when the Foundation Reader fails", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);

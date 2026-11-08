@@ -53,8 +53,8 @@ func TestVerifyLocalRequirementReferencesBindsCriteriaAndScenariosToSuccessfulRu
 func TestVerifyLocalRequirementReferencesRejectsUnmappedRequiredCommand(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("f", 64)
 	content := &TODOContent{
-		SchemaVersion:       todoContentSchemaVersion,
-		Criteria:            []TODOContentItem{{ID: "C-1"}},
+		SchemaVersion: todoContentSchemaVersion,
+		Criteria:      []TODOContentItem{{ID: "C-1"}},
 		ValidationScenarios: []TODOValidationScenario{{ID: "S-1", CriterionIDs: []string{"C-1"}}},
 	}
 	result := &LocalProofResult{Commands: []localProofCommand{{ID: "G-UNIT", ExitCode: 0}, {ID: "G-BUILD", ExitCode: 0}}}
@@ -70,8 +70,8 @@ func TestVerifyLocalRequirementReferencesRejectsUnmappedRequiredCommand(t *testi
 func TestVerifyLocalRequirementReferencesAllowsSeveralCommandsForOneScenario(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("a", 64)
 	content := &TODOContent{
-		SchemaVersion: todoContentSchemaVersion,
-		Criteria: []TODOContentItem{{ID: "C-1"}},
+		SchemaVersion:       todoContentSchemaVersion,
+		Criteria:            []TODOContentItem{{ID: "C-1"}},
 		ValidationScenarios: []TODOValidationScenario{{ID: "S-1", CriterionIDs: []string{"C-1"}}},
 	}
 	result := &LocalProofResult{Commands: []localProofCommand{{ID: "G-TEST"}, {ID: "G-IMAGE"}}}

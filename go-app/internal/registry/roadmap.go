@@ -41,24 +41,28 @@ type roadmapReleaseView struct {
 // roadmapTODOView preserves the v3 Reader vocabulary and adds only the
 // Mongo-owned revision needed to reject stale list-to-detail reads.
 type roadmapTODOView struct {
-	ID                    string `json:"id"`
-	ReleaseID             string `json:"-"`
-	Title                 string `json:"title"`
-	Path                  string `json:"path,omitempty"`
-	Kind                  string `json:"kind"`
-	Objective             string `json:"objective"`
-	ObjectiveState        string `json:"objective_state"`
-	NextStep              string `json:"next_step"`
-	NextStepState         string `json:"next_step_state"`
-	RecordState           string `json:"record_state"`
-	DeliveryStage         string `json:"delivery_stage,omitempty"`
-	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
-	DeliveryStageState    string `json:"delivery_stage_state"`
-	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
-	Blocked               bool   `json:"blocked"`
-	QualifierState        string `json:"qualifier_state"`
-	WorkState             string `json:"work_state"`
-	TODORevision          int64  `json:"todo_revision"`
+	ID                       string                        `json:"id"`
+	ReleaseID                string                        `json:"-"`
+	Title                    string                        `json:"title"`
+	Path                     string                        `json:"path,omitempty"`
+	Kind                     string                        `json:"kind"`
+	Objective                string                        `json:"objective"`
+	ObjectiveState           string                        `json:"objective_state"`
+	NextStep                 string                        `json:"next_step"`
+	NextStepState            string                        `json:"next_step_state"`
+	RecordState              string                        `json:"record_state"`
+	DeliveryStage            string                        `json:"delivery_stage,omitempty"`
+	AuthoredDeliveryStage    string                        `json:"authored_delivery_stage"`
+	DeliveryStageState       string                        `json:"delivery_stage_state"`
+	DeliveryStageBasis       string                        `json:"delivery_stage_basis,omitempty"`
+	DeliveryStageTeach       string                        `json:"delivery_stage_teach,omitempty"`
+	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty"`
+	Disposition              *TODODisposition              `json:"disposition,omitempty"`
+	DispositionState         string                        `json:"disposition_state,omitempty"`
+	Blocked                  bool                          `json:"blocked"`
+	QualifierState           string                        `json:"qualifier_state"`
+	WorkState                string                        `json:"work_state"`
+	TODORevision             int64                         `json:"todo_revision"`
 }
 type roadmapEpicView struct {
 	ID          string               `json:"id"`
@@ -152,12 +156,29 @@ func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 		RecordState: "active", AuthoredDeliveryStage: record.Stage, DeliveryStageState: "unverified",
 		Blocked: blocked, QualifierState: "verified", WorkState: workState, TODORevision: record.Revision,
 	}
+	if record.Disposition != nil {
+		if record.Source.Kind == "mongo-content-revision" {
+			view.Path = ""
+		}
+		view.Kind = "non-delivery"
+		disposition := *record.Disposition
+		view.Disposition = &disposition
+		view.DispositionState = record.DispositionState
+		view.DeliveryStageTeach = ""
+		return view
+	}
 	if record.Source.Kind == "mongo-content-revision" {
 		view.Path = ""
 	}
 	if record.StageVerification == "verified" && record.VerifiedTransitionRef != nil {
 		view.DeliveryStage = record.Stage
 		view.DeliveryStageState = "verified"
+	} else if record.AdministrativeAcceptance != nil {
+		basis := *record.AdministrativeAcceptance
+		view.DeliveryStage = record.Stage
+		view.DeliveryStageState = "administrative"
+		view.DeliveryStageBasis = "administrative-acceptance"
+		view.AdministrativeAcceptance = &basis
 	} else {
 		if record.Source.Kind == "mongo-content-revision" && record.Stage == "Planning" {
 			view.DeliveryStageTeach = fmt.Sprintf("TEACH: Planning needs current-stage verification. Run builder-project status --company-id <company-id> --project-id %s --todo-id %s to obtain the exact recovery command; no Foundation path is involved.", record.ProjectID, record.ID)
