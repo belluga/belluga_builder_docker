@@ -233,6 +233,9 @@ func validDesignSystemFixture() DesignSystemDefinition {
 }
 
 func TestDesignSystemPresentationV2AndV1Read(t *testing.T) {
+	if !validPresentationFont("Inter, Arial") || validPresentationFont("Inter ") || validPresentationFont("Inter, Arial ") || validPresentationFont("Inter,,Arial") {
+		t.Fatal("presentation font grammar must accept a family list but reject trailing or empty segments")
+	}
 	var malformed DesignSystemDefinition
 	if err := DecodeStrict([]byte(`{"schema_version":"2","id":"system","name":"System","owner":{"level":"project","id":"builder"},"tokens":[],"components":[],"assets":[],"contrast_pairs":[],"presentation":{"default_context":"main","contexts":[{"id":"main","roles":{"line_height":1.5}}]}}`), &malformed); err == nil || !strings.Contains(err.Error(), "presentation.contexts[0].roles.line_height") {
 		t.Fatalf("non-string role must identify its exact field: %v", err)

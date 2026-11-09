@@ -643,7 +643,7 @@ func validPresentationFont(value string) bool {
 	}
 	for _, part := range parts {
 		name := strings.TrimSpace(part)
-		if name == "" || name[0] < 'A' || name[0] > 'Z' && name[0] < 'a' || name[0] > 'z' {
+		if name == "" || strings.TrimRight(part, " ") != part || name[0] < 'A' || name[0] > 'Z' && name[0] < 'a' || name[0] > 'z' {
 			return false
 		}
 		for _, char := range name {
