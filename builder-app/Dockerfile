@@ -8,6 +8,27 @@ FROM go-test AS go-build
 ARG BUILDER_SOURCE_SHA=unknown
 RUN CGO_ENABLED=0 go build -trimpath -ldflags "-X main.buildSourceSHA=${BUILDER_SOURCE_SHA}" -o /out/viewer .
 
+# Narrow, real-API proof for a selected Project's published visual artifacts.
+# The fixed local-proof matrix supplies the exact selection and uses --no-cache.
+FROM go-test AS visual-readiness-test
+ARG BUILDER_VISUAL_READINESS_BASE_URL
+ARG BUILDER_VISUAL_READINESS_COMPANY_ID
+ARG BUILDER_VISUAL_READINESS_PROJECT_ID
+ARG BUILDER_VISUAL_READINESS_PROTOTYPE_SHA
+ARG BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_SHA
+ARG BUILDER_VISUAL_READINESS_PROTOTYPE_IDS
+ARG BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_ID
+ARG BUILDER_VISUAL_READINESS_MIN_PROTOTYPES
+RUN test -n "$BUILDER_VISUAL_READINESS_BASE_URL" \
+    && test -n "$BUILDER_VISUAL_READINESS_COMPANY_ID" \
+    && test -n "$BUILDER_VISUAL_READINESS_PROJECT_ID" \
+    && test -n "$BUILDER_VISUAL_READINESS_PROTOTYPE_SHA" \
+    && test -n "$BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_SHA" \
+    && test -n "$BUILDER_VISUAL_READINESS_PROTOTYPE_IDS" \
+    && test -n "$BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_ID" \
+    && test -n "$BUILDER_VISUAL_READINESS_MIN_PROTOTYPES" \
+    && go test -count=1 -run '^TestSelectedProjectVisualArtifactReadiness$' ./...
+
 FROM node:24-alpine AS web-test
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
