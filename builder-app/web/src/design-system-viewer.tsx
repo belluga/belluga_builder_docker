@@ -5,7 +5,7 @@ type DesignComponent = { id: string; name: string; documentation?: string; token
 type Definition = { id: string; name: string; owner: { level: string; id: string }; tokens: DesignToken[]; components: DesignComponent[]; assets: string[]; schema_version: string };
 export type DesignSystemReadResponse = {
   selection: { state: string; sha?: string; inventory_digest?: string; binding_revision: number };
-  evaluation: { project_id: string; company_id: string; mode: string; revision: string | null; outcome: string; inventory_digest: string | null; items: Definition[]; design_system_validation: string; presentation_validation?: string; presentation_teach?: { code: string; field_path: string; message: string; resolution: string }; selected_level?: string };
+  evaluation: { project_id: string; company_id: string; mode: string; revision: string | null; outcome: string; inventory_digest: string | null; items: Definition[]; design_system_validation: string; presentation_validation?: "ready" | "not_ready"; presentation_teach?: { code: string; field_path: string; message: string; resolution: string }; selected_level?: string };
 };
 export function DesignSystemViewer({ companyID, projectID, read, theme, diagnostic, onRetry }: { companyID: string; projectID: string; read?: DesignSystemReadResponse; theme?: ProjectTheme; diagnostic?: string; onRetry: () => void }) {
   if (!read) return <section className="design-system-viewer" aria-label="Design System">{diagnostic ? <><p role="alert">{diagnostic}</p><button onClick={onRetry}>Tentar novamente</button></> : <p role="status">Carregando Design System selecionado…</p>}</section>;

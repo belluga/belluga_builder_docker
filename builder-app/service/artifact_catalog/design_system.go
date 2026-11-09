@@ -346,7 +346,7 @@ func EvaluateDesignSystem(source Source, projectID, companyID, level string, bin
 	if definition.SchemaVersion == "1" {
 		response.PresentationTeach = &PresentationTeach{Code: "theme_not_ready", FieldPath: "presentation", Message: "The selected Design System has no explicit semantic theme roles.", Resolution: "Publish a schema_version 2 definition with presentation.default_context and contexts[].roles; validate the candidate before selecting it."}
 	} else {
-		response.PresentationValidation = "valid"
+		response.PresentationValidation = "ready"
 	}
 	response.Items = []DesignSystemDefinition{definition}
 	return response
@@ -581,17 +581,25 @@ func validatePresentation(p *DesignPresentation, tokens map[string]DesignToken, 
 		seen[context.ID] = true
 		role := func(name, kind string, min, max float64) (resolvedToken, bool) {
 			field := prefix + ".roles." + name
+			unit := "px"
+			if name == "line_height" {
+				unit = "unitless"
+			}
 			id := context.Roles[name]
 			token, exists := tokens[id]
 			if id == "" || !exists || token.Type != kind || !tokenValid[id] {
-				fail(field, "role must reference a resolved "+kind+" token", "Declare a "+kind+" token and reference its exact ID in this role.")
+				resolution := "Declare a " + kind + " token and reference its exact ID in this role."
+				if kind == "number" {
+					resolution = fmt.Sprintf("Declare a number token within %g–%g %s and reference its exact ID in this role.", min, max, unit)
+				}
+				fail(field, "role must reference a resolved "+kind+" token", resolution)
 				return resolvedToken{}, false
 			}
 			value := resolved[id]
 			if kind == "number" {
 				number, ok := value.value.(float64)
 				if !ok || number < min || number > max {
-					fail(field, fmt.Sprintf("numeric role must be within %g–%g", min, max), "Reference a numeric token within the allowed range.")
+					fail(field, fmt.Sprintf("numeric role must be within %g–%g %s", min, max, unit), fmt.Sprintf("Reference a numeric token within %g–%g %s.", min, max, unit))
 					return value, false
 				}
 			}

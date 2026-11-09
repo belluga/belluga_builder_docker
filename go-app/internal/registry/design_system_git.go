@@ -179,7 +179,7 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 		evaluation := ac.EvaluateDesignSystem(source, projectID, companyID, "project", ac.SourceBinding{
 			RepositoryID: binding.RepositoryID, Revision: &selectedRevision, DefinitionPath: designSystemDefinitionPath,
 		})
-		if evaluation.Outcome != "go" || evaluation.DesignSystemValidation != "valid" || evaluation.PresentationValidation != "valid" || evaluation.InventoryDigest == nil || len(evaluation.Items) != 1 {
+		if evaluation.Outcome != "go" || evaluation.DesignSystemValidation != "valid" || evaluation.PresentationValidation != "ready" || evaluation.InventoryDigest == nil || len(evaluation.Items) != 1 {
 			return designSystemRemoteState{}, ErrUnavailable
 		}
 		state.InventoryDigest = *evaluation.InventoryDigest

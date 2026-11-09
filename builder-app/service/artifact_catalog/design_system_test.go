@@ -254,7 +254,7 @@ func TestDesignSystemPresentationV2AndV1Read(t *testing.T) {
 	roles := map[string]string{"canvas": "ink", "surface": "ink", "text": "paper", "muted_text": "paper", "border": "paper", "accent": "paper", "accent_text": "paper", "on_accent": "ink", "focus": "paper", "success_text": "paper", "font_family": "font", "body_size": "body", "display_size": "display", "card_radius": "radius", "control_radius": "radius"}
 	definition.Presentation = &DesignPresentation{DefaultContext: "main", Contexts: []DesignThemeContext{{ID: "main", Roles: roles}}}
 	valid := evaluateDesignSystemFixture(t, definition)
-	if valid.Outcome != "go" || valid.PresentationValidation != "valid" || valid.PresentationTeach != nil {
+	if valid.Outcome != "go" || valid.PresentationValidation != "ready" || valid.PresentationTeach != nil {
 		t.Fatalf("valid v2 presentation rejected: %#v", valid.Diagnostics)
 	}
 	delete(roles, "text")
@@ -267,6 +267,101 @@ func TestDesignSystemPresentationV2AndV1Read(t *testing.T) {
 	if invalid.Outcome != "no_go" || !designSystemHasCode(invalid, "invalid_presentation") {
 		t.Fatalf("insufficient text contrast accepted: %#v", invalid)
 	}
+	roles["text"] = "paper"
+	definition.Presentation.DefaultContext = "absent"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "presentation.default_context", "unique contexts") {
+		t.Fatalf("unresolved default context lacked field-addressed TEACH: %#v", invalid.Diagnostics)
+	}
+	definition.Presentation.DefaultContext = "main"
+	definition.Presentation.Contexts = nil
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "presentation.contexts", "1–16") {
+		t.Fatalf("empty context set lacked bounds TEACH: %#v", invalid.Diagnostics)
+	}
+	definition.Presentation.Contexts = []DesignThemeContext{{ID: "main", Roles: roles}, {ID: "main", Roles: roles}}
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "presentation.contexts[1].id", "unique") {
+		t.Fatalf("duplicate context lacked field-addressed TEACH: %#v", invalid.Diagnostics)
+	}
+	definition.Presentation.Contexts = definition.Presentation.Contexts[:1]
+	roles["unexpected"] = "ink"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles.unexpected", "unknown or non-canonical") {
+		t.Fatalf("unknown role lacked field-addressed TEACH: %#v", invalid.Diagnostics)
+	}
+	delete(roles, "unexpected")
+	definition.Presentation.Contexts = []DesignThemeContext{{ID: "main", Roles: roles}, {ID: "alternate", Roles: roles}}
+	definition.Presentation.DefaultContext = "alternate"
+	valid = evaluateDesignSystemFixture(t, definition)
+	if valid.Outcome != "go" || valid.PresentationValidation != "ready" {
+		t.Fatalf("distinct contexts sharing tokens were rejected: %#v", valid.Diagnostics)
+	}
+	definition.Presentation.DefaultContext = "main"
+	definition.Presentation.Contexts = definition.Presentation.Contexts[:1]
+	roles["body_size"] = "ink"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles.body_size", "8–96 px") {
+		t.Fatalf("wrong-kind number role lacked units TEACH: %#v", invalid.Diagnostics)
+	}
+	roles["body_size"] = "body"
+	definition.Tokens = append(definition.Tokens, DesignToken{ID: "line", Type: "number", Value: json.RawMessage(`3`)})
+	roles["line_height"] = "line"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles.line_height", "1–2 unitless") {
+		t.Fatalf("line-height bounds lacked unitless TEACH: %#v", invalid.Diagnostics)
+	}
+	delete(roles, "line_height")
+	for _, foreground := range []string{"text", "muted_text", "accent_text", "success_text"} {
+		roles[foreground] = "ink"
+		invalid = evaluateDesignSystemFixture(t, definition)
+		if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles."+foreground, "4.5:1") {
+			t.Fatalf("%s low contrast lacked field-addressed TEACH: %#v", foreground, invalid.Diagnostics)
+		}
+		roles[foreground] = "paper"
+	}
+	roles["on_accent"] = "paper"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles.on_accent", "4.5:1") {
+		t.Fatalf("on_accent low contrast lacked field-addressed TEACH: %#v", invalid.Diagnostics)
+	}
+	roles["on_accent"] = "ink"
+	definition.Tokens = append(definition.Tokens, DesignToken{ID: "oversized", Type: "number", Value: json.RawMessage(`65`)})
+	roles["card_radius"] = "oversized"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles.card_radius", "0–64 px") {
+		t.Fatalf("oversized radius lacked px bounds TEACH: %#v", invalid.Diagnostics)
+	}
+	roles["card_radius"] = "radius"
+	for _, numericRole := range []string{"body_size", "display_size", "card_radius", "control_radius"} {
+		roles[numericRole] = "line"
+		invalid = evaluateDesignSystemFixture(t, definition)
+		if numericRole == "body_size" || numericRole == "display_size" {
+			if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "roles."+numericRole, "8–96 px") {
+				t.Fatalf("%s bounds lacked px TEACH: %#v", numericRole, invalid.Diagnostics)
+			}
+		} else if invalid.Outcome != "go" {
+			t.Fatalf("%s valid radius unexpectedly rejected: %#v", numericRole, invalid.Diagnostics)
+		}
+		roles[numericRole] = map[string]string{"body_size": "body", "display_size": "display", "card_radius": "radius", "control_radius": "radius"}[numericRole]
+	}
+	definition.Presentation.Contexts = make([]DesignThemeContext, 17)
+	for index := range definition.Presentation.Contexts {
+		definition.Presentation.Contexts[index] = DesignThemeContext{ID: fmt.Sprintf("context-%d", index), Roles: roles}
+	}
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !presentationDiagnosticContains(invalid, "presentation.contexts", "1–16") {
+		t.Fatalf("too many contexts lacked bounds TEACH: %#v", invalid.Diagnostics)
+	}
+}
+
+func presentationDiagnosticContains(response DesignSystemResponse, field, guidance string) bool {
+	for _, diagnostic := range response.Diagnostics {
+		if diagnostic.Path != nil && strings.Contains(*diagnostic.Path, field) && strings.Contains(diagnostic.Message+" "+diagnostic.Resolution, guidance) {
+			return true
+		}
+	}
+	return false
 }
 
 func validBinding() SourceBinding {

@@ -17,7 +17,7 @@ const theme = { tokens: [
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
 const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
-function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ schema_version: "2", id: "system", name, owner: { level: "project", id: projectID }, tokens: theme.tokens, presentation: { default_context: "main", contexts: [{ id: "main", roles: { canvas: "color-canvas", surface: "color-surface", text: "color-text-strong", muted_text: "color-text-secondary", border: "color-border", accent: "color-accent", accent_text: "color-text-strong", on_accent: "color-on-accent", focus: "color-focus", success_text: "color-success", font_family: "font-family-sans", body_size: "text-body", display_size: "text-display", card_radius: "radius-card", control_radius: "radius-small", line_height: "line-body" } }] }, components: [{ id: "button", name: "Button", token_ids: ["color-accent"], states: [], variants: [], examples: ["examples.html"] }], assets: ["catalog.css"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid", presentation_validation: "valid" } }; }
+function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ schema_version: "2", id: "system", name, owner: { level: "project", id: projectID }, tokens: theme.tokens, presentation: { default_context: "main", contexts: [{ id: "main", roles: { canvas: "color-canvas", surface: "color-surface", text: "color-text-strong", muted_text: "color-text-secondary", border: "color-border", accent: "color-accent", accent_text: "color-text-strong", on_accent: "color-on-accent", focus: "color-focus", success_text: "color-success", font_family: "font-family-sans", body_size: "text-body", display_size: "text-display", card_radius: "radius-card", control_radius: "radius-small", line_height: "line-body" } }] }, components: [{ id: "button", name: "Button", token_ids: ["color-accent"], states: [], variants: [], examples: ["examples.html"] }], assets: ["catalog.css"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid", presentation_validation: "ready" } }; }
 function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
   return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
 }
@@ -634,6 +634,19 @@ describe("single root Project experience", () => {
     await screen.findByText("Overview for builder");
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#32bbdd");
     expect(screen.getByText("Overview for builder")).toBeInTheDocument();
+  });
+  it("keeps a selected v1 system structurally readable without inventing a Project theme", async () => {
+    const selected = designSystemRead("belluga", "builder");
+    selected.evaluation.items[0].schema_version = "1";
+    selected.evaluation.presentation_validation = "not_ready";
+    const fallback = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => new URL(String(input), location.origin).pathname === "/api/design-system"
+      ? Promise.resolve({ ok: true, json: async () => selected }) : fallback(input)));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+    render(<Projects />);
+    expect(await screen.findByText(/Design System indisponível:/)).toHaveTextContent("presentation is not ready");
+    expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("");
+    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
   });
   it("keeps Roadmap and Documents navigable when the Design System is invalid", async () => {
     const saved = detail("belluga", "builder", [{ path: "project_mandate.md", url: `/snapshot/belluga/builder/${fingerprint}/project_mandate.md` }]);
