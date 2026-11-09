@@ -696,6 +696,19 @@ var sourceBindingsRule = &objectRule{fields: map[string]*objectRule{
 
 var designSystemRule = &objectRule{fields: map[string]*objectRule{
 	"schema_version": nil, "id": nil, "name": nil,
+	"presentation": {fields: map[string]*objectRule{
+		"default_context": nil,
+		"contexts": {fields: map[string]*objectRule{
+			"id": nil,
+			"roles": {fields: map[string]*objectRule{
+				"canvas": nil, "surface": nil, "text": nil, "muted_text": nil, "border": nil,
+				"accent": nil, "accent_text": nil, "on_accent": nil, "focus": nil,
+				"success_text": nil, "font_family": nil, "body_size": nil,
+				"display_size": nil, "card_radius": nil, "control_radius": nil,
+				"line_height": nil,
+			}, required: []string{"canvas", "surface", "text", "muted_text", "border", "accent", "accent_text", "on_accent", "focus", "success_text", "font_family", "body_size", "display_size", "card_radius", "control_radius"}},
+		}, required: []string{"id", "roles"}},
+	}, required: []string{"default_context", "contexts"}},
 	"owner":  {fields: map[string]*objectRule{"level": nil, "id": nil}, required: []string{"level", "id"}},
 	"tokens": {fields: map[string]*objectRule{"id": nil, "type": nil, "value": nil, "ref": nil}, required: []string{"id", "type"}},
 	"components": {fields: map[string]*objectRule{
@@ -741,6 +754,11 @@ func DecodeStrict(data []byte, target any) error {
 	default:
 		return errors.New("strict JSON target has no schema")
 	}
+	if _, ok := target.(*DesignSystemDefinition); ok {
+		if err := validatePresentationRoleTypes(generic); err != nil {
+			return err
+		}
+	}
 	if err := validateKeys(generic, rule); err != nil {
 		return err
 	}
@@ -755,6 +773,37 @@ func DecodeStrict(data []byte, target any) error {
 		return err
 	}
 	return ensureEOF(decoder)
+}
+
+func validatePresentationRoleTypes(value any) error {
+	root, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	presentation, ok := root["presentation"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	contexts, ok := presentation["contexts"].([]any)
+	if !ok {
+		return nil
+	}
+	for index, entry := range contexts {
+		context, ok := entry.(map[string]any)
+		if !ok {
+			continue
+		}
+		roles, ok := context["roles"].(map[string]any)
+		if !ok {
+			continue
+		}
+		for key, raw := range roles {
+			if _, ok := raw.(string); !ok {
+				return fmt.Errorf("presentation.contexts[%d].roles.%s must be a token ID string", index, key)
+			}
+		}
+	}
+	return nil
 }
 
 func validateDesignSystemTokenFieldPresence(value any) error {
@@ -838,30 +887,42 @@ func rejectDuplicateKeys(data []byte) error {
 }
 
 func validateKeys(value any, rule *objectRule) error {
+	return validateKeysAt(value, rule, "")
+}
+
+func validateKeysAt(value any, rule *objectRule, path string) error {
 	if rule == nil {
 		return nil
 	}
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
+			field := key
+			if path != "" {
+				field = path + "." + key
+			}
 			next, ok := rule.fields[key]
 			if !ok {
-				return fmt.Errorf("unknown or non-canonical JSON field %q", key)
+				return fmt.Errorf("unknown or non-canonical JSON field %q", field)
 			}
 			if next != nil {
-				if err := validateKeys(child, next); err != nil {
+				if err := validateKeysAt(child, next, field); err != nil {
 					return err
 				}
 			}
 		}
 		for _, key := range rule.required {
 			if _, ok := typed[key]; !ok {
-				return fmt.Errorf("required JSON field %q is missing", key)
+				field := key
+				if path != "" {
+					field = path + "." + key
+				}
+				return fmt.Errorf("required JSON field %q is missing", field)
 			}
 		}
 	case []any:
-		for _, child := range typed {
-			if err := validateKeys(child, rule); err != nil {
+		for index, child := range typed {
+			if err := validateKeysAt(child, rule, fmt.Sprintf("%s[%d]", path, index)); err != nil {
 				return err
 			}
 		}

@@ -21,7 +21,7 @@ import (
 var todoOperationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 func validTODOOperationKind(value string) bool {
-	return value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "next-step-edit" || value == "historical-adoption" || value == "content-migration" || value == "grant-todo-review-waiver" || value == "remove-todo"
+	return value == "create-todo" || value == "transition" || value == "verify-current-stage" || value == "content-edit" || value == "evidence-edit" || value == "placement-edit" || value == "next-step-edit" || value == "historical-adoption" || value == "content-migration" || value == "grant-todo-review-waiver" || value == "remove-todo"
 }
 
 type TODOReadResponse struct {
@@ -149,6 +149,9 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		}
 		response.TODO.Sections = recordRecordSections(response.TODO)
 	}
+	if response.TODO.AdministrativeAcceptance != nil && response.TODO.Disposition == nil && (!validSourceDigest(response.ContentDigest) || response.TODO.AdministrativeAcceptance.ContentDigest != response.ContentDigest) {
+		return TODOReadResponse{}, todoTeach("administrative_acceptance.content_digest", "match the current immutable typed content revision before treating the accepted stage as effective", ErrConflict)
+	}
 	return response, nil
 }
 
@@ -181,6 +184,9 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	}
 	if err := requireActiveTODO(record); err != nil {
 		return TODOActionResponse{}, err
+	}
+	if record.Disposition != nil {
+		return TODOActionResponse{}, todoTeach("disposition", "use a separately governed future operation before attempting delivery-stage transitions on a disposed TODO", ErrConflict)
 	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
@@ -772,6 +778,9 @@ func (m *MongoStore) VerifyCurrentTODOStage(ctx context.Context, companyID strin
 	if err := requireActiveTODO(record); err != nil {
 		return TODOActionResponse{}, err
 	}
+	if record.Disposition != nil {
+		return TODOActionResponse{}, todoTeach("disposition", "keep a disposed TODO out of delivery-stage verification", ErrConflict)
+	}
 	company, err := m.company(ctx, companyID)
 	if err != nil {
 		return TODOActionResponse{}, err
@@ -869,6 +878,9 @@ func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection
 		{Key: "verified_transition_ref", Value: proof}, {Key: "last_operation", Value: operation},
 		{Key: "updated_at", Value: bson.DateTime(time.Now().UTC().UnixMilli())},
 	}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	if record.AdministrativeAcceptance != nil {
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}}})
+	}
 	var additionalProofRefs []TODOProofReference
 	if len(verifiedProofReferences) > 0 {
 		additionalProofRefs = verifiedProofReferences[0]
@@ -897,6 +909,9 @@ func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection
 		changedStage, verification := stage, "verified"
 		verifiedProof := proof
 		changes := TODOHistoryChanges{Stage: &changedStage, StageVerification: &verification, VerifiedTransitionRef: &verifiedProof}
+		if record.AdministrativeAcceptance != nil {
+			changes.ClearAdministrativeAcceptance = true
+		}
 		if additionalProofRefs != nil {
 			changes.ProofReferences = &additionalProofRefs
 		}
@@ -1015,8 +1030,31 @@ func validateStoredTODO(record TODORecord) error {
 	if proof := record.VerifiedTransitionRef; proof != nil && (proof.VerificationState != "verified" || !validProofReference(*proof)) {
 		return todoTeach("verified_transition_ref", "contain the exact valid verified proof reference", ErrConflict)
 	}
-	if record.LastOperation != nil && (!todoOperationIDPattern.MatchString(record.LastOperation.ID) || !validTODOOperationKind(record.LastOperation.Kind) || !validSourceDigest(record.LastOperation.RequestDigest) || record.LastOperation.ResultRevision < 1 || record.LastOperation.ResultRevision > record.Revision) {
+	if err := validateAdministrativeTODOState(record); err != nil {
+		return err
+	}
+	if record.LastOperation != nil && (!todoOperationIDPattern.MatchString(record.LastOperation.ID) || !validTODOOperationKind(record.LastOperation.Kind) || !validSourceDigest(record.LastOperation.RequestDigest) || record.LastOperation.ResultRevision < 0 || record.LastOperation.ResultRevision > record.Revision || (record.LastOperation.ResultRevision == 0 && record.LastOperation.Kind != "create-todo")) {
 		return todoTeach("last_operation", "contain a valid latest idempotency marker at or before the current revision", ErrConflict)
+	}
+	return nil
+}
+
+func validateAdministrativeTODOState(record TODORecord) error {
+	if basis := record.AdministrativeAcceptance; basis != nil {
+		actorValid := basis.ActorClaim == nil || (validSummaryField(basis.ActorClaim.Value, 160) && basis.ActorClaim.VerificationStatus == "unverified")
+		if basis.AcceptedStage != record.Stage || !validSummaryField(basis.OwnerReference, 512) || !validSummaryField(basis.Reason, 512) || basis.PermissionDecision != "pre-iam-private-api-allow-all" || basis.AcceptedAt == 0 || !validSourceDigest(basis.ContentDigest) || !actorValid || record.StageVerification != "unverified" || record.VerifiedTransitionRef != nil {
+			return todoTeach("administrative_acceptance", "match the authored stage and current unverified state with a valid owner basis, permission decision, timestamp, and content digest", ErrConflict)
+		}
+	}
+	if record.Disposition == nil {
+		if record.DispositionState != "" {
+			return todoTeach("disposition_state", "be omitted when no non-delivery disposition exists", ErrConflict)
+		}
+		return nil
+	}
+	d := record.Disposition
+	if record.DispositionState != "valid" || record.AdministrativeAcceptance == nil || record.Stage != "Planning" || (d.Kind != "Superseded" && d.Kind != "Discarded") || !validSummaryField(d.Reason, 512) || (d.SuccessorTODOID != "" && (!validID(d.SuccessorTODOID) || d.SuccessorTODOID == record.ID)) {
+		return todoTeach("disposition/disposition_state", "be a valid administratively accepted non-delivery record at Planning with an optional distinct successor", ErrConflict)
 	}
 	return nil
 }
@@ -1087,7 +1125,7 @@ func validateStoredSelectedTODO(record TODORecord, contract selectedTODOSourceCo
 	if proof := record.VerifiedTransitionRef; proof != nil && (proof.VerificationState != "verified" || !validProofReference(*proof)) {
 		return todoTeach("verified_transition_ref", "contain the exact valid verified proof reference", ErrConflict)
 	}
-	if record.LastOperation != nil && (!todoOperationIDPattern.MatchString(record.LastOperation.ID) || !validTODOOperationKind(record.LastOperation.Kind) || !validSourceDigest(record.LastOperation.RequestDigest) || record.LastOperation.ResultRevision < 1 || record.LastOperation.ResultRevision > record.Revision) {
+	if record.LastOperation != nil && (!todoOperationIDPattern.MatchString(record.LastOperation.ID) || !validTODOOperationKind(record.LastOperation.Kind) || !validSourceDigest(record.LastOperation.RequestDigest) || record.LastOperation.ResultRevision < 0 || record.LastOperation.ResultRevision > record.Revision || (record.LastOperation.ResultRevision == 0 && record.LastOperation.Kind != "create-todo")) {
 		return todoTeach("last_operation", "contain a valid latest idempotency marker at or before the current revision", ErrConflict)
 	}
 	return nil
@@ -1176,6 +1214,9 @@ func (m *MongoStore) roadmapTODOs(ctx context.Context, collection *mongo.Collect
 			record.DiffExpectation = current.Content.DiffExpectation
 			record.AffectedFiles = current.Content.AffectedFiles
 			record.Source = TODOSource{Kind: "mongo-content-revision", Ref: fmt.Sprintf("%s/%s/content/0", projectID, record.ID), Digest: current.Digest}
+			if record.AdministrativeAcceptance != nil && record.Disposition == nil && record.AdministrativeAcceptance.ContentDigest != current.Digest {
+				return nil, todoTeach("todos[].administrative_acceptance.content_digest", "match the current immutable typed content before Roadmap projection", ErrConflict)
+			}
 		}
 		assigned := record.ReleaseID != "" && record.Position != nil && releaseIDs[record.ReleaseID]
 		backlog := record.Source.Kind == "mongo-content-revision" && record.ReleaseID == "" && record.Position == nil

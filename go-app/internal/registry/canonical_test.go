@@ -43,6 +43,10 @@ func TestCanonicalTemplateDescribesCompleteTypedPayloadsAndDraftLimit(t *testing
 	if template["migration_id_policy"].(map[string]string)["output"] == "" {
 		t.Fatal("missing source-ID migration policy")
 	}
+	apiIDs := template["api_born_id_policy"].(map[string]string)
+	if !strings.Contains(apiIDs["provenance"], "do not invent a Git SHA") || !strings.Contains(apiIDs["nested_id"], "owner-local ID") {
+		t.Fatal("API-born authoring needs an ID policy without invented Git provenance")
+	}
 	guides := template["object_guides"].(map[string]any)
 	moduleGuide := guides[string(FamilyModule)].(map[string]any)
 	if moduleGuide["purpose"] == "" || len(moduleGuide["required_fields"].([]string)) == 0 || moduleGuide["accepted_fields"].(map[string]string)["decisions"] == "" {
@@ -632,6 +636,253 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	}
 	if restoreEvents != 1 {
 		t.Fatalf("restore retry created %d immutable events; want one", restoreEvents)
+	}
+}
+
+func TestMongoCanonicalAPIBornDraftOnUnboundProjectIsIdempotentAndRequiresActivation(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("canonical_api_born_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-api-born")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	project, err := store.Register(ctx, Registration{CompanyID: "company-api-born", CompanyName: "API Born", ProjectID: "unbound", ProjectName: "Unbound Project"})
+	if err != nil || project.Binding != nil {
+		t.Fatalf("unbound Project registration=%+v, err=%v", project, err)
+	}
+	if pending, e := store.CanonicalManifest(ctx, "company-api-born", "unbound", ""); e != nil || pending.State != "pending" || pending.Active {
+		t.Fatalf("initial pending manifest=%+v, err=%v", pending, e)
+	}
+
+	const generation = "api-generation"
+	records := []CanonicalImportRecord{
+		canonicalTestRecord(FamilyMandate, "unbound", `{"purpose":"Build","scope":["web"]}`),
+		canonicalTestRecord(FamilyDomain, "unbound", `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
+		canonicalTestRecord(FamilyConstitution, "unbound", `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"tenant-access","status":"current","statement":"Scope reads"}]}`),
+		canonicalTestRecord(FamilyRoadmap, "unbound", `{"stages":[{"id":"launch","name":"Launch","status":"planned"}]}`),
+		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-ART-01","status":"current","statement":"Module owns routes"}],"schemas":[{"id":"project","name":"projects","kind":"collection","fields":[{"name":"name","type":"string"}]}]}`),
+		canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-ART-01"}]}`),
+	}
+	for i := range records {
+		records[i].Record.ProjectID = "unbound"
+		records[i].Record.GenerationID = generation
+	}
+	input := CanonicalDraftCreate{ProjectID: "unbound", GenerationID: generation, Records: records, OperationID: "api-born-initial", Actor: "genesis-agent"}
+	body, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(store)
+	base := "/internal/v1/companies/company-api-born/projects/unbound/knowledge/drafts/api-born"
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(body))))
+	var draft CanonicalManifest
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &draft) != nil || draft.State != "draft" || draft.Active || len(draft.Documents) != len(records) {
+		t.Fatalf("API-born draft response=%d %s", response.Code, response.Body.String())
+	}
+	readback, err := store.ReadCanonicalDraft(ctx, "company-api-born", "unbound", generation, FamilyModule, "projects")
+	if err != nil || readback.ProjectID != "unbound" || readback.GenerationID != generation {
+		t.Fatalf("API-born draft readback=%+v, err=%v", readback, err)
+	}
+	if _, err := store.ReadCanonical(ctx, "company-api-born", "unbound", FamilyMandate, "unbound"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("API-born draft became active before explicit activation: %v", err)
+	}
+	invalid := input
+	invalid.GenerationID, invalid.OperationID = "invalid-generation", "invalid-api-born"
+	invalid.Records = []CanonicalImportRecord{canonicalTestRecord(FamilyMandate, "unbound", `{"scope":["web"]}`)}
+	invalid.Records[0].Record.ProjectID, invalid.Records[0].Record.GenerationID = "unbound", invalid.GenerationID
+	if _, err := store.CreateCanonicalDraft(ctx, "company-api-born", invalid); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("API-born draft accepted invalid typed content: %v", err)
+	}
+	if manifest, err := store.CanonicalManifest(ctx, "company-api-born", "unbound", invalid.GenerationID); err != nil || len(manifest.Documents) != 0 {
+		t.Fatalf("invalid API-born draft left partial records: %+v, %v", manifest, err)
+	}
+	wrongProject := input
+	wrongProject.ProjectID = "other-project"
+	wrongProjectBody, err := json.Marshal(wrongProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(wrongProjectBody))))
+	if response.Code != 409 {
+		t.Fatalf("API-born route accepted mismatched Project identity: %d %s", response.Code, response.Body.String())
+	}
+	wrongCompanyPath := strings.Replace(base, "company-api-born", "company-other", 1)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", wrongCompanyPath, strings.NewReader(string(body))))
+	if response.Code != 404 {
+		t.Fatalf("API-born route crossed Company identity: %d %s", response.Code, response.Body.String())
+	}
+
+	second := canonicalTestRecord(FamilyModule, "audit", `{"purpose":"Owns audit records"}`)
+	second.Record.ProjectID, second.Record.GenerationID = "unbound", generation
+	if _, err := store.CreateCanonicalDraft(ctx, "company-api-born", CanonicalDraftCreate{ProjectID: "unbound", GenerationID: generation, Records: []CanonicalImportRecord{second}, OperationID: "api-born-second-batch", Actor: "genesis-agent"}); err != nil {
+		t.Fatalf("second API-born batch: %v", err)
+	}
+	db, _, err := store.canonicalDB(ctx, "company-api-born", "unbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	countBefore, err := db.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}, {Key: "operation_id", Value: input.OperationID}})
+	if err != nil || countBefore != int64(len(records)) {
+		t.Fatalf("initial event count=%d, err=%v", countBefore, err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(body))))
+	var retried CanonicalManifest
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &retried) != nil || len(retried.Documents) != len(records)+1 || retried.Active {
+		t.Fatalf("exact retry did not return current generation manifest: %d %s", response.Code, response.Body.String())
+	}
+	countAfter, err := db.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}, {Key: "operation_id", Value: input.OperationID}})
+	if err != nil || countAfter != countBefore {
+		t.Fatalf("exact retry wrote another event: before=%d after=%d err=%v", countBefore, countAfter, err)
+	}
+	var apiEvent CanonicalEvent
+	if err := db.Collection(canonicalEvents).FindOne(ctx, bson.D{{Key: "project_id", Value: "unbound"}, {Key: "operation_id", Value: input.OperationID}}).Decode(&apiEvent); err != nil || apiEvent.SourceKind != "api" || apiEvent.SourceRevision != "" || apiEvent.Actor != input.Actor || apiEvent.OccurredAt.IsZero() {
+		t.Fatalf("API provenance event=%+v, err=%v", apiEvent, err)
+	}
+
+	changedActor := input
+	changedActor.Actor = "different-actor"
+	if _, err := store.CreateCanonicalDraft(ctx, "company-api-born", changedActor); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed actor reused the same operation: %v", err)
+	}
+	changedPayload := input
+	changedPayload.Records = append([]CanonicalImportRecord(nil), input.Records...)
+	changedPayload.Records[0].Record.Payload = json.RawMessage(`{"purpose":"Changed","scope":["web"]}`)
+	if _, err := store.CreateCanonicalDraft(ctx, "company-api-born", changedPayload); !errors.Is(err, ErrConflict) {
+		t.Fatalf("changed payload reused the same operation: %v", err)
+	}
+	withGitSHA := append([]byte(nil), body...)
+	withGitSHA = []byte(strings.TrimSuffix(string(withGitSHA), "}") + `,"source_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(withGitSHA))))
+	if response.Code != 400 {
+		t.Fatalf("API-born route accepted Git source_revision: %d %s", response.Code, response.Body.String())
+	}
+	parallelRecord := canonicalTestRecord(FamilyModule, "parallel-module", `{"purpose":"Parallel genesis"}`)
+	parallelRecord.Record.ProjectID, parallelRecord.Record.GenerationID = "unbound", generation
+	parallelInput := CanonicalDraftCreate{ProjectID: "unbound", GenerationID: generation, Records: []CanonicalImportRecord{parallelRecord}, OperationID: "api-born-parallel", Actor: "genesis-agent"}
+	start := make(chan struct{})
+	parallelResults := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			<-start
+			request := parallelInput
+			request.Records = append([]CanonicalImportRecord(nil), parallelInput.Records...)
+			manifest, createErr := store.CreateCanonicalDraft(ctx, "company-api-born", request)
+			if createErr == nil && (manifest.State != "draft" || len(manifest.Documents) != len(records)+2) {
+				createErr = fmt.Errorf("unexpected parallel manifest: %+v", manifest)
+			}
+			parallelResults <- createErr
+		}()
+	}
+	close(start)
+	for i := 0; i < 2; i++ {
+		if createErr := <-parallelResults; createErr != nil {
+			t.Fatalf("identical concurrent API-born request failed: %v", createErr)
+		}
+	}
+	parallelEvents, err := db.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}, {Key: "operation_id", Value: parallelInput.OperationID}})
+	if err != nil || parallelEvents != 1 {
+		t.Fatalf("identical concurrent requests wrote %d events, err=%v", parallelEvents, err)
+	}
+	active, err := store.ActivateCanonical(ctx, "company-api-born", "unbound", generation, "activate-api-born", "owner")
+	if err != nil || !active.Active || active.State != "active" {
+		t.Fatalf("explicit API-born activation=%+v, err=%v", active, err)
+	}
+	updatedMandate := records[0].Record
+	updatedMandate.Payload = json.RawMessage(`{"purpose":"Build responsibly","scope":["web"]}`)
+	if _, err := store.EditCanonical(ctx, "company-api-born", CanonicalMutation{ProjectID: "unbound", Family: FamilyMandate, Record: updatedMandate, ExpectedRevision: 1, OperationID: "edit-api-born-mandate", Actor: "owner"}); err != nil {
+		t.Fatalf("legitimate active record edit: %v", err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(body))))
+	var retriedActive CanonicalManifest
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &retriedActive) != nil || !retriedActive.Active || retriedActive.State != "active" {
+		t.Fatalf("exact retry after activation/edit did not return current active manifest: %d %s", response.Code, response.Body.String())
+	}
+	if len(retriedActive.Documents) != len(records)+2 {
+		t.Fatalf("active replay manifest has %d documents, want %d", len(retriedActive.Documents), len(records)+2)
+	}
+	countAfterEditRetry, err := db.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}, {Key: "operation_id", Value: input.OperationID}})
+	if err != nil || countAfterEditRetry != countBefore {
+		t.Fatalf("active exact retry wrote another original event: before=%d after=%d err=%v", countBefore, countAfterEditRetry, err)
+	}
+	response = httptest.NewRecorder()
+	activeReadPath := base[:strings.LastIndex(base, "/drafts/api-born")] + "/project_mandate/unbound"
+	handler.ServeHTTP(response, httptest.NewRequest("GET", activeReadPath, nil))
+	var activeRead CanonicalRecord
+	if response.Code != 200 || json.Unmarshal(response.Body.Bytes(), &activeRead) != nil || activeRead.ProjectID != "unbound" || activeRead.GenerationID != generation || activeRead.Revision != 2 || canonicalDigest(activeRead.Payload) != canonicalDigest(updatedMandate.Payload) {
+		t.Fatalf("exact active HTTP read after activation/edit: %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestMongoCanonicalAPIBornDraftRollsBackWhenSecondVersionInsertFails(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("canonical_api_rollback_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-api-rollback")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-api-rollback", CompanyName: "API Rollback", ProjectID: "rollback", ProjectName: "Rollback Project"}); err != nil {
+		t.Fatal(err)
+	}
+	const generation = "rollback-generation"
+	first := canonicalTestRecord(FamilyModule, "first", `{"purpose":"First module","decisions":[{"id":"first-decision","status":"current","statement":"Owns first"}]}`)
+	second := canonicalTestRecord(FamilyModule, "second", `{"purpose":"Second module","decisions":[{"id":"second-decision","status":"current","statement":"Owns second"}]}`)
+	first.Record.ProjectID, first.Record.GenerationID = "rollback", generation
+	second.Record.ProjectID, second.Record.GenerationID = "rollback", generation
+	db, _, err := store.canonicalDB(ctx, "company-api-rollback", "rollback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Collection(canonicalVersions).InsertOne(ctx, canonicalVersion("rollback", generation, FamilyModule, second.Record)); err != nil {
+		t.Fatalf("seed conflicting immutable second version: %v", err)
+	}
+	input := CanonicalDraftCreate{ProjectID: "rollback", GenerationID: generation, Records: []CanonicalImportRecord{first, second}, OperationID: "rollback-api-born", Actor: "test-agent"}
+	if _, err := store.CreateCanonicalDraft(ctx, "company-api-rollback", input); err == nil {
+		t.Fatal("draft write succeeded despite conflicting second immutable version")
+	}
+	for _, item := range []CanonicalImportRecord{first, second} {
+		name, _ := canonicalCollection(item.Family)
+		count, e := db.Collection(name).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "rollback"}, {Key: "generation_id", Value: generation}, {Key: "id", Value: item.Record.ID}})
+		if e != nil || count != 0 {
+			t.Fatalf("transaction left current record %s: count=%d err=%v", item.Record.ID, count, e)
+		}
+	}
+	firstVersionCount, err := db.Collection(canonicalVersions).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "rollback"}, {Key: "generation_id", Value: generation}, {Key: "family", Value: FamilyModule}, {Key: "record_id", Value: "first"}})
+	if err != nil || firstVersionCount != 0 {
+		t.Fatalf("transaction left first immutable version: count=%d err=%v", firstVersionCount, err)
+	}
+	secondVersionCount, err := db.Collection(canonicalVersions).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "rollback"}, {Key: "generation_id", Value: generation}, {Key: "family", Value: FamilyModule}, {Key: "record_id", Value: "second"}})
+	if err != nil || secondVersionCount != 1 {
+		t.Fatalf("rollback changed seeded second immutable version: count=%d err=%v", secondVersionCount, err)
+	}
+	eventCount, err := db.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "rollback"}, {Key: "generation_id", Value: generation}, {Key: "operation_id", Value: input.OperationID}})
+	if err != nil || eventCount != 0 {
+		t.Fatalf("transaction left events: count=%d err=%v", eventCount, err)
 	}
 }
 

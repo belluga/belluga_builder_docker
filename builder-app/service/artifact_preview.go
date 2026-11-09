@@ -192,21 +192,34 @@ type roadmapRelease struct {
 }
 
 type roadmapTODO struct {
-	ID                    string `json:"id"`
-	TODORevision          *int64 `json:"todo_revision,omitempty"`
-	Title                 string `json:"title"`
-	Path                  string `json:"path"`
-	Kind                  string `json:"kind"`
-	Missing               bool   `json:"missing,omitempty"`
-	Objective             string `json:"objective,omitempty"`
-	ObjectiveState        string `json:"objective_state"`
-	NextStep              string `json:"next_step,omitempty"`
-	NextStepState         string `json:"next_step_state"`
-	RecordState           string `json:"record_state"`
-	DeliveryStage         string `json:"delivery_stage,omitempty"`
-	AuthoredDeliveryStage string `json:"authored_delivery_stage"`
-	DeliveryStageState    string `json:"delivery_stage_state"`
-	DeliveryStageTeach    string `json:"delivery_stage_teach,omitempty"`
+	ID                       string `json:"id"`
+	TODORevision             *int64 `json:"todo_revision,omitempty"`
+	Title                    string `json:"title"`
+	Path                     string `json:"path"`
+	Kind                     string `json:"kind"`
+	Missing                  bool   `json:"missing,omitempty"`
+	Objective                string `json:"objective,omitempty"`
+	ObjectiveState           string `json:"objective_state"`
+	NextStep                 string `json:"next_step,omitempty"`
+	NextStepState            string `json:"next_step_state"`
+	RecordState              string `json:"record_state"`
+	DeliveryStage            string `json:"delivery_stage,omitempty"`
+	AuthoredDeliveryStage    string `json:"authored_delivery_stage"`
+	DeliveryStageState       string `json:"delivery_stage_state"`
+	DeliveryStageBasis       string `json:"delivery_stage_basis,omitempty"`
+	DeliveryStageTeach       string `json:"delivery_stage_teach,omitempty"`
+	AdministrativeAcceptance *struct {
+		AcceptedStage      string `json:"accepted_stage"`
+		OwnerReference     string `json:"owner_reference"`
+		Reason             string `json:"reason"`
+		PermissionDecision string `json:"permission_decision"`
+		ContentDigest      string `json:"content_digest"`
+	} `json:"administrative_acceptance,omitempty"`
+	Disposition *struct {
+		Kind            string `json:"kind"`
+		Reason          string `json:"reason"`
+		SuccessorTODOID string `json:"successor_todo_id,omitempty"`
+	} `json:"disposition,omitempty"`
 	HistoricalDisposition string `json:"historical_disposition,omitempty"`
 	DispositionReason     string `json:"disposition_reason,omitempty"`
 	SuccessorTODO         string `json:"successor_todo,omitempty"`
@@ -1048,7 +1061,30 @@ func validRegistryRoadmap(data json.RawMessage, projectID string) bool {
 	}
 	seen := make(map[string]bool)
 	validTODO := func(todo roadmapTODO) bool {
-		if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || todo.Path != "" && !validMongoTODOPath(todo.Path) || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.DeliveryStageState != "verified" && todo.DeliveryStageState != "unverified" || todo.DeliveryStageState == "verified" && (!canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage) || todo.DeliveryStageState == "unverified" && (todo.DeliveryStage != "" || todo.DeliveryStageTeach == "") || todo.QualifierState == "" {
+		if !validRegistrationID(todo.ID) || seen[todo.ID] || todo.TODORevision == nil || *todo.TODORevision < 0 || todo.Title == "" || todo.Path != "" && !validMongoTODOPath(todo.Path) || todo.Kind == "" || todo.RecordState == "" || !canonicalTODOStage(todo.AuthoredDeliveryStage) || todo.QualifierState == "" {
+			return false
+		}
+		if todo.Disposition != nil {
+			if todo.Kind != "non-delivery" || todo.DispositionState != "valid" || todo.Disposition.Kind != "Superseded" && todo.Disposition.Kind != "Discarded" || todo.Disposition.Reason == "" || todo.DeliveryStage != "" || todo.DeliveryStageTeach != "" || todo.AdministrativeAcceptance == nil || todo.AuthoredDeliveryStage != "Planning" {
+				return false
+			}
+			seen[todo.ID] = true
+			return true
+		}
+		switch todo.DeliveryStageState {
+		case "verified":
+			if !canonicalTODOStage(todo.DeliveryStage) || todo.DeliveryStage != todo.AuthoredDeliveryStage {
+				return false
+			}
+		case "unverified":
+			if todo.DeliveryStage != "" || todo.DeliveryStageTeach == "" {
+				return false
+			}
+		case "administrative":
+			if todo.DeliveryStage != todo.AuthoredDeliveryStage || todo.DeliveryStageBasis != "administrative-acceptance" || todo.AdministrativeAcceptance == nil || todo.AdministrativeAcceptance.AcceptedStage != todo.DeliveryStage || todo.AdministrativeAcceptance.OwnerReference == "" || todo.AdministrativeAcceptance.Reason == "" || todo.AdministrativeAcceptance.ContentDigest == "" || todo.Disposition != nil {
+				return false
+			}
+		default:
 			return false
 		}
 		seen[todo.ID] = true

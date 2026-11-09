@@ -19,7 +19,7 @@ import (
 )
 
 func genericTODOAdmissionFixture() TODOAdmissionRequest {
-	return TODOAdmissionRequest{TODO: TODORecord{
+	return TODOAdmissionRequest{OperationID: "test-create-operation", TODO: TODORecord{
 		ID: "builder-mongo-todo-history-storage-implementation", ProjectID: "builder", ReleaseID: "r-08", Position: intPointer(3),
 		Title: "TODO: Mongo TODO history", Objective: "Establish immutable TODO content versions and semantic events.",
 		NextExactStep: "Admit this TODO to its existing Mongo Release.", ArtifactType: "tactical_execution_contract",
@@ -116,6 +116,12 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 	if err := validateMongoTODOCreation(template.Example.TODO); err != nil {
 		t.Fatalf("template example rejected by write validator: %v", err)
 	}
+	if !containsTODOString(template.Required, "todo.sections") || template.AdministrativeExample.TODO.Stage != "Completed" || template.AdministrativeExample.InitialStateAcceptance == nil {
+		t.Fatalf("template omits required sections or complete administrative example: %+v", template)
+	}
+	if err := validateMongoTODOCreationRequest(template.AdministrativeExample); err != nil {
+		t.Fatalf("administrative template example rejected: %v", err)
+	}
 	if !containsTODOString(template.Optional, "todo.release_id") || !containsTODOString(template.Optional, "todo.position") || template.Limits["record_bytes"] != maxTODORecordBytes {
 		t.Fatalf("template omits Backlog placement or record limits: %+v", template)
 	}
@@ -132,6 +138,71 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 				t.Fatal("invalid Mongo-born creation accepted")
 			}
 		})
+	}
+}
+
+func TestAdministrativeInitialStateAndDispositionValidation(t *testing.T) {
+	for _, stage := range canonicalTODOStages[1:] {
+		t.Run(stage, func(t *testing.T) {
+			record := mongoBornTODOFixture()
+			record.Stage = stage
+			request := TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "admin-stage-create", TODO: record,
+				InitialStateAcceptance: &TODOInitialStateAcceptance{OwnerReference: "owner-acceptance-17", Reason: "Owner confirms this recorded initial state."}}
+			if err := validateMongoTODOCreationRequest(request); err != nil {
+				t.Fatalf("valid accepted initial stage rejected: %v", err)
+			}
+			request.InitialStateAcceptance = nil
+			if err := validateMongoTODOCreationRequest(request); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("non-Planning stage without acceptance = %v; want invalid", err)
+			}
+		})
+	}
+	planning := mongoBornTODOFixture()
+	request := TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "disposition-create", TODO: planning,
+		InitialStateAcceptance: &TODOInitialStateAcceptance{OwnerReference: "owner-acceptance-18", Reason: "Owner confirms non-delivery."},
+		Disposition:            &TODODisposition{Kind: "Superseded", Reason: "Replaced by the current TODO.", SuccessorTODOID: "builder-current-todo"}}
+	if err := validateMongoTODOCreationRequest(request); err != nil {
+		t.Fatalf("valid disposition rejected: %v", err)
+	}
+	for name, mutate := range map[string]func(*TODOAdmissionRequest){
+		"completed conflict": func(value *TODOAdmissionRequest) { value.TODO.Stage = "Completed" },
+		"missing reason":     func(value *TODOAdmissionRequest) { value.Disposition.Reason = "" },
+		"self successor":     func(value *TODOAdmissionRequest) { value.Disposition.SuccessorTODOID = value.TODO.ID },
+		"missing acceptance": func(value *TODOAdmissionRequest) { value.InitialStateAcceptance = nil },
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := request
+			invalid.Disposition = ptrDisposition(*request.Disposition)
+			invalid.InitialStateAcceptance = ptrInitialAcceptance(*request.InitialStateAcceptance)
+			mutate(&invalid)
+			if err := validateMongoTODOCreationRequest(invalid); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("invalid disposition accepted: %v", err)
+			}
+		})
+	}
+}
+
+func ptrDisposition(value TODODisposition) *TODODisposition { return &value }
+func ptrInitialAcceptance(value TODOInitialStateAcceptance) *TODOInitialStateAcceptance {
+	return &value
+}
+
+func TestRoadmapSeparatesAdministrativeAcceptanceAndDisposition(t *testing.T) {
+	accepted := mongoBornTODOFixture()
+	accepted.Stage = "Completed"
+	accepted.StageVerification = "unverified"
+	accepted.AdministrativeAcceptance = &TODOAdministrativeAcceptance{AcceptedStage: "Completed", OwnerReference: "owner-ref", Reason: "Owner accepted current state.", PermissionDecision: "pre-iam-private-api-allow-all", AcceptedAt: bson.DateTime(time.Now().UTC().UnixMilli()), ContentDigest: sourceHash([]byte("content"))}
+	view := roadmapTODOViewFromRecord(accepted)
+	if view.DeliveryStage != "Completed" || view.DeliveryStageState != "administrative" || view.DeliveryStageBasis != "administrative-acceptance" || view.AdministrativeAcceptance == nil {
+		t.Fatalf("administrative Roadmap projection = %+v", view)
+	}
+	disposed := mongoBornTODOFixture()
+	disposed.Disposition = &TODODisposition{Kind: "Discarded", Reason: "No longer needed."}
+	disposed.DispositionState = "valid"
+	disposed.AdministrativeAcceptance = &TODOAdministrativeAcceptance{AcceptedStage: "Planning", OwnerReference: "owner-ref", Reason: "Owner accepted disposition.", PermissionDecision: "pre-iam-private-api-allow-all", AcceptedAt: bson.DateTime(time.Now().UTC().UnixMilli()), ContentDigest: sourceHash([]byte("content"))}
+	disposedView := roadmapTODOViewFromRecord(disposed)
+	if disposedView.Kind != "non-delivery" || disposedView.DispositionState != "valid" || disposedView.Disposition == nil || disposedView.DeliveryStage != "" {
+		t.Fatalf("non-delivery Roadmap projection = %+v", disposedView)
 	}
 }
 
@@ -466,7 +537,7 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	builderBorn.ID, builderBorn.ProjectID, builderBorn.ReleaseID, builderBorn.Position = "no-foundation-todo", "no-foundation", "r-01", intPointer(0)
 	builderBorn.Content = &typed.TODOContent
 	builderBorn.DiffExpectation = typed.DiffExpectation
-	if _, err := store.AdmitTODO(ctx, "company-a", "no-foundation", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: builderBorn}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "no-foundation", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "builder-born-no-foundation", TODO: builderBorn}); err != nil {
 		t.Fatalf("Foundation-free TODO admission: %v", err)
 	}
 	zero := int64(0)
@@ -1124,7 +1195,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoEventsCollection}, {Key: "validator", Value: historyValidatorBeforeClearPlacement(TODOEventsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatalf("set pre-creation event validator: %v", err)
 	}
-	mongoAdmission, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: creationTemplate.SchemaVersion, TODO: mongoBorn})
+	mongoAdmission, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: creationTemplate.SchemaVersion, OperationID: "mongo-born-backlog-create", TODO: mongoBorn})
 	if err != nil || mongoAdmission.TODOID != mongoBorn.ID || mongoAdmission.ReleaseID != "" || mongoAdmission.ContentRevision != 0 || !validSourceDigest(mongoAdmission.ContentDigest) {
 		t.Fatalf("Mongo-born Backlog admission = %+v, %v", mongoAdmission, err)
 	}
@@ -1132,7 +1203,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("Mongo-born admission did not upgrade the recognized pre-creation validator: %v", err)
 	}
 	mongoCreationEvent, err := readHistoryBaseline(ctx, database, "builder", mongoBorn.ID)
-	if err != nil || mongoCreationEvent.ProofReference == nil || mongoCreationEvent.ProofReference.Kind != "created" || mongoCreationEvent.ProofReference.SourceDigest != mongoAdmission.ContentDigest {
+	if err != nil || mongoCreationEvent.Changes.VerifiedTransitionRef == nil || mongoCreationEvent.Changes.VerifiedTransitionRef.Kind != "created" || mongoCreationEvent.Changes.VerifiedTransitionRef.SourceDigest != mongoAdmission.ContentDigest {
 		t.Fatalf("Mongo-born Planning baseline lacks its Mongo creation proof: %+v, %v", mongoCreationEvent, err)
 	}
 	mongoRead, err := store.ReadTODO(ctx, "company-a", "builder", mongoBorn.ID, nil)
@@ -1171,7 +1242,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	booraTemplate, err := store.TODOCreationTemplate(ctx, "company-a", "boora")
 	booraTODO := mongoBornTODOFixture()
 	booraTODO.ID, booraTODO.ProjectID = "boora-mongo-created-backlog", "boora"
-	booraAdmission, admitErr := store.AdmitTODO(ctx, "company-a", "boora", TODOAdmissionRequest{SchemaVersion: booraTemplate.SchemaVersion, TODO: booraTODO})
+	booraAdmission, admitErr := store.AdmitTODO(ctx, "company-a", "boora", TODOAdmissionRequest{SchemaVersion: booraTemplate.SchemaVersion, OperationID: "boora-backlog-create", TODO: booraTODO})
 	var booraRoadmap struct {
 		Backlog struct {
 			TODOs []roadmapTODOView `json:"todos"`
@@ -1777,7 +1848,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	// Planning is a lifecycle fact, not approval of a specific content revision.
 	planning := mongoBornTODOFixture()
 	planning.ID, planning.ReleaseID, planning.Position = "planning-edit-regression", "r-09", intPointer(1)
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: planning}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "planning-create-test", TODO: planning}); err != nil {
 		t.Fatalf("create Planning regression TODO: %v", err)
 	}
 	planningContent := TODOAuthoredContent{TODOContent: validTODOContent(), Title: planning.Title, Objective: planning.Objective, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
@@ -1803,5 +1874,82 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	pending, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &twoPlanning, OperationID: "review-planning-001", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}})
 	if err != nil || pending.Stage != "Implementation-Approval-Pending" || pending.StageVerification != "verified" {
 		t.Fatalf("pre-approval transition: %+v, %v", pending, err)
+	}
+
+	// A source-blind administrative create must remain idempotent even after
+	// later placement and content revisions. Placement alone is not a new
+	// decision about the accepted stage.
+	accepted := mongoBornTODOFixture()
+	accepted.ID, accepted.Stage = "builder-administratively-accepted", "Completed"
+	accepted.ReleaseID, accepted.Position = "r-08", intPointer(8)
+	adminCreate := TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "admin-accepted-create", TODO: accepted,
+		InitialStateAcceptance: &TODOInitialStateAcceptance{OwnerReference: "owner-approval", Reason: "Owner confirms delivery without asserting deployment proof."}}
+	original, err := store.AdmitTODO(ctx, "company-a", "builder", adminCreate)
+	if err != nil || original.Revision != 0 || !validSourceDigest(original.ContentDigest) {
+		t.Fatalf("administrative create: %+v, %v", original, err)
+	}
+	adminRead, err := store.ReadTODO(ctx, "company-a", "builder", accepted.ID, nil)
+	if err != nil || adminRead.TODO.Stage != "Completed" || adminRead.TODO.StageVerification != "unverified" || adminRead.TODO.VerifiedTransitionRef != nil || adminRead.TODO.AdministrativeAcceptance == nil {
+		t.Fatalf("administrative readback claimed verified delivery: %+v, %v", adminRead, err)
+	}
+	adminNoOp, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: accepted.ID,
+		ExpectedRevision: int64Pointer(0), OperationID: "admin-accepted-noop", Content: contentFromTODO(adminRead.TODO), Reason: "Confirm unchanged content"})
+	if err != nil || !adminNoOp.NoOp || adminNoOp.Revision != 0 {
+		t.Fatalf("unchanged content revoked administrative acceptance: %+v, %v", adminNoOp, err)
+	}
+	projectBeforeAdminMove, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminMoved, err := store.EditTODOPlacement(ctx, "company-a", TODOPlacementEditRequest{ProjectID: "builder", TODOID: accepted.ID,
+		ExpectedRevision: int64Pointer(0), ExpectedRoadmapRevision: &projectBeforeAdminMove.RoadmapRevision,
+		OperationID: "admin-accepted-move", ReleaseID: "r-09", Position: 8, Reason: "Owner moved grouping without changing acceptance"})
+	if err != nil || adminMoved.Revision != 1 {
+		t.Fatalf("accepted placement edit: %+v, %v", adminMoved, err)
+	}
+	adminRead, err = store.ReadTODO(ctx, "company-a", "builder", accepted.ID, nil)
+	if err != nil || adminRead.TODO.Stage != "Completed" || adminRead.TODO.AdministrativeAcceptance == nil {
+		t.Fatalf("placement revoked administrative acceptance: %+v, %v", adminRead, err)
+	}
+	adminContent := contentFromTODO(adminRead.TODO)
+	adminContent.Title += " revised"
+	if _, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: "builder", TODOID: accepted.ID,
+		ExpectedRevision: int64Pointer(1), OperationID: "admin-accepted-content-revision", Content: adminContent,
+		Reason: "Substantive contract change requires replanning"}); err != nil {
+		t.Fatalf("edit accepted content: %v", err)
+	}
+	adminRead, err = store.ReadTODO(ctx, "company-a", "builder", accepted.ID, nil)
+	if err != nil || adminRead.TODO.Stage != "Planning" || adminRead.TODO.AdministrativeAcceptance != nil {
+		t.Fatalf("content edit retained stale effective acceptance: %+v, %v", adminRead, err)
+	}
+	replayed, err := store.AdmitTODO(ctx, "company-a", "builder", adminCreate)
+	if err != nil || replayed != original {
+		t.Fatalf("create replay after edits lost original result: %+v, %v", replayed, err)
+	}
+	eventCount, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "todo_id", Value: accepted.ID}, {Key: "operation_id", Value: adminCreate.OperationID}})
+	if err != nil || eventCount != 1 {
+		t.Fatalf("create replay wrote %d initial events: %v", eventCount, err)
+	}
+	conflicting := adminCreate
+	conflicting.InitialStateAcceptance = ptrInitialAcceptance(*adminCreate.InitialStateAcceptance)
+	conflicting.InitialStateAcceptance.Reason = "Different claim under the same key"
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", conflicting); !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflicting create replay = %v; want conflict", err)
+	}
+	disposed := mongoBornTODOFixture()
+	disposed.ID, disposed.ReleaseID, disposed.Position = "builder-discarded-record", "r-08", intPointer(9)
+	disposedCreate := TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "admin-disposed-create", TODO: disposed,
+		InitialStateAcceptance: &TODOInitialStateAcceptance{OwnerReference: "owner-disposition", Reason: "Owner decided this work will not be delivered."},
+		Disposition:            &TODODisposition{Kind: "Discarded", Reason: "No longer required."}}
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", disposedCreate); err != nil {
+		t.Fatalf("create non-delivery history: %v", err)
+	}
+	disposedRead, err := store.ReadTODO(ctx, "company-a", "builder", disposed.ID, nil)
+	if err != nil || disposedRead.TODO.Disposition == nil || disposedRead.TODO.Disposition.Kind != "Discarded" || disposedRead.TODO.Stage != "Planning" {
+		t.Fatalf("non-delivery readback: %+v, %v", disposedRead, err)
+	}
+	disposedRoadmap, err := store.Roadmap(ctx, "builder", "company-a")
+	if err != nil || !strings.Contains(string(disposedRoadmap), `"kind":"non-delivery"`) || !strings.Contains(string(disposedRoadmap), disposed.ID) {
+		t.Fatalf("non-delivery not projected in Release: %s, %v", disposedRoadmap, err)
 	}
 }

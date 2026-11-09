@@ -218,7 +218,7 @@ func TestMongoNextStepEditPreservesContentAndStage(t *testing.T) {
 	}
 	record := mongoBornTODOFixture()
 	record.ID = "next-step-edit-fixture"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "next-step-edit-create", TODO: record}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)
@@ -310,7 +310,7 @@ func TestMongoEvidenceEditUpgradesPriorCapacityAndPersistsHistory(t *testing.T) 
 	}
 	record := mongoBornTODOFixture()
 	record.ID = "capacity-upgrade-fixture"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "capacity-upgrade-create", TODO: record}); err != nil {
 		t.Fatal(err)
 	}
 	database := store.client.Database(store.tenantDatabase("company-a"))

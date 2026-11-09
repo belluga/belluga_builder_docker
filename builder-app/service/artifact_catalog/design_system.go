@@ -49,14 +49,32 @@ type DesignSystemOwner struct {
 }
 
 type DesignSystemDefinition struct {
-	SchemaVersion string            `json:"schema_version"`
-	ID            string            `json:"id"`
-	Name          string            `json:"name"`
-	Owner         DesignSystemOwner `json:"owner"`
-	Tokens        []DesignToken     `json:"tokens"`
-	Components    []DesignComponent `json:"components"`
-	Assets        []string          `json:"assets"`
-	ContrastPairs []ContrastPair    `json:"contrast_pairs"`
+	SchemaVersion string              `json:"schema_version"`
+	ID            string              `json:"id"`
+	Name          string              `json:"name"`
+	Owner         DesignSystemOwner   `json:"owner"`
+	Presentation  *DesignPresentation `json:"presentation,omitempty"`
+	Tokens        []DesignToken       `json:"tokens"`
+	Components    []DesignComponent   `json:"components"`
+	Assets        []string            `json:"assets"`
+	ContrastPairs []ContrastPair      `json:"contrast_pairs"`
+}
+
+type DesignPresentation struct {
+	DefaultContext string               `json:"default_context"`
+	Contexts       []DesignThemeContext `json:"contexts"`
+}
+
+type DesignThemeContext struct {
+	ID    string            `json:"id"`
+	Roles map[string]string `json:"roles"`
+}
+
+type PresentationTeach struct {
+	Code       string `json:"code"`
+	FieldPath  string `json:"field_path"`
+	Message    string `json:"message"`
+	Resolution string `json:"resolution"`
 }
 
 type DesignToken struct {
@@ -113,6 +131,8 @@ type DesignSystemResponse struct {
 	DefinitionDigest       *string                  `json:"definition_digest"`
 	ContrastPairsChecked   int                      `json:"contrast_pairs_checked"`
 	DesignSystemValidation string                   `json:"design_system_validation"`
+	PresentationValidation string                   `json:"presentation_validation"`
+	PresentationTeach      *PresentationTeach       `json:"presentation_teach,omitempty"`
 }
 
 type designSystemDiagnosticList []Diagnostic
@@ -230,7 +250,7 @@ func EvaluateDesignSystem(source Source, projectID, companyID, level string, bin
 	response := DesignSystemResponse{
 		SchemaVersion: SchemaVersion, ProjectID: projectID, CompanyID: companyID, Target: TargetDesignSystem,
 		AuthorityScope: AuthorityScope, Mode: source.Mode(), Revision: source.Revision(), Outcome: "no_go",
-		Items: []DesignSystemDefinition{}, Diagnostics: []Diagnostic{}, DesignSystemValidation: "not_evaluated",
+		Items: []DesignSystemDefinition{}, Diagnostics: []Diagnostic{}, DesignSystemValidation: "not_evaluated", PresentationValidation: "not_ready",
 	}
 	selectedLevel := level
 	response.SelectedLevel = &selectedLevel
@@ -290,7 +310,14 @@ func EvaluateDesignSystem(source Source, projectID, companyID, level string, bin
 	}
 	var definition DesignSystemDefinition
 	if err := DecodeStrict(definitionBytes, &definition); err != nil {
-		diagnostics.add("invalid_schema", binding.RepositoryID, "", binding.DefinitionPath, err.Error(), "Correct design-system.json to the exact schema_version 1 contract.")
+		fieldPath := binding.DefinitionPath
+		if strings.HasPrefix(err.Error(), "presentation.") {
+			fieldPath += "#" + strings.SplitN(err.Error(), " ", 2)[0]
+		}
+		if parts := strings.Split(err.Error(), "\""); len(parts) >= 3 && strings.HasPrefix(parts[1], "presentation") {
+			fieldPath += "#" + parts[1]
+		}
+		diagnostics.add("invalid_schema", binding.RepositoryID, "", fieldPath, err.Error(), "Correct design-system.json to the exact schema_version 1 or 2 contract.")
 		response.Diagnostics = sortedDiagnostics(diagnostics)
 		return response
 	}
@@ -316,6 +343,11 @@ func EvaluateDesignSystem(source Source, projectID, companyID, level string, bin
 	response.DefinitionDigest = stringPointer("sha256:" + hex.EncodeToString(definitionHash[:]))
 	response.ContrastPairsChecked = checked
 	response.DesignSystemValidation = "valid"
+	if definition.SchemaVersion == "1" {
+		response.PresentationTeach = &PresentationTeach{Code: "theme_not_ready", FieldPath: "presentation", Message: "The selected Design System has no explicit semantic theme roles.", Resolution: "Publish a schema_version 2 definition with presentation.default_context and contexts[].roles; validate the candidate before selecting it."}
+	} else {
+		response.PresentationValidation = "ready"
+	}
 	response.Items = []DesignSystemDefinition{definition}
 	return response
 }
@@ -342,8 +374,8 @@ func validateDesignSystem(source Source, repositoryID, root, definitionPath stri
 	if definition.Owner.Level != ownerLevel || definition.Owner.ID != ownerID {
 		fail("owner_mismatch", definitionPath, "definition owner does not match the selected binding slot", "Set owner.level and owner.id to the owner of the selected source slot.")
 	}
-	if definition.SchemaVersion != SchemaVersion || !validID(definition.ID) || !validDisplay(definition.Name, 160) || definition.Tokens == nil || definition.Components == nil || definition.Assets == nil || definition.ContrastPairs == nil {
-		fail("invalid_schema", definitionPath, "definition identity, version, or required arrays are invalid", "Use schema_version 1, a stable identity, and non-null arrays for every required collection.")
+	if (definition.SchemaVersion != "1" && definition.SchemaVersion != "2") || !validID(definition.ID) || !validDisplay(definition.Name, 160) || definition.Tokens == nil || definition.Components == nil || definition.Assets == nil || definition.ContrastPairs == nil {
+		fail("invalid_schema", definitionPath, "definition identity, version, or required arrays are invalid", "Use schema_version 1 or 2, a stable identity, and non-null arrays for every required collection.")
 	}
 	if len(definition.Tokens) == 0 || len(definition.Tokens) > MaxTokens || len(definition.Components) > MaxComponents || len(definition.ContrastPairs) > MaxContrastPairs {
 		fail("limit_exceeded", definitionPath, "token, component, or contrast-pair count is outside its contract", "Provide at least one token and stay within the declared item limits.")
@@ -368,6 +400,9 @@ func validateDesignSystem(source Source, repositoryID, root, definitionPath stri
 		}
 	}
 	resolved, tokenValidity := resolveTokenValues(definition.Tokens, tokenByID, repositoryID, definition.ID, definitionPath, diagnostics)
+	if definition.SchemaVersion == "2" && !validatePresentation(definition.Presentation, tokenByID, resolved, tokenValidity, repositoryID, definition.ID, definitionPath, diagnostics) {
+		valid = false
+	}
 	componentIDs := make(map[string]bool)
 	want := map[string]bool{"design-system.json": true}
 	for _, component := range definition.Components {
@@ -519,6 +554,113 @@ func validateDesignSystem(source Source, repositoryID, root, definitionPath stri
 		records = append(records, DigestRecord{SourceID: repositoryID, Path: fullPath, Content: data})
 	}
 	return valid, records, checked
+}
+
+var presentationColorRoles = []string{"canvas", "surface", "text", "muted_text", "border", "accent", "accent_text", "on_accent", "focus", "success_text"}
+var presentationNumberRoles = []string{"body_size", "display_size", "card_radius", "control_radius"}
+
+func validatePresentation(p *DesignPresentation, tokens map[string]DesignToken, resolved map[string]resolvedToken, tokenValid map[string]bool, sourceID, artifactID, path string, diagnostics *designSystemDiagnosticList) bool {
+	valid := true
+	fail := func(field, message, resolution string) {
+		diagnostics.add("invalid_presentation", sourceID, artifactID, path+"#"+field, message, resolution)
+		valid = false
+	}
+	if p == nil {
+		fail("presentation", "schema_version 2 requires presentation", "Declare default_context and 1–16 contexts with the required semantic token roles.")
+		return false
+	}
+	if len(p.Contexts) < 1 || len(p.Contexts) > 16 {
+		fail("presentation.contexts", "context count must be 1–16", "Declare 1–16 contexts with unique stable IDs.")
+	}
+	seen := make(map[string]bool)
+	for i, context := range p.Contexts {
+		prefix := fmt.Sprintf("presentation.contexts[%d]", i)
+		if !validID(context.ID) || seen[context.ID] {
+			fail(prefix+".id", "context ID is invalid or duplicated", "Use unique lowercase stable IDs.")
+		}
+		seen[context.ID] = true
+		role := func(name, kind string, min, max float64) (resolvedToken, bool) {
+			field := prefix + ".roles." + name
+			unit := "px"
+			if name == "line_height" {
+				unit = "unitless"
+			}
+			id := context.Roles[name]
+			token, exists := tokens[id]
+			if id == "" || !exists || token.Type != kind || !tokenValid[id] {
+				resolution := "Declare a " + kind + " token and reference its exact ID in this role."
+				if kind == "number" {
+					resolution = fmt.Sprintf("Declare a number token within %g–%g %s and reference its exact ID in this role.", min, max, unit)
+				}
+				fail(field, "role must reference a resolved "+kind+" token", resolution)
+				return resolvedToken{}, false
+			}
+			value := resolved[id]
+			if kind == "number" {
+				number, ok := value.value.(float64)
+				if !ok || number < min || number > max {
+					fail(field, fmt.Sprintf("numeric role must be within %g–%g %s", min, max, unit), fmt.Sprintf("Reference a numeric token within %g–%g %s.", min, max, unit))
+					return value, false
+				}
+			}
+			return value, true
+		}
+		colors := make(map[string]resolvedToken)
+		colorValid := make(map[string]bool)
+		for _, name := range presentationColorRoles {
+			colors[name], colorValid[name] = role(name, "color", 0, 0)
+		}
+		font, fontOK := role("font_family", "string", 0, 0)
+		if fontOK && !validPresentationFont(font.value.(string)) {
+			fail(prefix+".roles.font_family", "font family list is invalid", "Use 1–8 comma-separated ASCII names, 1–200 characters total; each name starts with a letter and contains only letters, digits, spaces or hyphens.")
+		}
+		for _, name := range presentationNumberRoles {
+			min, max := 0.0, 64.0
+			if name == "body_size" || name == "display_size" {
+				min, max = 8, 96
+			}
+			role(name, "number", min, max)
+		}
+		if context.Roles["line_height"] != "" {
+			role("line_height", "number", 1, 2)
+		}
+		for _, background := range []string{"canvas", "surface"} {
+			for _, foreground := range []string{"text", "muted_text", "accent_text", "success_text"} {
+				if colorValid[background] && colorValid[foreground] && contrastRatio(colors[foreground].color, colors[background].color) < 4.5 {
+					fail(prefix+".roles."+foreground, foreground+" is below 4.5:1 against "+background, "Choose a text color with at least 4.5:1 contrast on both canvas and surface.")
+				}
+			}
+		}
+		if colorValid["on_accent"] && colorValid["accent"] && contrastRatio(colors["on_accent"].color, colors["accent"].color) < 4.5 {
+			fail(prefix+".roles.on_accent", "on_accent is below 4.5:1 against accent", "Choose a foreground with at least 4.5:1 contrast on accent.")
+		}
+	}
+	if !validID(p.DefaultContext) || !seen[p.DefaultContext] {
+		fail("presentation.default_context", "default context does not match exactly one declared context", "Set default_context to one unique contexts[].id.")
+	}
+	return valid
+}
+
+func validPresentationFont(value string) bool {
+	if len(value) < 1 || len(value) > 200 {
+		return false
+	}
+	parts := strings.Split(value, ",")
+	if len(parts) < 1 || len(parts) > 8 {
+		return false
+	}
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" || strings.TrimRight(part, " ") != part || name[0] < 'A' || name[0] > 'Z' && name[0] < 'a' || name[0] > 'z' {
+			return false
+		}
+		for _, char := range name {
+			if !(char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == ' ' || char == '-') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func addManagedPath(path, definitionPath, root string, want map[string]bool, diagnostics *designSystemDiagnosticList, sourceID, artifactID string, valid *bool) {

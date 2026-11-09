@@ -20,6 +20,7 @@ import (
 const (
 	todoContentVersionsCollection = "todo_content_versions"
 	todoEventsCollection          = "todo_events"
+	todoHistoryPhaseTimeout       = 2 * time.Minute
 )
 
 func ValidCompanyID(value string) bool { return validID(value) }
@@ -90,21 +91,25 @@ type TODOContentVersion struct {
 }
 
 type TODOHistoryChanges struct {
-	Removed                    *bool                  `json:"removed,omitempty" bson:"removed,omitempty"`
-	Stage                      *string                `json:"stage,omitempty" bson:"stage,omitempty"`
-	Qualifiers                 *[]string              `json:"qualifiers,omitempty" bson:"qualifiers,omitempty"`
-	WorkState                  *string                `json:"work_state,omitempty" bson:"work_state,omitempty"`
-	NextExactStep              *string                `json:"next_exact_step,omitempty" bson:"next_exact_step,omitempty"`
-	StageVerification          *string                `json:"stage_verification,omitempty" bson:"stage_verification,omitempty"`
-	ProofReferences            *[]TODOProofReference  `json:"proof_refs,omitempty" bson:"proof_refs,omitempty"`
-	WaiverReferences           *[]TODOProofReference  `json:"waiver_refs,omitempty" bson:"waiver_refs,omitempty"`
-	ImplementationCommits      *[]TODOCommitReference `json:"implementation_commits,omitempty" bson:"implementation_commits,omitempty"`
-	VerifiedTransitionRef      *TODOProofReference    `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
-	ClearVerifiedTransitionRef bool                   `json:"clear_verified_transition_ref,omitempty" bson:"clear_verified_transition_ref,omitempty"`
-	RecordSections             *[]TODOSection         `json:"record_sections,omitempty" bson:"record_sections,omitempty"`
-	ReleaseID                  *string                `json:"release_id,omitempty" bson:"release_id,omitempty"`
-	Position                   *int                   `json:"position,omitempty" bson:"position,omitempty"`
-	ClearPlacement             bool                   `json:"clear_placement,omitempty" bson:"clear_placement,omitempty"`
+	Removed                       *bool                         `json:"removed,omitempty" bson:"removed,omitempty"`
+	Stage                         *string                       `json:"stage,omitempty" bson:"stage,omitempty"`
+	AdministrativeAcceptance      *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty" bson:"administrative_acceptance,omitempty"`
+	ClearAdministrativeAcceptance bool                          `json:"clear_administrative_acceptance,omitempty" bson:"clear_administrative_acceptance,omitempty"`
+	Disposition                   *TODODisposition              `json:"disposition,omitempty" bson:"disposition,omitempty"`
+	DispositionState              *string                       `json:"disposition_state,omitempty" bson:"disposition_state,omitempty"`
+	Qualifiers                    *[]string                     `json:"qualifiers,omitempty" bson:"qualifiers,omitempty"`
+	WorkState                     *string                       `json:"work_state,omitempty" bson:"work_state,omitempty"`
+	NextExactStep                 *string                       `json:"next_exact_step,omitempty" bson:"next_exact_step,omitempty"`
+	StageVerification             *string                       `json:"stage_verification,omitempty" bson:"stage_verification,omitempty"`
+	ProofReferences               *[]TODOProofReference         `json:"proof_refs,omitempty" bson:"proof_refs,omitempty"`
+	WaiverReferences              *[]TODOProofReference         `json:"waiver_refs,omitempty" bson:"waiver_refs,omitempty"`
+	ImplementationCommits         *[]TODOCommitReference        `json:"implementation_commits,omitempty" bson:"implementation_commits,omitempty"`
+	VerifiedTransitionRef         *TODOProofReference           `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
+	ClearVerifiedTransitionRef    bool                          `json:"clear_verified_transition_ref,omitempty" bson:"clear_verified_transition_ref,omitempty"`
+	RecordSections                *[]TODOSection                `json:"record_sections,omitempty" bson:"record_sections,omitempty"`
+	ReleaseID                     *string                       `json:"release_id,omitempty" bson:"release_id,omitempty"`
+	Position                      *int                          `json:"position,omitempty" bson:"position,omitempty"`
+	ClearPlacement                bool                          `json:"clear_placement,omitempty" bson:"clear_placement,omitempty"`
 }
 
 type TODOHistoryEvent struct {
@@ -142,20 +147,23 @@ type TODOHistoryPage struct {
 }
 
 type TODOAsOfState struct {
-	Removed               bool                  `json:"removed,omitempty"`
-	Stage                 string                `json:"stage"`
-	Qualifiers            []string              `json:"qualifiers"`
-	WorkState             string                `json:"work_state"`
-	NextExactStep         string                `json:"next_exact_step"`
-	StageVerification     string                `json:"stage_verification"`
-	ProofReferences       []TODOProofReference  `json:"proof_refs"`
-	WaiverReferences      []TODOProofReference  `json:"waiver_refs"`
-	ImplementationCommits []TODOCommitReference `json:"implementation_commits"`
-	VerifiedTransitionRef *TODOProofReference   `json:"verified_transition_ref,omitempty"`
-	ReleaseID             string                `json:"release_id"`
-	Position              int                   `json:"position"`
-	PlacementAssigned     bool                  `json:"placement_assigned"`
-	RecordSections        []TODOSection         `json:"record_sections"`
+	Removed                  bool                          `json:"removed,omitempty"`
+	Stage                    string                        `json:"stage"`
+	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty"`
+	Disposition              *TODODisposition              `json:"disposition,omitempty"`
+	DispositionState         string                        `json:"disposition_state,omitempty"`
+	Qualifiers               []string                      `json:"qualifiers"`
+	WorkState                string                        `json:"work_state"`
+	NextExactStep            string                        `json:"next_exact_step"`
+	StageVerification        string                        `json:"stage_verification"`
+	ProofReferences          []TODOProofReference          `json:"proof_refs"`
+	WaiverReferences         []TODOProofReference          `json:"waiver_refs"`
+	ImplementationCommits    []TODOCommitReference         `json:"implementation_commits"`
+	VerifiedTransitionRef    *TODOProofReference           `json:"verified_transition_ref,omitempty"`
+	ReleaseID                string                        `json:"release_id"`
+	Position                 int                           `json:"position"`
+	PlacementAssigned        bool                          `json:"placement_assigned"`
+	RecordSections           []TODOSection                 `json:"record_sections"`
 }
 
 type TODOAsOfResponse struct {
@@ -321,6 +329,20 @@ func observedTODOChanges(record TODORecord) TODOHistoryChanges {
 	changes := TODOHistoryChanges{Stage: &stage, Qualifiers: &qualifiers, WorkState: &work, NextExactStep: &step,
 		StageVerification: &verification, ProofReferences: &proofs, WaiverReferences: &waivers, ImplementationCommits: &commits,
 		RecordSections: &recordSections, ReleaseID: &releaseID, Position: &position, ClearPlacement: record.ReleaseID == ""}
+	if record.AdministrativeAcceptance != nil {
+		acceptance := *record.AdministrativeAcceptance
+		changes.AdministrativeAcceptance = &acceptance
+	} else {
+		changes.ClearAdministrativeAcceptance = true
+	}
+	if record.Disposition != nil {
+		disposition := *record.Disposition
+		changes.Disposition = &disposition
+	}
+	if record.DispositionState != "" {
+		state := record.DispositionState
+		changes.DispositionState = &state
+	}
 	if record.VerifiedTransitionRef != nil {
 		proof := *record.VerifiedTransitionRef
 		changes.VerifiedTransitionRef = &proof
@@ -344,7 +366,7 @@ func (m *MongoStore) ProvisionTODOHistory(ctx context.Context, companyID string)
 	if company.DatabaseName != m.tenantDatabase(companyID) {
 		return todoTeach("company.database_name", "match the server-owned Company tenant database", ErrConflict)
 	}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, todoHistoryPhaseTimeout)
 	defer cancel()
 	database := m.client.Database(company.DatabaseName)
 	if err := upgradeTODOCollectionForHistory(ctx, database); err != nil {
@@ -392,7 +414,7 @@ func (m *MongoStore) PreflightTODOHistory(ctx context.Context, companyID string)
 	if err != nil {
 		return TODOHistoryPreflightReport{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, todoHistoryPhaseTimeout)
 	defer cancel()
 	if err := verifyTODOCollection(ctx, database); err != nil {
 		return TODOHistoryPreflightReport{}, err
@@ -569,6 +591,7 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		return todoTeach(name+".validator", "match the strict/error closed history schema", ErrConflict)
 	}
 	if !bsonValidatorEqual(actualValidator.Document(), validator) {
+		beforeAdministrative := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeAdministrativeAcceptance())
 		beforeRemoval := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeRemoval())
 		prior := historyValidatorBeforeOwnership(validator)
 		priorV2 := historyValidatorBeforeSchemaV2(validator)
@@ -589,7 +612,7 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		beforeReviewWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewWaiver(validator), historyValidatorBeforeReviewWaiver(preRemovalEvents))
 		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(preRemovalEvents)))
 		beforeAdoptionAndContentMigration := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(preRemovalEvents)))
-		if !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
+		if !beforeAdministrative && !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
 		if !beforeDigest && !beforePlacement {
@@ -1171,7 +1194,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		if err := validateExistingSectionOwnership(record); err != nil {
 			return TODOContentEditResponse{}, err
 		}
-	} else if record.Stage != "Planning" {
+	} else if record.Stage != "Planning" && record.AdministrativeAcceptance == nil {
 		if err := ValidateTODOContent(request.Content.TODOContent, false); err != nil {
 			return TODOContentEditResponse{}, err
 		}
@@ -1191,7 +1214,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		requestedContent.LegacyContext = current.LegacyContext
 	}
 	if reflect.DeepEqual(current, requestedContent) {
-		if record.Source.Kind == "mongo-content-revision" && record.StageVerification == "unverified" && (record.Stage == "Local-Implemented" || record.Stage == "Promotion-Lane" || record.Stage == "Completed") {
+		if record.Source.Kind == "mongo-content-revision" && record.AdministrativeAcceptance == nil && record.StageVerification == "unverified" && (record.Stage == "Local-Implemented" || record.Stage == "Promotion-Lane" || record.Stage == "Completed") {
 			contentRevision, contentDigest, contentRef, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
 			if subjectErr != nil {
 				return TODOContentEditResponse{}, subjectErr
@@ -1231,7 +1254,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if err != nil {
 		return TODOContentEditResponse{}, ErrInvalid
 	}
-	reopensPlanning := record.Source.Kind == "mongo-content-revision" && record.Stage != "Planning"
+	reopensPlanning := record.Source.Kind == "mongo-content-revision" && record.Disposition == nil && (record.Stage != "Planning" || record.AdministrativeAcceptance != nil)
 	var planningProof *TODOProofReference
 	if reopensPlanning {
 		planningProof = &TODOProofReference{
@@ -1255,6 +1278,9 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		setFields = append(setFields, bson.E{Key: "stage_verification", Value: "unverified"})
 	}
 	update := bson.D{{Key: "$set", Value: setFields}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
+	if reopensPlanning {
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}}})
+	}
 	if !reopensPlanning && invalidatesContentApproval(record) {
 		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}})
 	}
@@ -1282,6 +1308,7 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 			changes.Stage = &planning
 			changes.StageVerification = &verified
 			changes.VerifiedTransitionRef = planningProof
+			changes.ClearAdministrativeAcceptance = true
 		} else if invalidatesContentApproval(record) {
 			unverified := "unverified"
 			changes.StageVerification = &unverified
@@ -1478,6 +1505,19 @@ func applyTODOHistoryChanges(state *TODOAsOfState, changes TODOHistoryChanges) {
 	if changes.Stage != nil {
 		state.Stage = *changes.Stage
 	}
+	if changes.AdministrativeAcceptance != nil {
+		basis := *changes.AdministrativeAcceptance
+		state.AdministrativeAcceptance = &basis
+	} else if changes.ClearAdministrativeAcceptance {
+		state.AdministrativeAcceptance = nil
+	}
+	if changes.Disposition != nil {
+		disposition := *changes.Disposition
+		state.Disposition = &disposition
+	}
+	if changes.DispositionState != nil {
+		state.DispositionState = *changes.DispositionState
+	}
 	if changes.Qualifiers != nil {
 		state.Qualifiers = append([]string{}, (*changes.Qualifiers)...)
 	}
@@ -1602,6 +1642,39 @@ func insertTODOHistoryBaseline(ctx context.Context, database *mongo.Database, re
 	if record.Source.Kind == "mongo-content-revision" {
 		creation := TODOProofReference{Kind: "created", Source: "mongo-todo-api", Reference: record.Source.Ref, SourceDigest: contentDigest, VerificationState: "verified"}
 		event.ProofReference = &creation
+	}
+	if _, err := events.InsertOne(ctx, event); err != nil {
+		return normalizeMongoError(err)
+	}
+	return nil
+}
+
+func insertTODOCreationBaseline(ctx context.Context, database *mongo.Database, record TODORecord, requestDigest string) error {
+	versions := database.Collection(todoContentVersionsCollection)
+	events := database.Collection(todoEventsCollection)
+	content := contentFromTODO(record)
+	digest, err := todoContentRevisionDigest(record.ProjectID, record.ID, 0, content)
+	if err != nil {
+		return ErrInvalid
+	}
+	version := TODOContentVersion{ObjectID: bson.NewObjectID(), ProjectID: record.ProjectID, TODOID: record.ID, Revision: 0, Digest: digest, Content: content}
+	if _, err := versions.InsertOne(ctx, version); err != nil {
+		return normalizeMongoError(err)
+	}
+	changes := observedTODOChanges(record)
+	contentRevision := int64(0)
+	event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: record.ProjectID, TODOID: record.ID, Revision: 0,
+		Kind: "baseline", OccurredAt: time.Now().UTC(), OperationID: record.LastOperation.ID, RequestDigest: requestDigest, Changes: changes, ContentRevision: &contentRevision}
+	if record.AdministrativeAcceptance != nil || record.Disposition != nil {
+		if record.AdministrativeAcceptance != nil {
+			event.PermissionDecision = record.AdministrativeAcceptance.PermissionDecision
+		}
+		if record.AdministrativeAcceptance != nil {
+			event.Reason = record.AdministrativeAcceptance.Reason
+			event.ActorClaim = record.AdministrativeAcceptance.ActorClaim
+		} else if record.Disposition != nil {
+			event.Reason = record.Disposition.Reason
+		}
 	}
 	if _, err := events.InsertOne(ctx, event); err != nil {
 		return normalizeMongoError(err)
@@ -1817,6 +1890,10 @@ func TODOEventsValidatorBeforeRemoval() bson.D {
 	return replaceBSONValueAtPath(validator, []string{"$jsonSchema", "properties", "kind", "enum"}, bson.A{"baseline", "content_changed", "state_changed", "evidence_changed", "placement_changed", "historical-adoption", todoContentMigrationEventKind, "review-waiver-granted"})
 }
 
+func TODOEventsValidatorBeforeAdministrativeAcceptance() bson.D {
+	return withoutBSONFieldsAtPath(TODOEventsValidator(), []string{"$jsonSchema", "properties", "changes", "properties"}, "administrative_acceptance", "clear_administrative_acceptance", "disposition", "disposition_state")
+}
+
 func historyStringArraySchema() bson.D {
 	return bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "string"}}}}
 }
@@ -1944,6 +2021,8 @@ func TODOHistoryChangesValidator() bson.D {
 	return bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "properties", Value: bson.D{
 		{Key: "removed", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 		{Key: "stage", Value: bson.D{{Key: "enum", Value: bson.A{"Planning", "Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"}}}},
+		{Key: "administrative_acceptance", Value: administrativeAcceptanceSchema()}, {Key: "clear_administrative_acceptance", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
+		{Key: "disposition", Value: todoDispositionSchema()}, {Key: "disposition_state", Value: bson.D{{Key: "enum", Value: bson.A{"valid", "invalid"}}}},
 		{Key: "qualifiers", Value: historyStringArraySchema()}, {Key: "work_state", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "next_exact_step", Value: bson.D{{Key: "bsonType", Value: "string"}}},
 		{Key: "stage_verification", Value: bson.D{{Key: "enum", Value: bson.A{"unverified", "verified"}}}}, {Key: "proof_refs", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: TODOProofReferenceValidator()}}},
 		{Key: "waiver_refs", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: TODOProofReferenceValidator()}}}, {Key: "implementation_commits", Value: bson.D{{Key: "bsonType", Value: "array"}}},

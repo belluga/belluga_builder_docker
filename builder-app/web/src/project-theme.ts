@@ -1,57 +1,53 @@
 import type { CSSProperties } from "react";
 
 type Token = { id: string; type: string; value?: unknown; ref?: string };
-type Definition = { tokens?: Token[] };
+type ThemeContext = { id: string; roles: Record<string, string> };
+type Definition = { schema_version: string; tokens: Token[]; presentation?: { default_context: string; contexts: ThemeContext[] } };
 
-const roles = {
-  canvas: ["color", "color-canvas", "surface"],
-  surface: ["color", "color-surface", "surface-container"],
-  text: ["color", "color-text-strong", "on-surface"],
-  muted: ["color", "color-text-secondary", "on-surface-variant"],
-  accent: ["color", "color-accent", "primary"],
-  onAccent: ["color", "color-on-accent", "on-primary"],
-  border: ["color", "color-border", "outline"],
-  focus: ["color", "color-focus", "primary"],
-  font: ["string", "font-family-sans", "font-family"],
-  bodySize: ["number", "text-body", "font-body"],
-  displaySize: ["number", "text-display", "font-display"],
-  lineHeight: ["number", "line-body"],
-  cardRadius: ["number", "radius-card"],
-  controlRadius: ["number", "radius-small", "radius-field"],
+const requiredRoles = {
+  canvas: ["color", "canvas"], surface: ["color", "surface"], text: ["color", "text"],
+  muted_text: ["color", "muted"], border: ["color", "border"], accent: ["color", "accent"],
+  accent_text: ["color", "accentText"], on_accent: ["color", "onAccent"], focus: ["color", "focus"],
+  success_text: ["color", "success"], font_family: ["string", "font"],
+  body_size: ["number", "bodySize"], display_size: ["number", "displaySize"],
+  card_radius: ["number", "cardRadius"], control_radius: ["number", "controlRadius"],
 } as const;
 
 export type ProjectTheme = CSSProperties & Record<`--project-${string}`, string>;
 
-export function resolveProjectTheme(definition: unknown): { style?: ProjectTheme; diagnostic?: string } {
-  if (!definition || typeof definition !== "object" || !Array.isArray((definition as Definition).tokens)) {
-    return { diagnostic: "The admitted Design System definition is unavailable or malformed." };
+export function resolveProjectTheme(definition: unknown, contextID?: string): { style?: ProjectTheme; diagnostic?: string } {
+  if (!definition || typeof definition !== "object") return { diagnostic: "The selected Design System definition is unavailable." };
+  const source = definition as Definition;
+  if (source.schema_version !== "2" || !source.presentation || !Array.isArray(source.presentation.contexts)) {
+    return { diagnostic: "TEACH: The selected Design System is structurally available but its presentation is not ready. Publish schema_version 2 with presentation.default_context and contexts[].roles." };
   }
+  const context = source.presentation.contexts.find((item) => item.id === (contextID ?? source.presentation!.default_context));
+  if (!context || !context.roles || !Array.isArray(source.tokens)) return { diagnostic: "The selected Design System has no valid theme context or tokens." };
   const tokens = new Map<string, Token>();
-  for (const token of (definition as Definition).tokens ?? []) {
-    if (!token || typeof token.id !== "string" || tokens.has(token.id)) {
-      return { diagnostic: "The admitted Design System contains an invalid or duplicate token." };
-    }
+  for (const token of source.tokens) {
+    if (!token || typeof token.id !== "string" || tokens.has(token.id)) return { diagnostic: "The selected Design System contains an invalid or duplicate token." };
     tokens.set(token.id, token);
   }
   function value(id: string, type: string, seen = new Set<string>()): string | undefined {
     const token = tokens.get(id);
     if (!token || token.type !== type || seen.has(id)) return undefined;
-    if (token.ref) {
-      seen.add(id);
-      return value(token.ref, type, seen);
-    }
+    if (token.ref) { seen.add(id); return value(token.ref, type, seen); }
     if (type === "color") return typeof token.value === "string" && /^#[0-9a-fA-F]{6}$/.test(token.value) ? token.value : undefined;
-    if (type === "string") return typeof token.value === "string" && token.value.length <= 200 && /^[\w\s,.'"-]+$/.test(token.value) ? token.value : undefined;
-    return typeof token.value === "number" && Number.isFinite(token.value) && token.value >= 0 && token.value <= 999 ? String(token.value) : undefined;
+    if (type === "string") return typeof token.value === "string" ? token.value : undefined;
+    return typeof token.value === "number" && Number.isFinite(token.value) ? String(token.value) : undefined;
   }
   const style = {} as ProjectTheme;
-  for (const [role, [type, ...aliases]] of Object.entries(roles)) {
-    const resolved = aliases.map((alias) => value(alias, type)).find((candidate) => candidate !== undefined);
-    if (resolved === undefined) return { diagnostic: `The admitted Design System cannot resolve required ${role} token (${aliases.join(" or ")}).` };
-    const unit = type === "number" && role !== "lineHeight" ? "px" : "";
-    style[`--project-${role}`] = `${resolved}${unit}`;
+  for (const [role, [kind, cssRole]] of Object.entries(requiredRoles)) {
+    const tokenID = context.roles[role];
+    const resolved = tokenID && value(tokenID, kind);
+    if (resolved === undefined) return { diagnostic: `TEACH: presentation.contexts.${context.id}.roles.${role} must reference a valid ${kind} token.` };
+    style[`--project-${cssRole}`] = kind === "number" ? `${resolved}px` : resolved;
   }
-  const success = value("color-status-positive", "color") ?? value("color-success", "color");
-  if (success) style["--project-success"] = success;
+  const lineHeightID = context.roles.line_height;
+  if (lineHeightID) {
+    const lineHeight = value(lineHeightID, "number");
+    if (lineHeight === undefined) return { diagnostic: `TEACH: presentation.contexts.${context.id}.roles.line_height must reference a valid number token.` };
+    style["--project-lineHeight"] = lineHeight;
+  }
   return { style };
 }

@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const maxRequestBody = maxSnapshotReferenceBytes
@@ -94,6 +97,10 @@ type canonicalKnowledgeService interface {
 	CanonicalHistory(context.Context, string, string, string, int) (CanonicalHistoryPage, error)
 }
 
+type canonicalDraftCreateService interface {
+	CreateCanonicalDraft(context.Context, string, CanonicalDraftCreate) (CanonicalManifest, error)
+}
+
 type canonicalKnowledgeReader interface {
 	ReadCanonicalEntity(context.Context, string, string, string) (CanonicalProjection, error)
 	ReadCanonicalDecision(context.Context, string, string, CanonicalFamily, string, string) (CanonicalProjection, error)
@@ -140,6 +147,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare", h.canonicalCompare)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}", h.canonicalAsOf)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts", h.canonicalImport)
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts/api-born", h.canonicalDraftCreate)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate", h.canonicalActivate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalRead)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}", h.canonicalEdit)
@@ -219,7 +227,11 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 		if action == "set-investigation" {
 			limit = maxInvestigationBytes + 4<<10
 		}
-		if !h.decodeLimit(w, r, &input, limit) {
+		if action == "create-release" {
+			if !h.decodeCreateRelease(w, r, &input, limit) {
+				return
+			}
+		} else if !h.decodeLimit(w, r, &input, limit) {
 			return
 		}
 		projectID := strings.TrimSpace(r.PathValue("projectID"))
@@ -239,6 +251,10 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 					h.writeError(w, todoTeach("epic_id", "match the Epic path identity", ErrConflict))
 					return
 				}
+				if action == "create-release" && !validID(epicID) {
+					h.writeError(w, todoTeach("epic_id", "be a valid Epic ID in the resource path", ErrInvalid))
+					return
+				}
 				input.EpicID = epicID
 			}
 		}
@@ -252,6 +268,128 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
 		h.respond(w, value, err)
 	}
+}
+
+// decodeCreateRelease keeps this route's input diagnostics field-addressed
+// without changing the shared decoder used by other Roadmap operations.
+func (h *Handler) decodeCreateRelease(w http.ResponseWriter, r *http.Request, input *RoadmapChange, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	decoder := json.NewDecoder(r.Body)
+	var fields map[string]json.RawMessage
+	if err := decoder.Decode(&fields); err != nil || fields == nil {
+		h.writeError(w, todoTeach("request", "be one flat create-release JSON object", ErrInvalid))
+		return false
+	}
+	var trailing any
+	if !errors.Is(decoder.Decode(&trailing), io.EOF) {
+		h.writeError(w, todoTeach("request", "contain only one create-release JSON object", ErrInvalid))
+		return false
+	}
+
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		switch key {
+		case "project_id", "expected_roadmap_revision", "operation_id", "id", "epic_id", "name", "description":
+		case "ordered_ids", "investigation":
+			h.writeError(w, todoTeach(key, "not be supplied for create-release", ErrInvalid))
+			return false
+		default:
+			h.writeError(w, todoTeach(createReleaseUnknownFieldPath(key, fields[key]), "not be included in create-release requests", ErrInvalid))
+			return false
+		}
+	}
+
+	readString := func(field string, target *string, optional bool) bool {
+		raw, exists := fields[field]
+		if !exists {
+			if optional {
+				return true
+			}
+			h.writeError(w, todoTeach(field, "be provided", ErrInvalid))
+			return false
+		}
+		if string(raw) == "null" || json.Unmarshal(raw, target) != nil {
+			h.writeError(w, todoTeach(field, "be a string", ErrInvalid))
+			return false
+		}
+		return true
+	}
+	if !readString("project_id", &input.ProjectID, false) {
+		return false
+	}
+	if !readString("operation_id", &input.OperationID, false) {
+		return false
+	}
+	if !readString("id", &input.ID, false) {
+		return false
+	}
+	if !readString("name", &input.Name, false) {
+		return false
+	}
+	if !readString("description", &input.Description, true) {
+		return false
+	}
+	if !readString("epic_id", &input.EpicID, true) {
+		return false
+	}
+
+	rawRevision, exists := fields["expected_roadmap_revision"]
+	var revision int64
+	if !exists {
+		h.writeError(w, todoTeach("expected_roadmap_revision", "be provided", ErrInvalid))
+		return false
+	}
+	if string(rawRevision) == "null" || json.Unmarshal(rawRevision, &revision) != nil {
+		h.writeError(w, todoTeach("expected_roadmap_revision", "be an integer", ErrInvalid))
+		return false
+	}
+	input.ExpectedRoadmapRevision = &revision
+
+	switch {
+	case !validID(input.ProjectID):
+		h.writeError(w, todoTeach("project_id", "be a valid Project ID", ErrInvalid))
+		return false
+	case revision < 0 || revision == math.MaxInt64:
+		h.writeError(w, todoTeach("expected_roadmap_revision", "be a nonnegative revision below the maximum integer", ErrInvalid))
+		return false
+	case !todoOperationIDPattern.MatchString(input.OperationID):
+		h.writeError(w, todoTeach("operation_id", "be a stable Roadmap operation ID", ErrInvalid))
+		return false
+	case !validID(input.ID):
+		h.writeError(w, todoTeach("id", "be a valid Release ID", ErrInvalid))
+		return false
+	case input.EpicID != "" && !validID(input.EpicID):
+		h.writeError(w, todoTeach("epic_id", "be a valid Epic ID", ErrInvalid))
+		return false
+	case !validName(input.Name):
+		h.writeError(w, todoTeach("name", "be a non-empty Release name of at most 160 characters", ErrInvalid))
+		return false
+	case !utf8.ValidString(input.Description) || len(input.Description) > 1024:
+		h.writeError(w, todoTeach("description", "be valid UTF-8 and at most 1024 bytes", ErrInvalid))
+		return false
+	}
+	return true
+}
+
+func createReleaseUnknownFieldPath(path string, raw json.RawMessage) string {
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) == nil && len(object) > 0 {
+		keys := make([]string, 0, len(object))
+		for key := range object {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		return createReleaseUnknownFieldPath(path+"."+keys[0], object[keys[0]])
+	}
+	var list []json.RawMessage
+	if json.Unmarshal(raw, &list) == nil && len(list) > 0 {
+		return createReleaseUnknownFieldPath(path+"[0]", list[0])
+	}
+	return path
 }
 
 func (h *Handler) releaseInvestigation(w http.ResponseWriter, r *http.Request) {
@@ -997,6 +1135,24 @@ func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.ImportCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
+	h.respond(w, value, err)
+}
+
+func (h *Handler) canonicalDraftCreate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(canonicalDraftCreateService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var input CanonicalDraftCreate
+	if !h.decodeCanonicalRequest(w, r, &input) {
+		return
+	}
+	if input.ProjectID != r.PathValue("projectID") {
+		h.writeError(w, todoTeach("project_id", "match the Project path identity", ErrConflict))
+		return
+	}
+	value, err := service.CreateCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
 	h.respond(w, value, err)
 }
 

@@ -260,7 +260,7 @@ func TestGitDesignSystemVerifierChecksReachabilityTreeManifestAndInventory(t *te
 	runFixtureGit(t, work, "remote", "add", "origin", remote)
 	runFixtureGit(t, work, "push", "--quiet", "origin", "main")
 
-	manifest = []byte(strings.Replace(string(manifest), `"Fixture"`, `"Fixture Updated"`, 1))
+	manifest = []byte(`{"schema_version":"2","id":"fixture-system","name":"Fixture Updated","owner":{"level":"project","id":"fixture-project"},"tokens":[{"id":"ink","type":"color","value":"#000000"},{"id":"paper","type":"color","value":"#FFFFFF"},{"id":"font","type":"string","value":"Inter, Arial"},{"id":"body","type":"number","value":16},{"id":"display","type":"number","value":36},{"id":"radius","type":"number","value":8}],"presentation":{"default_context":"main","contexts":[{"id":"main","roles":{"canvas":"ink","surface":"ink","text":"paper","muted_text":"paper","border":"paper","accent":"paper","accent_text":"paper","on_accent":"ink","focus":"paper","success_text":"paper","font_family":"font","body_size":"body","display_size":"display","card_radius":"radius","control_radius":"radius"}}]},"components":[],"assets":[],"contrast_pairs":[]}`)
 	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -331,6 +331,30 @@ func TestGitDesignSystemVerifierChecksReachabilityTreeManifestAndInventory(t *te
 	if _, err := verifier.VerifyDesignSystemMutation(context.Background(), "company-a", "fixture-project", binding, invalidIntent); err == nil {
 		t.Fatal("production verifier accepted a Git-reachable candidate rejected by the shared semantic evaluator")
 	}
+
+	// A previously selected v1 remains readable, but it cannot be selected by
+	// any new create/replace mutation after the v2 publication cutover.
+	legacyManifest := []byte(`{"schema_version":"1","id":"fixture-system","name":"Legacy candidate","owner":{"level":"project","id":"fixture-project"},"tokens":[{"id":"label","type":"string","value":"Legacy"}],"components":[],"assets":[],"contrast_pairs":[]}`)
+	if err := os.WriteFile(manifestPath, legacyManifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runFixtureGit(t, work, "add", ".")
+	legacyOperationID := "fixture-legacy-candidate"
+	runFixtureGit(t, work, "commit", "--quiet", "-m", "legacy candidate", "-m", "Builder-Operation-ID: "+legacyOperationID)
+	legacyPrepared := fixtureGitOutput(t, work, "rev-parse", "HEAD")
+	legacyTree := fixtureGitOutput(t, work, "rev-parse", "HEAD^{tree}")
+	runFixtureGit(t, work, "push", "--quiet", "origin", "main")
+	legacyIntent := intent
+	legacyIntent.OperationID = legacyOperationID
+	legacyIntent.ExpectedHead = invalidPrepared
+	legacyIntent.PreparedCommitSHA = legacyPrepared
+	legacyIntent.CandidateTreeSHA = legacyTree
+	legacyIntent.InventoryDigest = fixtureInventoryDigest("belluga/fixture", designSystemDefinitionPath, legacyManifest)
+	legacyIntent.PayloadDigest = legacyIntent.InventoryDigest
+	if _, err := verifier.VerifyDesignSystemMutation(context.Background(), "company-a", "fixture-project", binding, legacyIntent); err == nil {
+		t.Fatal("new Git-reachable v1 candidate was accepted after the v2 cutover")
+	}
+	invalidPrepared = legacyPrepared
 
 	// Deletion is proved from the published exact tree, without evaluating a
 	// manifest that is expected to be absent.

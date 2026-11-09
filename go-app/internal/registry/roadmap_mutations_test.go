@@ -4,14 +4,63 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+type roadmapChangeCapture struct {
+	*testService
+	calls   int
+	action  string
+	request RoadmapChange
+}
+
+func (s *roadmapChangeCapture) ChangeRoadmap(_ context.Context, _, action string, request RoadmapChange) (RoadmapChangeResult, error) {
+	s.calls++
+	s.action, s.request = action, request
+	return RoadmapChangeResult{ProjectID: request.ProjectID, Action: action, ID: request.ID, RoadmapRevision: 4}, nil
+}
+
+func TestCreateReleaseRouteReturnsFieldAddressedTeachBeforeMutation(t *testing.T) {
+	base := "/internal/v1/companies/company-a/projects/builder/roadmap/epics/e-01/releases"
+	cases := []struct {
+		name, body, field string
+	}{
+		{"unknown nested field", `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"release-op-001","id":"r-10","name":"Release","extra":{"nested":{"field":true}}}`, "extra.nested.field"},
+		{"invalid field type", `{"project_id":"builder","expected_roadmap_revision":"3","operation_id":"release-op-001","id":"r-10","name":"Release"}`, "expected_roadmap_revision"},
+		{"missing field", `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"release-op-001","name":"Release"}`, "id"},
+		{"route-irrelevant known field", `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"release-op-001","id":"r-10","name":"Release","ordered_ids":[]}`, "ordered_ids"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			service := &roadmapChangeCapture{testService: &testService{}}
+			response := httptest.NewRecorder()
+			NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, base, strings.NewReader(tc.body)))
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"teach":"TEACH: `+tc.field+` `) || service.calls != 0 {
+				t.Fatalf("invalid create-release response=%d %s; calls=%d, want field-addressed TEACH before mutation", response.Code, response.Body, service.calls)
+			}
+		})
+	}
+}
+
+func TestCreateReleaseRouteAcceptsFlatRequestAndUsesEpicPath(t *testing.T) {
+	service := &roadmapChangeCapture{testService: &testService{}}
+	base := "/internal/v1/companies/company-a/projects/builder/roadmap/epics/e-01/releases"
+	body := `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"release-op-001","id":"r-10","name":"Release","description":"First release"}`
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, base, strings.NewReader(body)))
+	if response.Code != http.StatusOK || service.calls != 1 || service.action != "create-release" || service.request.EpicID != "e-01" || service.request.ID != "r-10" {
+		t.Fatalf("flat create-release response=%d %s; action=%q calls=%d request=%+v", response.Code, response.Body, service.action, service.calls, service.request)
+	}
+}
 
 func TestMongoRoadmapPlanningMutationsAndPlacementShareProjectRevision(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
@@ -90,7 +139,7 @@ func TestMongoRoadmapPlanningMutationsAndPlacementShareProjectRevision(t *testin
 	}
 	created := mongoBornTODOFixture()
 	created.ID, created.ProjectID = "roadmap-attach-test", "builder"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: created}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "roadmap-created-todo", TODO: created}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := change("delete-release", "r-02", "", "", nil, 7); !errors.Is(err, ErrConflict) {

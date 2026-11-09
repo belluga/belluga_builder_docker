@@ -16,8 +16,17 @@ import (
 // Project Release. It is intentionally one-at-a-time; bulk migration remains
 // a separate governed operation.
 type TODOAdmissionRequest struct {
-	SchemaVersion string     `json:"schema_version,omitempty"`
-	TODO          TODORecord `json:"todo"`
+	SchemaVersion          string                      `json:"schema_version,omitempty"`
+	OperationID            string                      `json:"operation_id,omitempty"`
+	InitialStateAcceptance *TODOInitialStateAcceptance `json:"initial_state_acceptance,omitempty"`
+	Disposition            *TODODisposition            `json:"disposition,omitempty"`
+	TODO                   TODORecord                  `json:"todo"`
+}
+
+type TODOInitialStateAcceptance struct {
+	OwnerReference string `json:"owner_reference"`
+	Reason         string `json:"reason"`
+	ActorClaim     string `json:"actor_claim,omitempty"`
 }
 
 type TODOAdmissionReport struct {
@@ -34,26 +43,38 @@ type TODOAdmissionReport struct {
 const todoCreationSchemaVersion = "builder-todo-creation-v2"
 
 type TODOCreationTemplate struct {
-	SchemaVersion string               `json:"schema_version"`
-	Required      []string             `json:"required"`
-	Optional      []string             `json:"optional"`
-	InitialStage  string               `json:"initial_stage"`
-	Stages        []string             `json:"stages"`
-	Qualifiers    []string             `json:"qualifiers"`
-	ContentShape  map[string]string    `json:"content_shape"`
-	Limits        map[string]int       `json:"limits"`
-	ReleaseRules  []string             `json:"release_rules"`
-	Example       TODOAdmissionRequest `json:"example"`
+	SchemaVersion         string               `json:"schema_version"`
+	Required              []string             `json:"required"`
+	Optional              []string             `json:"optional"`
+	InitialStage          string               `json:"initial_stage"`
+	Stages                []string             `json:"stages"`
+	DispositionKinds      []string             `json:"disposition_kinds"`
+	Qualifiers            []string             `json:"qualifiers"`
+	ContentShape          map[string]string    `json:"content_shape"`
+	Limits                map[string]int       `json:"limits"`
+	IDRules               map[string]string    `json:"id_rules"`
+	ReleaseRules          []string             `json:"release_rules"`
+	Example               TODOAdmissionRequest `json:"example"`
+	AdministrativeExample TODOAdmissionRequest `json:"administrative_example"`
 }
 
 func ProjectTODOCreationTemplate(projectID string) (TODOCreationTemplate, error) {
 	if !validID(projectID) {
 		return TODOCreationTemplate{}, todoTeach("project_id", "be a registered Project ID", ErrInvalid)
 	}
+	planningExample := TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "create-example-1", TODO: TODORecord{ID: "example-todo-id", ProjectID: projectID, Title: "TODO: Example", Objective: "Describe the intended outcome.", NextExactStep: "Perform the next governed action.", ArtifactType: "tactical_execution_contract", Stage: "Planning", Qualifiers: []string{}, WorkState: "planning", Sections: []TODOSection{}, Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, DiffExpectation: []TODORepositoryScope{}, ImplementationCommits: []TODOCommitReference{}, AffectedFiles: []string{}}}
+	administrativeExample := planningExample
+	administrativeExample.OperationID = "accept-existing-example-1"
+	administrativeExample.InitialStateAcceptance = &TODOInitialStateAcceptance{OwnerReference: "owner-approval-reference", Reason: "Owner confirms this work was already delivered."}
+	administrativeExample.TODO.ID = "example-accepted-todo"
+	administrativeExample.TODO.Stage = "Completed"
+	administrativeExample.TODO.ReleaseID = "example-release-id"
+	position := 0
+	administrativeExample.TODO.Position = &position
 	return TODOCreationTemplate{
 		SchemaVersion: todoCreationSchemaVersion,
-		Required:      []string{"todo.id", "todo.project_id", "todo.title", "todo.objective", "todo.next_exact_step", "todo.artifact_type", "todo.stage", "todo.qualifiers", "todo.work_state", "todo.content.schema_version", "todo.proof_refs", "todo.waiver_refs", "todo.diff_expectation", "todo.implementation_commits", "todo.affected_files"},
-		Optional:      []string{"todo.release_id", "todo.position", "todo.content.context", "todo.content.scope", "todo.content.criteria", "todo.content.validation_scenarios", "todo.content.implementation_plan", "todo.content.decisions", "todo.content.risks", "todo.content.references", "todo.content.architecture", "todo.content.planning"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...),
+		Required:      []string{"operation_id", "todo.id", "todo.project_id", "todo.title", "todo.objective", "todo.next_exact_step", "todo.artifact_type", "todo.stage", "todo.qualifiers", "todo.work_state", "todo.sections", "todo.content.schema_version", "todo.proof_refs", "todo.waiver_refs", "todo.diff_expectation", "todo.implementation_commits", "todo.affected_files"},
+		Optional:      []string{"todo.release_id", "todo.position", "todo.content.context", "todo.content.scope", "todo.content.criteria", "todo.content.validation_scenarios", "todo.content.implementation_plan", "todo.content.decisions", "todo.content.risks", "todo.content.references", "todo.content.architecture", "todo.content.planning", "initial_state_acceptance", "disposition"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...), DispositionKinds: []string{"Superseded", "Discarded"},
 		Qualifiers: append([]string{}, canonicalTODOQualifiers...),
 		ContentShape: map[string]string{
 			"schema_version":       "2",
@@ -68,9 +89,11 @@ func ProjectTODOCreationTemplate(projectID string) (TODOCreationTemplate, error)
 			"architecture":         "optional {decision,rationale,protection}; all fields required together",
 			"planning":             "before Implementation-Approval-Pending declare complexity, impact, assumptions, reviews and audit_triggers: blast_radius local|cross-module|cross-stack, architecture_applicability required|not_needed, and explicit booleans behavioral_change_or_bugfix, changes_public_contract, touches_auth_or_tenant, touches_runtime_or_infra, touches_tests, critical_user_journey, release_or_promotion_critical, high_severity_plan_review_issue, explicit_three_lane_request. After content and placement are final, use update-todo-evidence to cite each review in proof_refs with kind planning_review_<kind>, source human-review, the matching ref, current content source_digest, verification_state unverified, and outcome go. For a review-specific waiver, submit typed JSON via `builder-project grant-todo-review-waiver --company-id ... --project-id ... --todo-id ...`, with review_kind planning_review_<kind> or a currently required delivery audit kind, current expected_revision and expected_content_digest, a unique operation_id, and a reason. Whole-TODO APROVADO is not a review waiver. Reviews are human citations; Go validates the declared outcome but does not independently evaluate review quality. Critique is always required and architecture_opinion when applicable. Read audit_floors for derived decisions.",
 		},
-		Limits:       map[string]int{"title_runes": 160, "objective_bytes": 1024, "next_exact_step_bytes": 512, "context_bytes": 16 << 10, "content_field_bytes": 2048, "scope_entries": 64, "criteria_scenarios_and_plan_entries": 64, "legacy_context_entries": 128, "legacy_body_bytes": 64 << 10, "proof_references": maxTODOProofs, "record_bytes": maxTODORecordBytes},
-		ReleaseRules: []string{"release_id and position are both absent for Backlog", "when assigned, both are required and the Release must belong to this Company and Project", "a Backlog TODO remains Planning until governed attachment"},
-		Example:      TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: TODORecord{ID: "example-todo-id", ProjectID: projectID, Title: "TODO: Example", Objective: "Describe the intended outcome.", NextExactStep: "Perform the next governed action.", ArtifactType: "tactical_execution_contract", Stage: "Planning", Qualifiers: []string{}, WorkState: "planning", Sections: []TODOSection{}, Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, DiffExpectation: []TODORepositoryScope{}, ImplementationCommits: []TODOCommitReference{}, AffectedFiles: []string{}}},
+		Limits:                map[string]int{"title_runes": 160, "objective_bytes": 1024, "next_exact_step_bytes": 512, "context_bytes": 16 << 10, "content_field_bytes": 2048, "scope_entries": 64, "criteria_scenarios_and_plan_entries": 64, "legacy_context_entries": 128, "legacy_body_bytes": 64 << 10, "proof_references": maxTODOProofs, "record_bytes": maxTODORecordBytes},
+		IDRules:               map[string]string{"todo.id": "^[a-z][a-z0-9-]{0,63}$", "operation_id": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+		ReleaseRules:          []string{"release_id and position are both absent for Backlog", "when assigned, both are required and the Release must belong to this Company and Project", "ordinary Backlog TODOs start in Planning; explicitly accepted initial states may be recorded without Release placement"},
+		Example:               planningExample,
+		AdministrativeExample: administrativeExample,
 	}, nil
 }
 
@@ -99,8 +122,11 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		if request.SchemaVersion != todoCreationSchemaVersion {
 			return TODOAdmissionReport{}, todoTeach("schema_version", "match the current Project template version; GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template", ErrInvalid)
 		}
-		if record.Stage != "Planning" || (record.ReleaseID == "") != (record.Position == nil) || (record.Position != nil && *record.Position < 0) || record.Source != (TODOSource{}) {
-			return TODOAdmissionReport{}, todoTeach("todo.stage/release_id/position/source", "start at Planning, provide both Release placement fields or neither, and omit Foundation/Mongo-owned provenance", ErrInvalid)
+		if !todoOperationIDPattern.MatchString(request.OperationID) {
+			return TODOAdmissionReport{}, todoTeach("operation_id", "be a stable operation identifier for exact create retries", ErrInvalid)
+		}
+		if (record.ReleaseID == "") != (record.Position == nil) || (record.Position != nil && *record.Position < 0) || record.Source != (TODOSource{}) {
+			return TODOAdmissionReport{}, todoTeach("todo.release_id/position/source", "provide both Release placement fields or neither and omit Foundation/Mongo-owned provenance", ErrInvalid)
 		}
 	} else {
 		if record.Source == (TODOSource{}) {
@@ -111,7 +137,7 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		}
 	}
 	if mongoBorn {
-		if err := validateMongoTODOCreation(record); err != nil {
+		if err := validateMongoTODOCreationRequest(request); err != nil {
 			return TODOAdmissionReport{}, err
 		}
 	}
@@ -137,6 +163,10 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 			return TODOAdmissionReport{}, err
 		}
 	}
+	requestDigest, err := todoRequestDigest(request)
+	if err != nil {
+		return TODOAdmissionReport{}, todoTeach("request", "be a stable typed create request", ErrInvalid)
+	}
 	if err := verifyTODOCollection(ctx, database); err != nil {
 		return TODOAdmissionReport{}, err
 	}
@@ -159,7 +189,7 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		return TODOAdmissionReport{}, ErrUnavailable
 	}
 	defer session.EndSession(ctx)
-	_, err = session.WithTransaction(ctx, func(txCtx context.Context) (any, error) {
+	result, err := session.WithTransaction(ctx, func(txCtx context.Context) (any, error) {
 		if record.ReleaseID != "" {
 			if err := validateTODOReleaseMembership(txCtx, database, companyID, projectID, record.ReleaseID); err != nil {
 				return nil, err
@@ -170,6 +200,23 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		var project projectDocument
 		if err := database.Collection(projectsCollection).FindOne(txCtx, bson.D{{Key: "id", Value: projectID}, {Key: "company_id", Value: companyID}}).Decode(&project); err != nil {
 			return nil, ErrUnavailable
+		}
+		if mongoBorn {
+			var prior TODOHistoryEvent
+			replayErr := database.Collection(todoEventsCollection).FindOne(txCtx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: record.ID}, {Key: "operation_id", Value: request.OperationID}}).Decode(&prior)
+			if replayErr == nil {
+				if prior.Kind != "baseline" || prior.TODOID != record.ID || prior.RequestDigest != requestDigest || prior.Revision != 0 || prior.ContentRevision == nil || *prior.ContentRevision != 0 {
+					return nil, todoTeach("operation_id", "not be reused with a different Project TODO creation request", ErrConflict)
+				}
+				var version TODOContentVersion
+				if err := database.Collection(todoContentVersionsCollection).FindOne(txCtx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: record.ID}, {Key: "revision", Value: int64(0)}}).Decode(&version); err != nil || !validSourceDigest(version.Digest) {
+					return nil, todoTeach("history.creation", "resolve to the original immutable creation version", ErrConflict)
+				}
+				return TODOAdmissionReport{CompanyID: companyID, ProjectID: projectID, ReleaseID: record.ReleaseID, TODOID: record.ID, Revision: 0, ContentRevision: 0, ContentDigest: version.Digest}, nil
+			}
+			if !errors.Is(replayErr, mongo.ErrNoDocuments) {
+				return nil, ErrUnavailable
+			}
 		}
 		if err := bumpRoadmapRevision(txCtx, database, companyID, projectID, project.RoadmapRevision); err != nil {
 			return nil, err
@@ -194,16 +241,51 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 				return nil, ErrInvalid
 			}
 			record.Source = TODOSource{Kind: "mongo-content-revision", Ref: fmt.Sprintf("%s/%s/content/0", projectID, record.ID), Digest: contentDigest}
-			record.StageVerification = "verified"
-			record.VerifiedTransitionRef = &TODOProofReference{Kind: "created", Source: "mongo-todo-api", Reference: record.Source.Ref, SourceDigest: contentDigest, VerificationState: "verified"}
+			if request.InitialStateAcceptance == nil && request.Disposition == nil {
+				record.StageVerification = "verified"
+				record.VerifiedTransitionRef = &TODOProofReference{Kind: "created", Source: "mongo-todo-api", Reference: record.Source.Ref, SourceDigest: contentDigest, VerificationState: "verified"}
+			}
+			if request.InitialStateAcceptance != nil {
+				permission := authorizeTODOAdministrativeOperation(txCtx, companyID, projectID, "initial-state-administrative-acceptance")
+				if !permission.Allowed || permission.Decision == "" {
+					return nil, todoTeach("initial_state_acceptance", "be allowed by the Project administrative permission policy", ErrConflict)
+				}
+				var actor *TODOActorClaim
+				if request.InitialStateAcceptance.ActorClaim != "" {
+					actor = &TODOActorClaim{Value: request.InitialStateAcceptance.ActorClaim, VerificationStatus: "unverified"}
+				}
+				record.AdministrativeAcceptance = &TODOAdministrativeAcceptance{AcceptedStage: record.Stage, OwnerReference: request.InitialStateAcceptance.OwnerReference, Reason: request.InitialStateAcceptance.Reason, PermissionDecision: permission.Decision, ActorClaim: actor, AcceptedAt: now, ContentDigest: contentDigest}
+			}
+			if request.Disposition != nil {
+				var successor TODORecord
+				if request.Disposition.SuccessorTODOID != "" {
+					if err := collection.FindOne(txCtx, bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: request.Disposition.SuccessorTODOID}}).Decode(&successor); err != nil {
+						if errors.Is(err, mongo.ErrNoDocuments) {
+							return nil, todoTeach("disposition.successor_todo_id", "name an existing active TODO in the same Project", ErrNotFound)
+						}
+						return nil, ErrUnavailable
+					}
+					if successor.ProjectID != projectID || successor.ID != request.Disposition.SuccessorTODOID || successor.Removed || successor.Disposition != nil {
+						return nil, todoTeach("disposition.successor_todo_id", "name an existing active TODO in the same Project", ErrConflict)
+					}
+				}
+				copyDisposition := *request.Disposition
+				record.Disposition = &copyDisposition
+				record.DispositionState = "valid"
+			}
+			record.LastOperation = &TODOOperationState{ID: request.OperationID, Kind: "create-todo", RequestDigest: requestDigest, ResultRevision: 0}
 		}
 		if _, err := collection.InsertOne(txCtx, record); err != nil {
 			return nil, normalizeMongoError(err)
 		}
-		if err := insertTODOHistoryBaseline(txCtx, database, record); err != nil {
+		if mongoBorn {
+			if err := insertTODOCreationBaseline(txCtx, database, record, requestDigest); err != nil {
+				return nil, err
+			}
+		} else if err := insertTODOHistoryBaseline(txCtx, database, record); err != nil {
 			return nil, err
 		}
-		return nil, nil
+		return TODOAdmissionReport{CompanyID: companyID, ProjectID: projectID, ReleaseID: record.ReleaseID, TODOID: record.ID, Revision: 0, ContentRevision: 0, ContentDigest: record.Source.Digest, SourcePath: record.Source.Path}, nil
 	})
 	if err != nil {
 		if errors.Is(err, ErrInvalid) || errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
@@ -211,7 +293,54 @@ func (m *MongoStore) AdmitTODO(ctx context.Context, companyID, projectID string,
 		}
 		return TODOAdmissionReport{}, normalizeMongoError(err)
 	}
-	return TODOAdmissionReport{CompanyID: companyID, ProjectID: projectID, ReleaseID: record.ReleaseID, TODOID: record.ID, Revision: 0, ContentRevision: 0, ContentDigest: record.Source.Digest, SourcePath: record.Source.Path}, nil
+	report, ok := result.(TODOAdmissionReport)
+	if !ok {
+		return TODOAdmissionReport{}, ErrUnavailable
+	}
+	return report, nil
+}
+
+func validateMongoTODOCreationRequest(request TODOAdmissionRequest) error {
+	record := request.TODO
+	if request.InitialStateAcceptance == nil && request.Disposition == nil {
+		if record.Stage != "Planning" || record.AdministrativeAcceptance != nil || record.Disposition != nil || record.DispositionState != "" {
+			return todoTeach("todo.stage/initial_state_acceptance/disposition", "start at Planning without an administrative basis or disposition unless explicit acceptance fields are supplied", ErrInvalid)
+		}
+	} else {
+		acceptance := request.InitialStateAcceptance
+		if acceptance == nil || !validSummaryField(acceptance.OwnerReference, 512) || !validSummaryField(acceptance.Reason, 512) || (acceptance.ActorClaim != "" && !validSummaryField(acceptance.ActorClaim, 160)) {
+			return todoTeach("initial_state_acceptance.owner_reference/reason", "include explicit owner authorization reference and reason for a non-default initial state", ErrInvalid)
+		}
+		if record.Stage == "Planning" && request.Disposition == nil || !containsTODOString(canonicalTODOStages, record.Stage) {
+			return todoTeach("todo.stage/initial_state_acceptance", "use a canonical non-Planning stage, or Planning only when accepting a disposition", ErrInvalid)
+		}
+	}
+	if request.Disposition != nil {
+		d := request.Disposition
+		if request.InitialStateAcceptance == nil || record.Stage != "Planning" || record.Stage == "Completed" || (d.Kind != "Superseded" && d.Kind != "Discarded") || !validSummaryField(d.Reason, 512) || (d.SuccessorTODOID != "" && (!validID(d.SuccessorTODOID) || d.SuccessorTODOID == record.ID)) {
+			return todoTeach("disposition.kind/reason/successor_todo_id/todo.stage", "use Superseded or Discarded with a reason, Planning stage, and optional distinct valid successor", ErrInvalid)
+		}
+		if record.Disposition != nil || record.DispositionState != "" {
+			return todoTeach("todo.disposition/disposition_state", "omit caller-authored disposition metadata", ErrInvalid)
+		}
+	} else if record.Disposition != nil || record.DispositionState != "" {
+		return todoTeach("todo.disposition/disposition_state", "omit caller-authored disposition metadata", ErrInvalid)
+	}
+	if record.AdministrativeAcceptance != nil {
+		return todoTeach("todo.administrative_acceptance", "omit server-owned acceptance basis from create requests", ErrInvalid)
+	}
+	if !containsTODOString(canonicalTODOStages, record.Stage) {
+		return todoTeach("todo.stage", "use a canonical initial delivery stage", ErrInvalid)
+	}
+	if record.Content == nil {
+		return todoTeach("todo.content", "provide a schema-v2 typed content object", ErrInvalid)
+	}
+	if err := ValidateTODOContentDraft(*record.Content); err != nil {
+		return err
+	}
+	clone := record
+	clone.Stage = "Planning"
+	return validateGenericTODOAdmission(clone)
 }
 
 func validateGenericTODOAdmission(record TODORecord) error {
@@ -265,7 +394,7 @@ func validateGenericTODOAdmission(record TODORecord) error {
 	}
 	foundationSource := validID(record.Source.Foundation) && validGitCommit(record.Source.Revision) && validRepositoryPattern(record.Source.Path) && validSourceDigest(record.Source.Digest) && record.Source.Kind == "" && record.Source.Ref == ""
 	mongoSourceAbsent := record.Source == (TODOSource{})
-	if (!foundationSource && !mongoSourceAbsent) || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.ObjectID != bson.NilObjectID || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil || record.Removed {
+	if (!foundationSource && !mongoSourceAbsent) || record.Source.MappingDigest != "" || record.Source.ImportedAt != 0 || record.ObjectID != bson.NilObjectID || record.Revision != 0 || record.CreatedAt != 0 || record.UpdatedAt != 0 || record.StageVerification != "" || record.VerifiedTransitionRef != nil || record.LastOperation != nil || record.Removed || record.AdministrativeAcceptance != nil || record.Disposition != nil || record.DispositionState != "" {
 		return todoTeach("todo.source/operational_metadata", "provide valid Foundation provenance for legacy admission or omit provenance for Mongo creation, and leave Mongo-owned metadata unset", ErrInvalid)
 	}
 	data, err := bson.Marshal(record)
@@ -276,8 +405,8 @@ func validateGenericTODOAdmission(record TODORecord) error {
 }
 
 func validateMongoTODOCreation(record TODORecord) error {
-	if record.Stage != "Planning" || record.Source != (TODOSource{}) {
-		return todoTeach("todo.stage/source", "start at Planning and omit all caller-authored provenance", ErrInvalid)
+	if record.Stage != "Planning" || record.Source != (TODOSource{}) || record.AdministrativeAcceptance != nil || record.Disposition != nil || record.DispositionState != "" {
+		return todoTeach("todo.stage/source/administrative_acceptance/disposition", "start at Planning and omit all caller-authored provenance or administration metadata", ErrInvalid)
 	}
 	if record.Content == nil {
 		return todoTeach("todo.content", "provide a schema-v2 typed content object", ErrInvalid)

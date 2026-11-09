@@ -220,6 +220,17 @@ func TestTODOValidatorRecognizesPinnedMVPParentCombinationOnly(t *testing.T) {
 	}
 }
 
+func TestTODOValidatorRecognizesImmediateAdministrativePredecessor(t *testing.T) {
+	previous := TODOCollectionValidatorBeforeAdministrativeAcceptance()
+	encoded, err := bson.Marshal(previous)
+	if err != nil { t.Fatal(err) }
+	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("deployed strict validator before administrative acceptance was not recognized") }
+	unknown := withoutBSONFieldsAtPath(previous, []string{"$jsonSchema", "properties"}, "source")
+	encoded, err = bson.Marshal(unknown)
+	if err != nil { t.Fatal(err) }
+	if recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("unrelated validator relaxation was accepted") }
+}
+
 func TestEvidenceCapacityUpgradeRecognizesOnlyPriorStrictValidator(t *testing.T) {
 	previous := TODOCollectionValidatorBeforeEvidenceCapacity()
 	encoded, err := bson.Marshal(previous)
@@ -494,7 +505,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 	}
 	fresh := mongoBornTODOFixture()
 	fresh.ID, fresh.ProjectID, fresh.ReleaseID, fresh.Position = "mongo-born-adoption-negative", "boora", "r-01", intPointer(1)
-	if _, err := store.AdmitTODO(ctx, "belluga-solutions", "boora", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: fresh}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "belluga-solutions", "boora", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "fresh-adoption-negative-create", TODO: fresh}); err != nil {
 		t.Fatalf("admit current Mongo-born TODO: %v", err)
 	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx,

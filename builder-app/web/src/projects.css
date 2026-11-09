@@ -245,7 +245,9 @@
   --project-text: #eef6fa;
   --project-muted: #a8c1cf;
   --project-accent: #32bbdd;
+  --project-accentText: #32bbdd;
   --project-onAccent: #091824;
+  --project-success: #a6e6b9;
   --project-border: #34546a;
   --project-focus: #f2c96b;
   --project-font: Arial;
@@ -285,7 +287,7 @@
   font-size: var(--project-displaySize);
 }
 .projects-project a {
-  color: var(--project-accent);
+  color: var(--project-accentText);
 }
 .projects-project button:focus-visible,
 .projects-project select:focus-visible {
@@ -346,7 +348,7 @@
 .project-switch-cancel {
   border: 0;
   background: transparent;
-  color: var(--project-accent);
+  color: var(--project-accentText);
   cursor: pointer;
 }
 .project-layout {
@@ -410,7 +412,7 @@
 .project-page-heading p { max-width: 640px; margin: 0; color: var(--project-muted); font-size: 16px; line-height: 1.6; }
 .project-page-heading .prototype-page-note { position: absolute; right: 0; bottom: 0; max-width: 230px; color: var(--project-muted); font-size: 12px; text-align: right; }
 .project-content:has(.prototype-review) .project-page-heading { position: relative; }
-.project-page-tag { display: inline-flex; padding: 5px 10px; border: 1px solid var(--project-border); border-radius: 99px; color: var(--project-accent); font-size: 11px; line-height: 1.2; }
+.project-page-tag { display: inline-flex; padding: 5px 10px; border: 1px solid var(--project-border); border-radius: 99px; color: var(--project-accentText); font-size: 11px; line-height: 1.2; }
 .projects-project .project-page-heading h1 { margin: 5px 0 14px; font-size: clamp(38px,4vw,58px); line-height: 1.05; letter-spacing: -.055em; }
 .project-hero,
 .design-system-view article,
@@ -461,12 +463,12 @@
   background: radial-gradient(ellipse at 74% 16%, color-mix(in srgb, var(--project-accent) 11%, transparent), transparent 48%);
 }
 .overview-hero .project-hero-copy { flex: 0 1 38%; }
-.overview-eyebrow { display: block; margin-bottom: 11px; color: var(--project-accent); font-size: 11px; font-weight: 800; letter-spacing: .13em; }
+.overview-eyebrow { display: block; margin-bottom: 11px; color: var(--project-accentText); font-size: 11px; font-weight: 800; letter-spacing: .13em; }
 .overview-hero h1 { max-width: 14ch; margin: 0 0 5px; font-size: clamp(56px, 6vw, 82px); line-height: .98; }
 .overview-hero-tagline { max-width: 16ch; margin: 0 0 18px; font-size: clamp(27px, 3vw, 42px); line-height: 1.06; letter-spacing: -.04em; }
 .project-overview .overview-hero-tagline { max-width: 19ch; font-size: clamp(27px, 2.7vw, 38px); }
 .overview-hero .overview-hero-summary { max-width: 45ch; color: var(--project-text); font-size: 14px; line-height: 1.58; }
-.overview-landing-link { display: inline-flex; gap: 12px; margin-top: 13px; padding-bottom: 3px; color: var(--project-accent); border-bottom: 1px solid currentColor; font-weight: 700; text-decoration: none; }
+.overview-landing-link { display: inline-flex; gap: 12px; margin-top: 13px; padding-bottom: 3px; color: var(--project-accentText); border-bottom: 1px solid currentColor; font-weight: 700; text-decoration: none; }
 .overview-device-pair { position: relative; display: flex; flex: 1 1 48%; align-items: center; justify-content: center; min-width: 0; }
 .overview-visual-note { position: absolute; top: -22px; right: 0; color: var(--project-muted); font-size: 10px; font-weight: 700; letter-spacing: .1em; white-space: nowrap; }
 .overview-device-pair img { display: block; max-width: 100%; object-fit: contain; border: 1px solid var(--project-border); border-radius: var(--project-cardRadius); box-shadow: 0 22px 55px #0005; }
@@ -484,7 +486,7 @@
 .overview-section-aside li { position: relative; padding-left: 20px; line-height: 1.5; }
 .overview-section-aside li + li { margin-top: 9px; }
 .overview-section-aside li::before { content: ""; position: absolute; top: .55em; left: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--project-accent); }
-.overview-section-heading > span { color: var(--project-accent); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.overview-section-heading > span { color: var(--project-accentText); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
 .overview-section-heading h2 { max-width: 21ch; margin: 8px 0 10px; font-size: clamp(24px, 2.4vw, 34px); line-height: 1.13; letter-spacing: -.035em; }
 .overview-section-body p { margin: 0; color: var(--project-text); font-size: 13px; line-height: 1.54; }
 .overview-section-body ul { margin: 18px 0 0; padding: 0; list-style: none; line-height: 1.6; }
@@ -552,7 +554,7 @@
 .roadmap-journey-heading > small { color: var(--project-muted); font-size: 11px; white-space: nowrap; }
 .roadmap-journey-heading > span,
 .roadmap-journey-heading > div > span,
-.roadmap-view-compact .roadmap-releases-rail > h3 { color: var(--project-accent); font-size: 11px; font-weight: 750; letter-spacing: .1em; }
+.roadmap-view-compact .roadmap-releases-rail > h3 { color: var(--project-accentText); font-size: 11px; font-weight: 750; letter-spacing: .1em; }
 .roadmap-journey-heading > p,
 .roadmap-journey-heading > div > p,
 .roadmap-view-compact .roadmap-releases-rail > p { margin-top: 5px; margin-bottom: 0; color: var(--project-muted); font-size: 12px; }
@@ -572,10 +574,10 @@
 .roadmap-view-compact .roadmap-rail > button > small,
 .roadmap-view-compact .roadmap-release-chip > small { grid-column: 2; margin-top: 3px; color: var(--project-muted); font-size: 10px; letter-spacing: 0; }
 .roadmap-view-compact .roadmap-rail > button.selected > small,
-.roadmap-view-compact .roadmap-release-chip.focused > small { color: var(--project-accent); }
+.roadmap-view-compact .roadmap-release-chip.focused > small { color: var(--project-accentText); }
 .roadmap-view-compact .roadmap-release-chip.delivered > small { color: var(--project-success, #82e0d0); }
-.roadmap-view-compact .roadmap-release-chip.blocked > small { color: #edaa91; }
-.roadmap-view-compact .roadmap-release-chip.unknown > small { color: #e8c879; }
+.roadmap-view-compact .roadmap-release-chip.blocked > small { color: var(--project-text); }
+.roadmap-view-compact .roadmap-release-chip.unknown > small { color: var(--project-text); }
 .roadmap-journey-status { grid-column: 1; grid-row: 1 / span 3; width: 17px; height: 17px; border: 1px solid var(--project-muted); border-radius: 50%; align-self: start; margin-top: 1px; }
 .roadmap-journey-status.active { border: 2px solid var(--project-accent); box-shadow: inset 0 0 0 3px var(--project-surface); background: var(--project-accent); }
 .roadmap-journey-status.delivered { border-color: var(--project-success, #82e0d0); background: var(--project-success, #82e0d0); }
@@ -591,7 +593,7 @@
   gap: 20px;
 }
 .roadmap-heading > div > span {
-  color: var(--project-accent);
+  color: var(--project-accentText);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .12em;
@@ -684,12 +686,12 @@
 .roadmap-rail > button:focus-visible,
 .roadmap-rail > button.selected,
 .roadmap-release-chip.focused {
-  border-color: var(--project-accent);
+  border-color: var(--project-accentText);
   outline-color: var(--project-focus);
 }
 .roadmap-rail > button > span,
 .roadmap-release-chip > small {
-  color: var(--project-accent);
+  color: var(--project-accentText);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: .08em;
@@ -766,12 +768,12 @@
   white-space: nowrap;
 }
 .roadmap-release-chevron {
-  color: var(--project-accent);
+  color: var(--project-accentText);
   font-size: 21px;
   text-align: center;
 }
 .roadmap-release.focused {
-  border-color: var(--project-accent);
+  border-color: var(--project-accentText);
   box-shadow: inset 3px 0 var(--project-accent);
 }
 .roadmap-unavailable {
@@ -821,33 +823,33 @@
 .backlog-context-card h2 { margin: 0 0 15px; padding-bottom: 13px; border-bottom: 1px solid var(--project-border); font-size: 14px; }
 .backlog-context-card > p { color: var(--project-muted); font-size: 12px; line-height: 1.5; }
 .backlog-context-notice { display: flex; align-items: start; gap: 10px; margin: 18px 0 0; padding: 12px 10px; border: 1px solid var(--project-border); border-radius: 10px; background: color-mix(in srgb, var(--project-accent) 8%, var(--project-canvas)); }
-.backlog-context-notice span { color: var(--project-accent); }
+.backlog-context-notice span { color: var(--project-accentText); }
 .backlog-context-notice p { margin: 0; color: var(--project-muted); font-size: 11px; line-height: 1.5; }
-.backlog-context-card button { display: flex; justify-content: space-between; width: 100%; margin-top: 24px; padding: 0; border: 0; background: transparent; color: var(--project-accent); cursor: pointer; text-align: left; font-weight: 600; }
+.backlog-context-card button { display: flex; justify-content: space-between; width: 100%; margin-top: 24px; padding: 0; border: 0; background: transparent; color: var(--project-accentText); cursor: pointer; text-align: left; font-weight: 600; }
 .backlog-view > .roadmap-todo-preview { grid-column: 2; grid-row: 1; margin: 20px 14px; }
 .roadmap-context, .roadmap-todo-preview { grid-column: 2; grid-row: 1 / span 4; align-self: stretch; }
 .roadmap-release-panel, .roadmap-context, .roadmap-todo-preview { min-width: 0; padding: 20px 18px; border: 1px solid var(--project-border); border-radius: var(--project-cardRadius); background: linear-gradient(145deg, var(--project-surface), var(--project-canvas)); }
 .roadmap-todo-preview { position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow-y: auto; border-color: color-mix(in srgb,var(--project-accent) 65%,var(--project-border)); background: linear-gradient(160deg,color-mix(in srgb,var(--project-accent) 12%,var(--project-surface)),var(--project-canvas)); box-shadow: 0 15px 32px #0005; }
 .todo-preview-top { display: flex; align-items: start; justify-content: space-between; gap: 7px; color: var(--project-muted); font-size: 10px; letter-spacing: .08em; }
 .todo-preview-top button { width: 30px; height: 30px; border: 1px solid var(--project-border); border-radius: 7px; background: var(--project-canvas); color: var(--project-text); font-size: 22px; cursor: pointer; }
-.todo-preview-context { margin: 12px 0 8px; color: var(--project-accent); font-size: 11px; line-height: 1.4; }
+.todo-preview-context { margin: 12px 0 8px; color: var(--project-accentText); font-size: 11px; line-height: 1.4; }
 .todo-preview h2 { margin: 0 0 11px; font-size: 20px; line-height: 1.2; }
-.todo-preview-status { display: inline-block; margin: 0 0 8px; padding: 6px 9px; border: 1px solid color-mix(in srgb,var(--project-accent) 55%,var(--project-border)); border-radius: 99px; color: var(--project-accent); font-size: 11px; }
-.todo-preview-status.blocked { border-color: #c77664; color: #edaa91; }
+.todo-preview-status { display: inline-block; margin: 0 0 8px; padding: 6px 9px; border: 1px solid color-mix(in srgb,var(--project-accent) 55%,var(--project-border)); border-radius: 99px; color: var(--project-accentText); font-size: 11px; }
+.todo-preview-status.blocked { border-color: #c77664; color: var(--project-text); }
 .todo-preview-status.done { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
-.todo-preview-status.unknown { border-color: #b9933e; color: #e8c879; }
-.todo-stage-teach { display: block; max-width: 72ch; margin: 4px 0 10px; color: #e8c879; font-size: 11px; line-height: 1.45; white-space: normal; }
+.todo-preview-status.unknown { border-color: #b9933e; color: var(--project-text); }
+.todo-stage-teach { display: block; max-width: 72ch; margin: 4px 0 10px; color: var(--project-text); font-size: 11px; line-height: 1.45; white-space: normal; }
 .todo-preview-body section + section { margin-top: 17px; }
 .todo-preview-body h3 { margin: 0 0 5px; color: var(--project-muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
 .todo-preview-body p { display: -webkit-box; overflow: hidden; margin: 0; color: var(--project-text); font-size: 13px; line-height: 1.5; -webkit-line-clamp: 4; -webkit-box-orient: vertical; }
-.todo-preview-open { display: flex; width: 100%; justify-content: space-between; margin-top: 22px; padding: 12px 2px 2px; border: 0; border-top: 1px solid var(--project-border); background: transparent; color: var(--project-accent); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
+.todo-preview-open { display: flex; width: 100%; justify-content: space-between; margin-top: 22px; padding: 12px 2px 2px; border: 0; border-top: 1px solid var(--project-border); background: transparent; color: var(--project-accentText); cursor: pointer; font: inherit; font-size: 12px; font-weight: 700; }
 .todo-preview-open:disabled { cursor: not-allowed; opacity: .5; }
 .backlog-heading h2 { margin: 5px 0; font-size: 21px; }
 .backlog-heading .subtitle, .folder-description { color: var(--project-muted); font-size: 12px; line-height: 1.5; }
 .backlog-folder { margin: 8px 0; border: 1px solid var(--project-border); border-radius: 8px; }
 .backlog-folder summary { display: flex; align-items: center; gap: 9px; padding: 11px; cursor: pointer; list-style: none; }
 .backlog-folder summary::-webkit-details-marker { display: none; }
-.backlog-folder summary > span { color: var(--project-accent); transition: transform .15s; }
+.backlog-folder summary > span { color: var(--project-accentText); transition: transform .15s; }
 .backlog-folder[open] > summary > span { transform: rotate(90deg); }
 .backlog-folder details.backlog-folder { margin: 7px 12px 12px 24px; }
 .backlog-folder summary small { margin-left: auto; color: var(--project-muted); }
@@ -866,19 +868,19 @@
 .project-loading-page > .subtitle { max-width: 570px; font-size: 15px; }
 .loading-card { max-width: 690px; margin-top: 38px; padding: clamp(22px,3vw,36px); border: 1px solid color-mix(in srgb,var(--project-accent) 50%,var(--project-border)); border-radius: 15px; background: linear-gradient(145deg,color-mix(in srgb,var(--project-accent) 14%,var(--project-surface)),var(--project-surface)); box-shadow: 0 25px 55px #0004; }
 .loading-card-head { display: flex; gap: 19px; align-items: center; }
-.loading-symbol { width: 54px; height: 54px; display: grid; place-items: center; flex: none; border: 1px solid var(--project-accent); border-radius: 50%; color: var(--project-accent); font-size: 38px; line-height: 1; }
+.loading-symbol { width: 54px; height: 54px; display: grid; place-items: center; flex: none; border: 1px solid var(--project-accent); border-radius: 50%; color: var(--project-accentText); font-size: 38px; line-height: 1; }
 .loading-card h2 { margin: 0; font-size: clamp(21px,2.2vw,29px); line-height: 1.2; }
 #loading-explanation { margin: 25px 0; color: var(--project-muted); font-size: 14px; line-height: 1.55; }
 .loading-steps { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--project-border); }
 .loading-steps li { display: flex; gap: 16px; align-items: center; min-height: 68px; padding: 10px 0; border-bottom: 1px solid var(--project-border); color: var(--project-muted); }
 .loading-steps li > span:first-child { width: 30px; height: 30px; display: grid; place-items: center; flex: none; border: 1px solid var(--project-border); border-radius: 50%; font-size: 18px; }
 .loading-steps li.confirmed > span:first-child { border-color: var(--project-success,#55bda9); color: var(--project-success,#70dfc9); }
-.loading-steps li.running > span:first-child { border-color: var(--project-accent); color: var(--project-accent); }
-.loading-steps li.failed > span:first-child { border-color: #c77664; color: #edaa91; }
+.loading-steps li.running > span:first-child { border-color: var(--project-accentText); color: var(--project-accentText); }
+.loading-steps li.failed > span:first-child { border-color: #c77664; color: var(--project-text); }
 .loading-steps li strong { display: block; margin-top: 4px; color: var(--project-text); font-size: 13px; font-weight: 500; }
 .loading-elapsed { margin: 22px 0 0; color: var(--project-muted); font-size: 12px; }
 .loading-actions { display: flex; flex-wrap: wrap; gap: 20px; margin-top: 20px; }
-.loading-actions a, .loading-actions button { padding: 0; border: 0; background: transparent; color: var(--project-accent); cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; }
+.loading-actions a, .loading-actions button { padding: 0; border: 0; background: transparent; color: var(--project-accentText); cursor: pointer; font: inherit; font-size: 13px; font-weight: 700; }
 .loading-actions a:hover,.loading-actions a:focus-visible,.loading-actions button:hover,.loading-actions button:focus-visible { text-decoration: underline; }
 .loading-note { max-width: 690px; margin: 16px 0; color: var(--project-muted); font-size: 11px; line-height: 1.5; }
 .nav-footer { margin: auto 14px 20px; color: var(--project-muted); font-size: 11px; }
@@ -889,26 +891,26 @@
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-list { gap: 9px; margin: 0; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release { position: relative; overflow: hidden; padding: 0; border-radius: 10px; background: var(--project-canvas); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release.focused { box-shadow: 0 0 0 1px var(--project-accent); }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status { color: var(--project-muted); background: color-mix(in srgb, var(--project-muted) 8%, transparent); }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status { color: var(--project-muted); background: var(--project-surface); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.delivered { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.blocked { border-color: #c77664; color: #edaa91; }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.in-progress { border-color: var(--project-accent); color: var(--project-accent); }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.unknown { border-color: #b9933e; color: #e8c879; }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.blocked { border-color: #c77664; color: var(--project-text); }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.in-progress { border-color: var(--project-accentText); color: var(--project-accentText); }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.unknown { border-color: #b9933e; color: var(--project-text); }
 .roadmap-release-details { border-top: 1px solid var(--project-border); }
 .roadmap-todo-meta, .roadmap-todo-stage { min-width: 0; width: fit-content; padding: 5px 8px; border: 1px solid var(--project-border); border-radius: 20px; color: var(--project-muted); line-height: 1.25; }
 .roadmap-todo-meta { border: 0; padding-left: 0; }
 .roadmap-todo-meta small { display: block; color: var(--project-muted); font-size: 10px; }
-.roadmap-todo-stage { color: var(--project-muted); }
+.roadmap-todo-stage { color: var(--project-muted); background: var(--project-surface); }
 .roadmap-todo-stage i { display: inline-block; width: 8px; height: 8px; margin-right: 6px; border-radius: 50%; background: currentColor; }
-.roadmap-todo-stage.approval, .roadmap-todo-stage.ready, .roadmap-todo-stage.active, .roadmap-todo-stage.implemented { border-color: color-mix(in srgb, var(--project-accent) 65%, var(--project-border)); color: var(--project-accent); }
-.roadmap-todo-stage.validation { border-color: #b9933e; color: #e8c879; background: color-mix(in srgb, #b9933e 12%, transparent); }
-.roadmap-todo-stage.done { border-color: color-mix(in srgb, var(--project-success, #82e0d0) 65%, var(--project-border)); color: var(--project-success, #82e0d0); background: color-mix(in srgb, var(--project-success, #82e0d0) 12%, transparent); }
-.roadmap-todo-stage.blocked { border-color: #c77664; color: #edaa91; background: color-mix(in srgb, #c77664 12%, transparent); }
-.roadmap-todo-stage.unknown { border-color: #b9933e; color: #e8c879; background: color-mix(in srgb, #b9933e 12%, transparent); }
+.roadmap-todo-stage.approval, .roadmap-todo-stage.ready, .roadmap-todo-stage.active, .roadmap-todo-stage.implemented { border-color: color-mix(in srgb, var(--project-accent) 65%, var(--project-border)); color: var(--project-accentText); }
+.roadmap-todo-stage.validation { border-color: #b9933e; color: var(--project-text); }
+.roadmap-todo-stage.done { border-color: color-mix(in srgb, var(--project-success, #82e0d0) 65%, var(--project-border)); color: var(--project-success, #82e0d0); }
+.roadmap-todo-stage.blocked { border-color: #c77664; color: var(--project-text); }
+.roadmap-todo-stage.unknown { border-color: #b9933e; color: var(--project-text); }
 .roadmap-context h2 { margin: 0 0 15px; padding-bottom: 13px; border-bottom: 1px solid var(--project-border); font-size: 14px; }
 .roadmap-context > div { display: grid; grid-template-columns: 26px minmax(0, 1fr); gap: 9px; padding: 8px 0 16px; }
 .roadmap-context > div + div { border-top: 1px solid var(--project-border); padding-top: 16px; }
-.roadmap-context > div > span { color: var(--project-accent); font-size: 20px; }
+.roadmap-context > div > span { color: var(--project-accentText); font-size: 20px; }
 .roadmap-context > div p { margin: 0; color: var(--project-muted); font-size: 11px; line-height: 1.5; }
 .roadmap-context > div small, .roadmap-context > div strong { display: block; }
 .roadmap-context > div strong { margin: 5px 0; color: var(--project-text); font-size: 14px; }
@@ -916,18 +918,18 @@
 .roadmap-context-links { margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--project-border); }
 .roadmap-context-links h3 { margin: 0 0 9px; font-size: 14px; }
 .roadmap-context-links button { display: grid; width: 100%; min-height: 40px; grid-template-columns: 25px 1fr 16px; align-items: center; gap: 8px; padding: 0; border: 0; background: transparent; color: var(--project-text); cursor: pointer; font: inherit; font-size: 12px; text-align: left; }
-.roadmap-context-links button b { color: var(--project-accent); font-size: 15px; font-weight: 400; }
+.roadmap-context-links button b { color: var(--project-accentText); font-size: 15px; font-weight: 400; }
 /* Roadmap's approved HTML/CSS primitives, scoped to the Builder-owned full view. */
 .roadmap-view:not(.roadmap-view-compact) .roadmap-epic-rail > button.epic-card { display: block; flex-basis: 281px; min-height: 143px; padding: 16px 16px 14px; border-radius: 10px; }
 .roadmap-view:not(.roadmap-view-compact) .epic-card > .epic-top { display: grid; grid-template-columns: 48px minmax(0,1fr); gap: 15px; align-items: center; }
-.roadmap-view:not(.roadmap-view-compact) .epic-symbol { display: grid; width: 44px; height: 44px; place-items: center; border-radius: 50%; background: color-mix(in srgb,var(--project-accent) 18%,var(--project-surface)); color: var(--project-accent); font-size: 22px; }
+.roadmap-view:not(.roadmap-view-compact) .epic-symbol { display: grid; width: 44px; height: 44px; place-items: center; border-radius: 50%; background: color-mix(in srgb,var(--project-accent) 18%,var(--project-surface)); color: var(--project-accentText); font-size: 22px; }
 .roadmap-view:not(.roadmap-view-compact) .epic-title { display: block; margin-bottom: 3px; color: var(--project-text); font-size: 16px; font-weight: 650; line-height: 1.25; }
-.roadmap-view:not(.roadmap-view-compact) .epic-status { display: block; color: var(--project-accent); font-size: 13px; font-weight: 400; letter-spacing: 0; }
+.roadmap-view:not(.roadmap-view-compact) .epic-status { display: block; color: var(--project-accentText); font-size: 13px; font-weight: 400; letter-spacing: 0; }
 .roadmap-view:not(.roadmap-view-compact) .epic-card > .epic-description { display: block; min-height: 20px; overflow: hidden; margin: 10px 0 7px 63px; color: var(--project-muted); font-size: 12px; font-weight: 400; letter-spacing: 0; white-space: nowrap; text-overflow: ellipsis; }
 .roadmap-view:not(.roadmap-view-compact) .epic-card > .release-count { display: inline-block; margin-left: 63px; padding: 4px 11px; border-radius: 20px; background: color-mix(in srgb,var(--project-accent) 15%,var(--project-surface)); color: var(--project-text); font-size: 11px; font-weight: 400; letter-spacing: 0; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-panel { padding: 20px 18px 18px; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-panel-heading { margin: 0 4px 16px; }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-panel-heading div > span { color: var(--project-accent); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-panel-heading div > span { color: var(--project-accentText); font-size: 10px; font-weight: 700; letter-spacing: .12em; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-toggle.release-toggle { min-height: 72px; grid-template-columns: 35px minmax(130px,1fr) minmax(150px,auto); gap: 10px; padding: 11px 60px 11px 16px; }
 .roadmap-view:not(.roadmap-view-compact) .release-name { display: block; font-size: 15px; font-weight: 650; }
 .roadmap-view:not(.roadmap-view-compact) .release-description { display: block; margin-top: 4px; color: var(--project-muted); font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0; }
@@ -999,7 +1001,7 @@
 }
 .design-system-palette > small,
 .design-system-source small {
-  color: var(--project-accent);
+  color: var(--project-accentText);
   font-size: 10px;
   font-weight: 750;
   letter-spacing: 0.12em;
@@ -1028,6 +1030,16 @@
   border: 1px solid var(--project-border);
   border-radius: 10px;
   font-weight: 700;
+  background: var(--project-surface);
+  color: var(--project-text);
+}
+.design-system-swatch-chip {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-bottom: 10px;
+  border: 1px solid var(--project-border);
+  border-radius: 6px;
 }
 .design-system-swatch code {
   font-size: 11px;
@@ -1140,7 +1152,7 @@
   padding: 8px 0;
   border: 0;
   background: transparent;
-  color: var(--project-accent);
+  color: var(--project-accentText);
   cursor: pointer;
   font: inherit;
   font-weight: 650;
@@ -1206,7 +1218,7 @@
 }
 .prototype-review-head small,
 .prototype-review-actions small {
-  color: var(--project-accent);
+  color: var(--project-accentText);
 }
 .prototype-review-head span {
   color: var(--project-muted);
@@ -1225,7 +1237,7 @@
 .prototype-review-list label {
   display: grid;
   gap: 5px;
-  color: var(--project-accent);
+  color: var(--project-accentText);
   font-size: 10px;
   font-weight: 750;
   letter-spacing: .12em;
@@ -1254,7 +1266,7 @@
 .prototype-review-list button.selected,
 .prototype-review-tree button.selected,
 .prototype-review-states button[aria-pressed="true"] {
-  border-color: var(--project-accent);
+  border-color: var(--project-accentText);
 }
 .prototype-review-list button small {
   display: block;
@@ -1280,7 +1292,7 @@
   gap: 8px;
 }
 .prototype-review-tree-heading { display: grid; gap: 5px; margin-bottom: 7px; }
-.prototype-review-tree-heading small { color: var(--project-accent); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.prototype-review-tree-heading small { color: var(--project-accentText); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
 .prototype-review-tree-heading strong { font-size: 12px; font-weight: 500; }
 .prototype-review-states {
   padding-left: 14px;
@@ -1293,7 +1305,7 @@
   min-width: 0;
 }
 .prototype-review-evidence-heading { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
-.prototype-review-evidence-heading small { color: var(--project-accent); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
+.prototype-review-evidence-heading small { color: var(--project-accentText); font-size: 10px; font-weight: 750; letter-spacing: .12em; }
 .prototype-review-evidence-heading h3 { margin: 7px 0 0; font-size: 23px; letter-spacing: -.03em; }
 .prototype-review-evidence-heading > span { color: var(--project-muted); font-size: 11px; white-space: nowrap; }
 .prototype-review-evidence figure {
@@ -1418,11 +1430,11 @@
   color: var(--project-text);
 }
 .project-theme .prototype-presentation-toggle button[aria-pressed="true"] {
-  border-color: var(--project-accent);
-  color: var(--project-accent);
+  border-color: var(--project-accentText);
+  color: var(--project-accentText);
 }
 .project-theme .prototype-presentation-bar a {
-  color: var(--project-accent);
+  color: var(--project-accentText);
 }
 .project-theme .prototype-presentation-canvas {
   background: var(--project-canvas);
@@ -1488,5 +1500,5 @@
   gap: 24px;
 }
 .design-system-viewer a {
-  color: var(--project-accent, #2457d6);
+  color: var(--project-accentText, #2457d6);
 }

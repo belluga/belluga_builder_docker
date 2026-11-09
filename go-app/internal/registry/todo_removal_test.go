@@ -112,7 +112,7 @@ func TestMongoRemoveTODOIsTombstonedAndIdempotent(t *testing.T) {
 	record.ID = "remove-test-todo"
 	record.ReleaseID = "r-01"
 	record.Position = intPointer(0)
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "removal-test-create", TODO: record}); err != nil {
 		t.Fatal(err)
 	}
 	zero := int64(0)
@@ -151,7 +151,7 @@ func TestMongoRemoveTODOIsTombstonedAndIdempotent(t *testing.T) {
 	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: record.ID, ExpectedRevision: int64Pointer(1), OperationID: "removed-transition", RequestedStage: "Implementation-Approval-Pending"}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "removed") {
 		t.Fatalf("removed TODO accepted lifecycle mutation: %v", err)
 	}
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: record}); !errors.Is(err, ErrConflict) {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "recreate-removed-id", TODO: record}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("stable removed ID was reused: %v", err)
 	}
 	stale := request
@@ -201,7 +201,7 @@ func TestMongoRemoveTODOIsTombstonedAndIdempotent(t *testing.T) {
 	}
 	concurrent := mongoBornTODOFixture()
 	concurrent.ID = "remove-concurrent"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: concurrent}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "removal-concurrent-create", TODO: concurrent}); err != nil {
 		t.Fatal(err)
 	}
 	concurrentRequest := TODORemovalRequest{ProjectID: "builder", TODOID: concurrent.ID, ExpectedRevision: &zero, OperationID: "remove-concurrent-001", Actor: "test-owner", Reason: "Concurrent exact retry"}
@@ -225,7 +225,7 @@ func TestMongoRemoveTODOIsTombstonedAndIdempotent(t *testing.T) {
 	}
 	advanced := mongoBornTODOFixture()
 	advanced.ID = "advanced-removal-test"
-	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: advanced}); err != nil {
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "removal-advanced-create", TODO: advanced}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "id", Value: advanced.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "stage", Value: "In-Progress"}}}}); err != nil {
@@ -242,7 +242,7 @@ func TestMongoRemoveTODOIsTombstonedAndIdempotent(t *testing.T) {
 	for round := 0; round < 5; round++ {
 		item := mongoBornTODOFixture()
 		item.ID = "remove-distinct-" + strconv.Itoa(round)
-		if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, TODO: item}); err != nil {
+		if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "removal-item-create-" + item.ID, TODO: item}); err != nil {
 			t.Fatal(err)
 		}
 		beforeRoadmap, err := store.Roadmap(ctx, "builder", "company-a")
