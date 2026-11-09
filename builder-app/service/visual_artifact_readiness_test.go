@@ -43,6 +43,9 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 	query := url.Values{"company_id": {company}, "project_id": {project}}.Encode()
 	expectedPrototypeIDs := strings.Split(os.Getenv("BUILDER_VISUAL_READINESS_PROTOTYPE_IDS"), ",")
 	expectedDesignSystemID := os.Getenv("BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_ID")
+	if expectedPrototypeIDs[0] == "" || expectedDesignSystemID == "" {
+		t.Fatal("the real-API check requires explicit Prototype and Design System IDs")
+	}
 
 	t.Run("published Prototype screens", func(t *testing.T) {
 		var result struct {
@@ -53,7 +56,7 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 				PrototypeStatus struct {
 					Outcome  string `json:"outcome"`
 					Revision string `json:"revision"`
-					Items   []struct {
+					Items    []struct {
 						ID         string `json:"id"`
 						Root       string `json:"root"`
 						EntryPoint string `json:"entry_point"`
@@ -80,15 +83,13 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 		if status.Outcome != "go" || len(status.Items) < minimum {
 			t.Fatalf("selected Prototype catalog outcome=%q items=%d, want go with at least %d; diagnostics=%+v", status.Outcome, len(status.Items), minimum, status.Diagnostics)
 		}
-		if expectedPrototypeIDs[0] != "" {
-			actualIDs := make(map[string]bool, len(status.Items))
-			for _, item := range status.Items {
-				actualIDs[item.ID] = true
-			}
-			for _, expectedID := range expectedPrototypeIDs {
-				if expectedID == "" || !actualIDs[expectedID] {
-					t.Errorf("expected Prototype %q is absent from the admitted selection", expectedID)
-				}
+		actualIDs := make(map[string]bool, len(status.Items))
+		for _, item := range status.Items {
+			actualIDs[item.ID] = true
+		}
+		for _, expectedID := range expectedPrototypeIDs {
+			if expectedID == "" || !actualIDs[expectedID] {
+				t.Errorf("expected Prototype %q is absent from the admitted selection", expectedID)
 			}
 		}
 		for _, item := range status.Items {
@@ -189,5 +190,9 @@ func readVisualHTML(t *testing.T, client *http.Client, address string) {
 	}
 	if !strings.Contains(response.Header.Get("Content-Type"), "text/html") {
 		t.Errorf("published HTML %s has content type %q", address, response.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil || !strings.Contains(strings.ToLower(string(body)), "<html") {
+		t.Errorf("published HTML %s has no readable HTML document: %v", address, err)
 	}
 }
