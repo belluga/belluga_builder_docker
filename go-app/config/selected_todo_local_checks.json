@@ -19,6 +19,7 @@
     "builder-project-repository-binding-api": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST"],
     "builder-design-system-mongo-migration": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
     "builder-design-system-project-migration-validation": ["G-TEST", "G-VET", "G-IMAGE", "S-TEST", "W-TEST", "W-BUILD"],
+    "builder-design-system-theme-role-projection": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
     "builder-mongo-todo-removal": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "W-TEST", "W-BUILD"]
   }
 }
