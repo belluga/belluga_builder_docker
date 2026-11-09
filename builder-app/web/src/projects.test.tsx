@@ -13,11 +13,11 @@ const projects = [{ id: "builder", name: "Builder", company_id: "belluga", prepa
 const theme = { tokens: [
   ["color-canvas", "color", "#101820"], ["color-surface", "color", "#192838"], ["color-text-strong", "color", "#eeeeee"],
   ["color-text-secondary", "color", "#aaaaaa"], ["color-accent", "color", "#32bbdd"], ["color-on-accent", "color", "#111111"],
-  ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["font-family-sans", "string", "Arial"],
+  ["color-border", "color", "#355577"], ["color-focus", "color", "#ccaa33"], ["color-success", "color", "#eeeeee"], ["font-family-sans", "string", "Arial"],
   ["text-body", "number", 16], ["text-display", "number", 40], ["line-body", "number", 1.5], ["radius-card", "number", 12], ["radius-small", "number", 6],
 ].map(([id, type, value]) => ({ id, type, value })) };
 const todoMarkdown = "# Project Roadmap connection\n\n## Objective\nExact objective from Foundation.\n\n## Scope\n1. Exact authored step.\n\n## Definition of Done\n- [ ] Exact acceptance criterion.\n\n## Delivery Status Canon\n- **Next exact step:** Review the source.\n- **Primary module:** `modules/roadmap.md`.\n";
-function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ id: "system", name, owner: { level: "project", id: projectID }, tokens: theme.tokens, components: [{ id: "button", name: "Button", token_ids: ["color-accent"], states: [], variants: [], examples: ["examples.html"] }], assets: ["catalog.css"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid" } }; }
+function designSystemRead(companyID: string, projectID: string, name = "Builder System", revision = designRevision) { return { selection: { state: "selected", repository_id: "belluga/builder", publication_branch: "main", sha: revision, inventory_digest: `sha256:${"b".repeat(64)}`, binding_revision: 3 }, evaluation: { schema_version: "1", project_id: projectID, company_id: companyID, target: "design-system", authority_scope: "local_structure_only", mode: "committed", revision, outcome: "go", inventory_digest: `sha256:${"b".repeat(64)}`, items: [{ schema_version: "2", id: "system", name, owner: { level: "project", id: projectID }, tokens: theme.tokens, presentation: { default_context: "main", contexts: [{ id: "main", roles: { canvas: "color-canvas", surface: "color-surface", text: "color-text-strong", muted_text: "color-text-secondary", border: "color-border", accent: "color-accent", accent_text: "color-text-strong", on_accent: "color-on-accent", focus: "color-focus", success_text: "color-success", font_family: "font-family-sans", body_size: "text-body", display_size: "text-display", card_radius: "radius-card", control_radius: "radius-small", line_height: "line-body" } }] }, components: [{ id: "button", name: "Button", token_ids: ["color-accent"], states: [], variants: [], examples: ["examples.html"] }], assets: ["catalog.css"] }], diagnostics: [], selected_level: "project", design_system_validation: "valid", presentation_validation: "valid" } }; }
 function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed", authored: string = stage, blocked = false) {
   return { authored_delivery_stage: authored, delivery_stage: stage, delivery_stage_state: "verified", blocked, qualifier_state: "verified", work_state: "unknown" } as const;
 }
@@ -1106,7 +1106,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
-    expect(screen.getByRole("main")).not.toHaveAttribute("style");
+    expect(screen.getByRole("main")).toHaveStyle({ "--project-canvas": "#101820" });
   });
   it("uses the selected Design System for Project theming when raw snapshot reads fail", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -1230,7 +1230,7 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: Registry unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
     expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
-    expect(designSystemCalls).toBe(3);
+    expect(designSystemCalls).toBe(2);
   });
   it("ignores a late Design System response from the previous Project", async () => {
     let releaseBuilder: ((response: { ok: boolean; json: () => Promise<unknown> }) => void) | undefined;

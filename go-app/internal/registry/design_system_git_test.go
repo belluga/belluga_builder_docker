@@ -260,7 +260,7 @@ func TestGitDesignSystemVerifierChecksReachabilityTreeManifestAndInventory(t *te
 	runFixtureGit(t, work, "remote", "add", "origin", remote)
 	runFixtureGit(t, work, "push", "--quiet", "origin", "main")
 
-	manifest = []byte(strings.Replace(string(manifest), `"Fixture"`, `"Fixture Updated"`, 1))
+	manifest = []byte(`{"schema_version":"2","id":"fixture-system","name":"Fixture Updated","owner":{"level":"project","id":"fixture-project"},"tokens":[{"id":"ink","type":"color","value":"#000000"},{"id":"paper","type":"color","value":"#FFFFFF"},{"id":"font","type":"string","value":"Inter, Arial"},{"id":"body","type":"number","value":16},{"id":"display","type":"number","value":36},{"id":"radius","type":"number","value":8}],"presentation":{"default_context":"main","contexts":[{"id":"main","roles":{"canvas":"ink","surface":"ink","text":"paper","muted_text":"paper","border":"paper","accent":"paper","accent_text":"paper","on_accent":"ink","focus":"paper","success_text":"paper","font_family":"font","body_size":"body","display_size":"display","card_radius":"radius","control_radius":"radius"}}]},"components":[],"assets":[],"contrast_pairs":[]}`)
 	if err := os.WriteFile(manifestPath, manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -232,6 +232,40 @@ func validDesignSystemFixture() DesignSystemDefinition {
 		Assets:     []string{"assets/logo.svg"}, ContrastPairs: []ContrastPair{{ForegroundToken: "ink", BackgroundToken: "paper", MinRatio: 21}}}
 }
 
+func TestDesignSystemPresentationV2AndV1Read(t *testing.T) {
+	var malformed DesignSystemDefinition
+	if err := DecodeStrict([]byte(`{"schema_version":"2","id":"system","name":"System","owner":{"level":"project","id":"builder"},"tokens":[],"components":[],"assets":[],"contrast_pairs":[],"presentation":{"default_context":"main","contexts":[{"id":"main","roles":{"line_height":1.5}}]}}`), &malformed); err == nil || !strings.Contains(err.Error(), "presentation.contexts[0].roles.line_height") {
+		t.Fatalf("non-string role must identify its exact field: %v", err)
+	}
+	legacy := evaluateDesignSystemFixture(t, validDesignSystemFixture())
+	if legacy.Outcome != "go" || legacy.PresentationValidation != "not_ready" || legacy.PresentationTeach == nil || legacy.PresentationTeach.Code != "theme_not_ready" || len(legacy.Diagnostics) != 0 {
+		t.Fatalf("v1 structural read must carry nonblocking theme TEACH: %#v", legacy)
+	}
+	definition := validDesignSystemFixture()
+	definition.SchemaVersion = "2"
+	definition.Tokens = append(definition.Tokens,
+		DesignToken{ID: "font", Type: "string", Value: json.RawMessage(`"Inter, Arial"`)},
+		DesignToken{ID: "body", Type: "number", Value: json.RawMessage(`16`)},
+		DesignToken{ID: "display", Type: "number", Value: json.RawMessage(`36`)},
+		DesignToken{ID: "radius", Type: "number", Value: json.RawMessage(`8`)})
+	roles := map[string]string{"canvas": "ink", "surface": "ink", "text": "paper", "muted_text": "paper", "border": "paper", "accent": "paper", "accent_text": "paper", "on_accent": "ink", "focus": "paper", "success_text": "paper", "font_family": "font", "body_size": "body", "display_size": "display", "card_radius": "radius", "control_radius": "radius"}
+	definition.Presentation = &DesignPresentation{DefaultContext: "main", Contexts: []DesignThemeContext{{ID: "main", Roles: roles}}}
+	valid := evaluateDesignSystemFixture(t, definition)
+	if valid.Outcome != "go" || valid.PresentationValidation != "valid" || valid.PresentationTeach != nil {
+		t.Fatalf("valid v2 presentation rejected: %#v", valid.Diagnostics)
+	}
+	delete(roles, "text")
+	invalid := evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !designSystemHasCode(invalid, "invalid_schema") {
+		t.Fatalf("missing required role accepted: %#v", invalid)
+	}
+	roles["text"] = "ink"
+	invalid = evaluateDesignSystemFixture(t, definition)
+	if invalid.Outcome != "no_go" || !designSystemHasCode(invalid, "invalid_presentation") {
+		t.Fatalf("insufficient text contrast accepted: %#v", invalid)
+	}
+}
+
 func validBinding() SourceBinding {
 	return SourceBinding{RepositoryID: "builder-foundation", CheckoutRoot: "belluga_builder_foundation_documentation", Revision: nil, DefinitionPath: "design/design-system/design-system.json"}
 }

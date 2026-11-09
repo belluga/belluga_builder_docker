@@ -1,40 +1,38 @@
 import { describe, expect, it } from "vitest";
 import { resolveProjectTheme } from "./project-theme";
 
-const builder = [
-  ["color-canvas", "#061421"], ["color-surface", "#091D2B"], ["color-text-strong", "#EAF5FB"], ["color-text-secondary", "#A8C1D1"],
-  ["color-accent", "#55DFF2"], ["color-on-accent", "#06202B"], ["color-border", "#89BFD8"], ["color-focus", "#CCEAF1"], ["color-success", "#69D48A"],
-];
-const boora = [
-  ["surface", "#121116"], ["surface-container", "#211F27"], ["on-surface", "#F2EDF7"], ["on-surface-variant", "#CCC4D5"],
-  ["primary", "#C7B8FF"], ["on-primary", "#2D1E53"], ["outline", "#9D93A9"],
-];
-function definition(colors: string[][], cardRadius: number, controlRadius: number, other: { font: string; body: string; display: string; field: string }) {
-  return { tokens: [
-    ...colors.map(([id, value]) => ({ id, type: "color", value })),
-    { id: other.font, type: "string", value: 'system-ui, -apple-system, "Segoe UI", sans-serif' },
-    { id: other.body, type: "number", value: 16 }, { id: other.display, type: "number", value: 40 },
-    { id: "line-body", type: "number", value: 1.5 }, { id: "radius-card", type: "number", value: cardRadius },
-    { id: other.field, type: "number", value: controlRadius },
-  ] };
+function definition(prefix: string, accent: string, radius: number) {
+  const colors = { canvas: "#101319", surface: "#1A1D23", text: "#FFFFFF", muted_text: "#D0D0D0", border: "#AAAAAA", accent, accent_text: "#FFFFFF", on_accent: "#101319", focus: "#FFFFFF", success_text: "#D0D0D0" };
+  const numbers = { body_size: 16, display_size: 36, card_radius: radius, control_radius: 8, line_height: 1.5 };
+  const roles = Object.fromEntries([...Object.keys(colors), ...Object.keys(numbers), "font_family"].map((name) => [name, `${prefix}-${name}`]));
+  return {
+    schema_version: "2",
+    presentation: { default_context: "main", contexts: [{ id: "main", roles }] },
+    tokens: [
+      ...Object.entries(colors).map(([name, value]) => ({ id: `${prefix}-${name}`, type: "color", value })),
+      ...Object.entries(numbers).map(([name, value]) => ({ id: `${prefix}-${name}`, type: "number", value })),
+      { id: `${prefix}-font_family`, type: "string", value: "Inter, Arial" },
+    ],
+  };
 }
-describe("Project Design System role adapter", () => {
-  it("resolves Builder and Bóora vocabularies without Project identity branches", () => {
-    const b = resolveProjectTheme(definition(builder, 7, 5, { font: "font-family-sans", body: "text-body", display: "text-display", field: "radius-small" }));
-    const o = resolveProjectTheme(definition(boora, 24, 16, { font: "font-family", body: "font-body", display: "font-display", field: "radius-field" }));
-    expect(b.style?.["--project-cardRadius"]).toBe("7px");
-    expect(o.style?.["--project-cardRadius"]).toBe("24px");
-    expect(b.style?.["--project-accent"]).toBe("#55DFF2");
-    expect(b.style?.["--project-success"]).toBe("#69D48A");
-    expect(o.style?.["--project-accent"]).toBe("#C7B8FF");
-    expect(o.style?.["--project-success"]).toBeUndefined();
+
+describe("Project Design System semantic presentation", () => {
+  it("uses declared roles for unrelated token vocabularies", () => {
+    const first = resolveProjectTheme(definition("builder", "#66DDF2", 7));
+    const second = resolveProjectTheme(definition("other", "#C7B8FF", 24));
+    expect(first.style?.["--project-cardRadius"]).toBe("7px");
+    expect(second.style?.["--project-cardRadius"]).toBe("24px");
+    expect(first.style?.["--project-accent"]).toBe("#66DDF2");
+    expect(first.style?.["--project-accentText"]).toBe("#FFFFFF");
+    expect(second.style?.["--project-accent"]).toBe("#C7B8FF");
+    expect(first.style?.["--project-lineHeight"]).toBe("1.5");
   });
-  it("diagnoses an unknown or wrongly typed required role", () => {
-    const source = definition(builder, 7, 5, { font: "font-family-sans", body: "text-body", display: "text-display", field: "radius-small" });
-    source.tokens = source.tokens.filter((item) => item.id !== "color-canvas");
-    expect(resolveProjectTheme(source).diagnostic).toMatch(/canvas token/);
-    const wrongType = definition(builder, 7, 5, { font: "font-family-sans", body: "text-body", display: "text-display", field: "radius-small" });
-    wrongType.tokens.find((item) => item.id === "color-canvas")!.type = "string";
-    expect(resolveProjectTheme(wrongType).diagnostic).toMatch(/canvas token/);
+  it("does not guess a v1 theme or an undeclared role", () => {
+    const legacy = definition("old", "#66DDF2", 7);
+    legacy.schema_version = "1";
+    expect(resolveProjectTheme(legacy).diagnostic).toMatch(/presentation is not ready/);
+    const invalid = definition("broken", "#66DDF2", 7);
+    delete invalid.presentation.contexts[0].roles.canvas;
+    expect(resolveProjectTheme(invalid).diagnostic).toMatch(/roles.canvas/);
   });
 });

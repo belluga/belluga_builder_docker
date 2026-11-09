@@ -8,6 +8,7 @@ import { resolveProjectTheme } from "./project-theme";
 import type { ProjectTheme } from "./project-theme";
 import { CanonicalDocuments } from "./canonical-documents";
 import { DesignSystemViewer } from "./design-system-viewer";
+import type { DesignSystemReadResponse } from "./design-system-viewer";
 import "./projects.css";
 import "./release-detail.css";
 import "./todo-detail.css";
@@ -564,7 +565,7 @@ export function Projects() {
   const [view, setView] = useState<ProjectView | null>(null);
   const [roadmapRead, setRoadmapRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: RoadmapProjection }>({ key: "", state: "loading" });
   const [overviewRead, setOverviewRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: OverviewRead }>({ key: "", state: "loading" });
-  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string }>({ key: "", state: "loading" });
+  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
   const [viewState, setViewState] = useState<"loading" | "ready" | "error">("loading");
   const [viewError, setViewError] = useState<"unavailable" | "registration">("unavailable");
   const [loadStage, setLoadStage] = useState<"foundation" | "design" | "error">("foundation");
@@ -608,13 +609,20 @@ export function Projects() {
     setThemeRead({ key, state: "loading" });
     const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
     fetch(`/api/design-system?${query}`, { signal: controller.signal }).then(async (response) => {
-      if (!response.ok) throw new Error("Design System unavailable");
-      const selected = await response.json() as { selection?: { state?: string; sha?: string; inventory_digest?: string }; evaluation?: { company_id?: string; project_id?: string; mode?: string; outcome?: string; design_system_validation?: string; revision?: string; inventory_digest?: string; items?: unknown[] } };
+      if (!response.ok) {
+        const failure = await response.json().catch(() => null) as { teach?: unknown } | null;
+        const teach = failure?.teach;
+        throw new Error(typeof teach === "string" && teach.length <= 512 && teach.startsWith("TEACH: ") && !/[\u0000-\u001f\u007f/\\]|:\/\//.test(teach) ? teach : "TEACH: The selected Design System is unavailable; reload its Registry selection.");
+      }
+      const selected = await response.json() as DesignSystemReadResponse;
       const evaluation = selected.evaluation;
       if (!evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
-      return resolveProjectTheme(evaluation.items[0]);
-    }).then((resolved) => { if (!controller.signal.aborted) setThemeRead({ key, state: "ready", theme: resolved.style, diagnostic: resolved.diagnostic }); })
-      .catch(() => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: "The selected Design System definition could not be read." }); });
+      const definition = evaluation.items[0];
+      if (!definition || typeof definition.name !== "string" || !definition.owner || typeof definition.owner.level !== "string" || !Array.isArray(definition.tokens) || !Array.isArray(definition.components) || !Array.isArray(definition.assets) || definition.components.some((component) => !component || typeof component.id !== "string" || typeof component.name !== "string" || !Array.isArray(component.states) || !Array.isArray(component.examples))) throw new Error("Design System response shape is invalid");
+      const resolved = resolveProjectTheme(definition);
+      return { resolved, selected };
+    }).then(({ resolved, selected }) => { if (!controller.signal.aborted) setThemeRead({ key, state: "ready", theme: resolved.style, diagnostic: resolved.diagnostic || selected.evaluation.presentation_teach?.message, response: selected }); })
+      .catch((error: unknown) => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: error instanceof Error ? error.message : "TEACH: The selected Design System definition could not be read." }); });
     return () => controller.abort();
   }, [viewKey, reloadCounter]);
   useEffect(() => {
@@ -663,7 +671,7 @@ export function Projects() {
   const designSystemPage = selection.page === "design-system";
   const detail = activeView?.detail || (readerIndependentRoadPage || designSystemPage ? { consumer_readiness: "ready", company_id: project?.company_id, project_id: project?.id, artifacts: [], roadmap: roadData } as Detail : null);
   const activeTheme = themeRead.key === viewKey ? themeRead.theme : undefined;
-  const themeDiagnostic = themeRead.key === viewKey && themeRead.state === "error" ? themeRead.diagnostic : undefined;
+  const themeDiagnostic = themeRead.key === viewKey ? themeRead.diagnostic : undefined;
   const page = selection.page === "release" || selection.page === "todo" ? selection.page : pages.find((item) => item.id === selection.page)?.id;
   const available = detail?.artifacts || [];
   const invalidArtifacts = available.filter((item) => item.state === "invalid");
@@ -686,7 +694,7 @@ export function Projects() {
   const tentativeProjects = catalog.projects.filter((item) => item.company_id === (pendingCompanyID || selection.companyID));
   const selectedTODOInBacklog = (roadData?.backlog?.todos || []).concat((roadData?.backlog?.folders || []).flatMap(flattenBacklogTodos)).some((todo) => todo.id === selection.todoID);
   const roadmapPending = roadmapPage && (roadmapRead.key !== viewKey || roadmapRead.state === "loading");
-  return <main className="projects-page projects-project" style={designSystemPage ? undefined : activeTheme}>
+  return <main className="projects-page projects-project" style={activeTheme}>
     <div className="project-bar"><span className="project-bar-context">CONTEXTO</span>
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
@@ -699,7 +707,7 @@ export function Projects() {
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} detail={detail} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}
           {invalidArtifacts.length > 0 && <footer className="overview-status" aria-label="Unavailable artifacts">{invalidArtifacts.map((item) => <p className="project-note" key={`${item.kind}:${item.id}`}>{item.name}: {stateLabel(item.state)}{item.diagnostic ? ` · ${item.diagnostic}` : ""}</p>)}</footer>}</div>}
         {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}
-        {page === "design-system" && <DesignSystemViewer key={viewKey} companyID={project!.company_id} projectID={project!.id} />}
+        {page === "design-system" && <DesignSystemViewer key={viewKey} companyID={project!.company_id} projectID={project!.id} read={themeRead.key === viewKey ? themeRead.response : undefined} theme={activeTheme} diagnostic={themeDiagnostic} onRetry={() => setReloadCounter((value) => value + 1)} />}
         {page === "prototypes" && <LocalArtifactPreview {...previewProps} />}
         {roadFamilyPage && roadmapRead.key === viewKey && roadmapRead.state === "error" && <p className="project-notice roadmap-unavailable" role="alert">TEACH: Mongo Roadmap indisponível. Verifique a Registry API e recarregue; não é usado snapshot Foundation como fallback.</p>}
         {roadmapPending && <p className="project-notice" role="status">Carregando Roadmap atual da Registry…</p>}
