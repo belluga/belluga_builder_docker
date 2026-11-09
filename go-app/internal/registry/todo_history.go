@@ -20,6 +20,7 @@ import (
 const (
 	todoContentVersionsCollection = "todo_content_versions"
 	todoEventsCollection          = "todo_events"
+	todoHistoryPhaseTimeout       = 2 * time.Minute
 )
 
 func ValidCompanyID(value string) bool { return validID(value) }
@@ -365,7 +366,7 @@ func (m *MongoStore) ProvisionTODOHistory(ctx context.Context, companyID string)
 	if company.DatabaseName != m.tenantDatabase(companyID) {
 		return todoTeach("company.database_name", "match the server-owned Company tenant database", ErrConflict)
 	}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, todoHistoryPhaseTimeout)
 	defer cancel()
 	database := m.client.Database(company.DatabaseName)
 	if err := upgradeTODOCollectionForHistory(ctx, database); err != nil {
@@ -413,7 +414,7 @@ func (m *MongoStore) PreflightTODOHistory(ctx context.Context, companyID string)
 	if err != nil {
 		return TODOHistoryPreflightReport{}, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, todoHistoryPhaseTimeout)
 	defer cancel()
 	if err := verifyTODOCollection(ctx, database); err != nil {
 		return TODOHistoryPreflightReport{}, err

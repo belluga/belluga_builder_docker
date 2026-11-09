@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -36,6 +37,138 @@ type TODOHistoryReadDiagnostic struct {
 	Revision  int64  `json:"revision"`
 	Readable  bool   `json:"readable"`
 	Error     string `json:"error,omitempty"`
+}
+
+// RegisteredTODOProvisionReport is the truthful, per-tenant result of the
+// one-shot migration of Companies already present in the control registry.
+type RegisteredTODOProvisionReport struct {
+	Companies []RegisteredTODOCompanyResult `json:"companies"`
+	Verified  bool                          `json:"verified"`
+}
+
+type RegisteredTODOCompanyResult struct {
+	CompanyID             string   `json:"company_id"`
+	Phase                 string   `json:"phase"`
+	Verified              bool     `json:"verified"`
+	TODOCount             int64    `json:"todo_count"`
+	ValidTODOCount        int64    `json:"valid_todo_count"`
+	ContentVersions       int64    `json:"content_versions"`
+	Events                int64    `json:"events"`
+	Baselines             int64    `json:"baselines"`
+	NonuniqueExtraIndexes []string `json:"nonunique_extra_indexes,omitempty"`
+	Error                 string   `json:"error,omitempty"`
+}
+
+func (m *MongoStore) ProvisionRegisteredTODOs(ctx context.Context) (RegisteredTODOProvisionReport, error) {
+	inventoryCtx, inventoryCancel := context.WithTimeout(ctx, operationTimeout)
+	companies, err := m.readCompanies(inventoryCtx)
+	inventoryCancel()
+	if err != nil {
+		return RegisteredTODOProvisionReport{}, todoTeach("companies", "read the server-owned Company inventory before provisioning", ErrUnavailable)
+	}
+	if len(companies) == 0 {
+		return RegisteredTODOProvisionReport{}, todoTeach("companies", "contain at least one registered Company; verify the control database", ErrConflict)
+	}
+	report := RegisteredTODOProvisionReport{Companies: make([]RegisteredTODOCompanyResult, 0, len(companies)), Verified: true}
+	for _, company := range companies {
+		result := m.provisionRegisteredCompanyTODOs(ctx, company)
+		if !result.Verified {
+			report.Verified = false
+		}
+		report.Companies = append(report.Companies, result)
+	}
+	return report, nil
+}
+
+func (m *MongoStore) provisionRegisteredCompanyTODOs(ctx context.Context, company Company) RegisteredTODOCompanyResult {
+	result := RegisteredTODOCompanyResult{CompanyID: company.ID, Phase: "inspect"}
+	fail := func(err error) RegisteredTODOCompanyResult {
+		result.Error = err.Error()
+		return result
+	}
+	if company.DatabaseName != m.tenantDatabase(company.ID) {
+		return fail(todoTeach("company.database_name", "match the server-owned tenant database", ErrConflict))
+	}
+	database := m.client.Database(company.DatabaseName)
+	phaseCtx, cancel := context.WithTimeout(ctx, operationTimeout)
+	specifications, err := database.ListCollectionSpecifications(phaseCtx, bson.D{{Key: "name", Value: todosCollection}})
+	cancel()
+	if err != nil {
+		return fail(ErrUnavailable)
+	}
+	if len(specifications) > 1 || len(specifications) == 1 && specifications[0].Type != "collection" {
+		return fail(todoTeach("todos collection", "be absent or one ordinary collection", ErrConflict))
+	}
+	if len(specifications) == 1 {
+		phaseCtx, cancel = context.WithTimeout(ctx, operationTimeout)
+		result.NonuniqueExtraIndexes, err = inspectTODOIndexCompatibility(phaseCtx, database.Collection(todosCollection))
+		cancel()
+		if err != nil {
+			return fail(err)
+		}
+		validator := specifications[0].Options.Lookup("validator")
+		level, levelOK := specifications[0].Options.Lookup("validationLevel").StringValueOK()
+		action, actionOK := specifications[0].Options.Lookup("validationAction").StringValueOK()
+		if validator.Type != bson.TypeEmbeddedDocument || !levelOK || level != "strict" || !actionOK || action != "error" {
+			return fail(todoTeach("todos.validator", "use a recognized strict/error validator", ErrConflict))
+		}
+		actual := bson.Raw(validator.Document())
+		if !bsonValidatorEqual(actual, TODOCollectionValidator()) {
+			if !recognizedTODOCollectionValidator(actual) {
+				return fail(todoTeach("todos.validator", "match the current or a recognized predecessor validator", ErrConflict))
+			}
+			result.Phase = "upgrade_validator"
+			phaseCtx, cancel = context.WithTimeout(ctx, operationTimeout)
+			err = upgradeTODOCollectionForHistory(phaseCtx, database)
+			cancel()
+			if err != nil {
+				return fail(err)
+			}
+		}
+	}
+	result.Phase = "provision_todos"
+	phaseCtx, cancel = context.WithTimeout(ctx, operationTimeout)
+	err = m.ProvisionTODOCollection(phaseCtx, company.ID)
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	result.Phase = "provision_history"
+	phaseCtx, cancel = context.WithTimeout(ctx, todoHistoryPhaseTimeout)
+	err = m.ProvisionTODOHistory(phaseCtx, company.ID)
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	result.Phase = "preflight_history"
+	phaseCtx, cancel = context.WithTimeout(ctx, todoHistoryPhaseTimeout)
+	preflight, err := m.PreflightTODOHistory(phaseCtx, company.ID)
+	cancel()
+	if err != nil {
+		return fail(err)
+	}
+	if !preflight.CoverageComplete {
+		return fail(todoTeach("todo_history.coverage_complete", "be true after truthful baseline reconciliation", ErrConflict))
+	}
+	result.ContentVersions, result.Events, result.Baselines = preflight.ContentVersions, preflight.Events, preflight.Baselines
+	result.Phase = "diagnose_todos"
+	diagnosticCtx, diagnosticCancel := context.WithTimeout(ctx, 2*time.Minute)
+	diagnostic, err := m.DiagnoseTODOCollectionSchema(diagnosticCtx, company.ID)
+	diagnosticCancel()
+	if err != nil {
+		return fail(err)
+	}
+	if !diagnostic.ByteEqual || diagnostic.ValidationLevel != "strict" || diagnostic.ValidationAction != "error" || diagnostic.ValidTODOCount != diagnostic.TODOCount {
+		return fail(todoTeach("todos.validator/records", "match the current strict/error validator and validate every TODO", ErrConflict))
+	}
+	result.TODOCount, result.ValidTODOCount = diagnostic.TODOCount, diagnostic.ValidTODOCount
+	for _, check := range diagnostic.HistoryReadChecks {
+		if !check.Readable {
+			return fail(todoTeach("todo_history."+check.TODOID, "read every current TODO revision from immutable history", ErrConflict))
+		}
+	}
+	result.Phase, result.Verified = "verified", true
+	return result
 }
 
 func (m *MongoStore) ProvisionTODOCollection(ctx context.Context, companyID string) error {
@@ -487,6 +620,9 @@ func todoIndexModels() []mongo.IndexModel {
 }
 
 func verifyTODOIndexes(ctx context.Context, collection *mongo.Collection) error {
+	if _, err := inspectTODOIndexCompatibility(ctx, collection); err != nil {
+		return err
+	}
 	specifications, err := collection.Indexes().ListSpecifications(ctx)
 	if err != nil {
 		return ErrUnavailable
@@ -515,6 +651,41 @@ func verifyTODOIndexes(ctx context.Context, collection *mongo.Collection) error 
 		}
 	}
 	return nil
+}
+
+func inspectTODOIndexCompatibility(ctx context.Context, collection *mongo.Collection) ([]string, error) {
+	specifications, err := collection.Indexes().ListSpecifications(ctx)
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	expected := map[string]struct {
+		keys   bson.D
+		unique bool
+	}{
+		"todos_project_id_unique":        {bson.D{{Key: "project_id", Value: 1}, {Key: "id", Value: 1}}, true},
+		"todos_project_release_position": {bson.D{{Key: "project_id", Value: 1}, {Key: "release_id", Value: 1}, {Key: "position", Value: 1}}, false},
+		"todos_project_affected_file":    {bson.D{{Key: "project_id", Value: 1}, {Key: "affected_files", Value: 1}}, false},
+	}
+	observations := make([]string, 0)
+	for _, specification := range specifications {
+		if specification.Name == "_id_" {
+			continue
+		}
+		unique := specification.Unique != nil && *specification.Unique
+		if want, known := expected[specification.Name]; known {
+			keys, err := bson.Marshal(want.keys)
+			if err != nil || !bytes.Equal(keys, specification.KeysDocument) || unique != want.unique {
+				return nil, todoTeach("todos.indexes."+specification.Name, "match the approved keys and uniqueness before provisioning", ErrConflict)
+			}
+			continue
+		}
+		if unique {
+			return nil, todoTeach("todos.indexes."+specification.Name, "remove or reconcile the unexpected unique constraint before provisioning", ErrConflict)
+		}
+		observations = append(observations, specification.Name)
+	}
+	sort.Strings(observations)
+	return observations, nil
 }
 
 func namespaceExists(err error) bool {

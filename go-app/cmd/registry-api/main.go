@@ -31,6 +31,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "provision-registered-todos":
+			if err := runProvisionRegisteredTODOs(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "provision-todo-history":
 			if err := runProvisionTODOHistory(os.Args[2:]); err != nil {
 				log.Fatal(err)
@@ -100,6 +105,40 @@ func main() {
 			log.Fatal("registry API failed")
 		}
 	}
+}
+
+func runProvisionRegisteredTODOs(args []string) error {
+	if len(args) != 0 {
+		return errors.New("provision-registered-todos accepts no tenant arguments; Companies are discovered from the control registry")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required to provision registered Companies")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; no Company schema was provisioned")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	report, err := store.ProvisionRegisteredTODOs(context.Background())
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(report)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(os.Stdout, string(data)); err != nil {
+		return err
+	}
+	if !report.Verified {
+		return errors.New("TEACH: at least one registered Company failed TODO schema provisioning; inspect its company_id and phase in the report")
+	}
+	return nil
 }
 
 func runProvisionSelectedTODOs(args []string) error {

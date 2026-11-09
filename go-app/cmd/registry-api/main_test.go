@@ -40,6 +40,16 @@ func TestProvisionSelectedTODOsRejectsUnboundedArguments(t *testing.T) {
 	}
 }
 
+func TestProvisionRegisteredTODOsRequiresCredentialAndRejectsTenantArguments(t *testing.T) {
+	t.Setenv("REGISTRY_MONGODB_URI", "")
+	if err := runProvisionRegisteredTODOs(nil); err == nil || !strings.Contains(err.Error(), "REGISTRY_MONGODB_URI") {
+		t.Fatalf("missing Registry credential was accepted: %v", err)
+	}
+	if err := runProvisionRegisteredTODOs([]string{"unifast"}); err == nil || !strings.Contains(err.Error(), "accepts no tenant arguments") {
+		t.Fatalf("caller-selected Company was accepted: %v", err)
+	}
+}
+
 func TestBoundRoadmapPathRejectsWorkspaceEscape(t *testing.T) {
 	workspace := t.TempDir()
 	if _, err := boundRoadmapPath(&registry.Binding{WorkspaceRoot: workspace, ProjectRoot: "..", FoundationRoot: "foundation"}); err == nil {
