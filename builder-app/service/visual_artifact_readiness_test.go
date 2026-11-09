@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -43,8 +45,9 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 	query := url.Values{"company_id": {company}, "project_id": {project}}.Encode()
 	expectedPrototypeIDs := strings.Split(os.Getenv("BUILDER_VISUAL_READINESS_PROTOTYPE_IDS"), ",")
 	expectedDesignSystemID := os.Getenv("BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_ID")
-	if expectedPrototypeIDs[0] == "" || expectedDesignSystemID == "" {
-		t.Fatal("the real-API check requires explicit Prototype and Design System IDs")
+	expectedInventoryDigest := os.Getenv("BUILDER_VISUAL_READINESS_INVENTORY_DIGEST")
+	if expectedPrototypeIDs[0] == "" || expectedDesignSystemID == "" || expectedInventoryDigest == "" {
+		t.Fatal("the real-API check requires explicit Prototype IDs, Design System ID and Screen inventory digest")
 	}
 
 	t.Run("published Prototype screens", func(t *testing.T) {
@@ -92,6 +95,7 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 				t.Errorf("expected Prototype %q is absent from the admitted selection", expectedID)
 			}
 		}
+		inventory := make([]string, 0)
 		for _, item := range status.Items {
 			if item.Root == "" || item.EntryPoint == "" || len(item.Screens) == 0 || result.SnapshotFingerprint == "" {
 				t.Errorf("Prototype %q lacks a published entry point, screens or snapshot identity", item.ID)
@@ -99,6 +103,7 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 			}
 			entryDeclared := false
 			for _, screen := range item.Screens {
+				inventory = append(inventory, item.ID+":"+screen.Path)
 				entryDeclared = entryDeclared || screen.Path == item.EntryPoint
 				path := fmt.Sprintf("/snapshot/%s/%s/%s/%s/%s", url.PathEscape(company), url.PathEscape(project), url.PathEscape(result.SnapshotFingerprint), item.Root, screen.Path)
 				readVisualHTML(t, client, base+path)
@@ -106,6 +111,15 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 			if !entryDeclared {
 				t.Errorf("Prototype %q entry point %q is absent from its selected screen inventory", item.ID, item.EntryPoint)
 			}
+		}
+		sort.Strings(inventory)
+		encoded, err := json.Marshal(inventory)
+		if err != nil {
+			t.Fatalf("encode selected Screen inventory: %v", err)
+		}
+		actualInventoryDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(encoded))
+		if actualInventoryDigest != expectedInventoryDigest {
+			t.Errorf("selected Screen inventory digest = %q, want pinned pre-change digest %q", actualInventoryDigest, expectedInventoryDigest)
 		}
 	})
 
