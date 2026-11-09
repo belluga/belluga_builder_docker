@@ -1500,5 +1500,5 @@
   gap: 24px;
 }
 .design-system-viewer a {
-  color: var(--project-accent, #2457d6);
+  color: var(--project-accentText, #2457d6);
 }
