@@ -1,143 +1,72 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalArtifactPreview } from "./local-artifact-preview";
 import type { PrototypeSelection } from "./local-artifact-preview";
 
-const fingerprint = "a".repeat(64);
-const selection: PrototypeSelection = { mode: "", artifact: "", prototypeID: "", screenID: "", stateID: "", scenarioID: "", scenarioStep: "", fingerprint: "", device: "", scale: "" };
-const prototype = { id: "demo", name: "Demo", root: "prototypes/demo", status: "active" as const, authoring_mode: "image_first" as const, entry_point: "index.html",
+const revision = "a".repeat(40);
+const inventoryDigest = `sha256:${"b".repeat(64)}`;
+const selection: PrototypeSelection = { mode: "", artifact: "", prototypeID: "", screenID: "", stateID: "", scenarioID: "", scenarioStep: "", revision: "", device: "", scale: "" };
+type TestPrototype = { id: string; name: string; root: string; status: "active" | "archived"; authoring_mode: "image_first"; entry_point: string; screens: { id: string; name: string; path: string; default_state_id: string; states: { id: string; name: string; identifier_image: string; approved_references: { id: string; image: string; approval_evidence: string }[] }[] }[]; scenarios: { id: string; name: string; steps: { screen_id: string; state_id: string }[] }[]; transitions: never[] };
+const prototype: TestPrototype = { id: "demo", name: "Demo", root: "prototypes/demo", status: "active", authoring_mode: "image_first", entry_point: "index.html",
   screens: [{ id: "home", name: "Home", path: "index.html", default_state_id: "default", states: [{ id: "default", name: "Default", identifier_image: "home.png", approved_references: [] }] }],
-  scenarios: [{ id: "tour", name: "Tour", steps: [{ screen_id: "home", state_id: "default" }] }], transitions: [] };
-const detail = { consumer_readiness: "ready", snapshot_fingerprint: fingerprint, artifacts: [{ id: "demo", kind: "prototype", name: "Demo", state: "available", entry_point: "prototypes/demo/index.html" }], snapshot_observations: { prototype_status: { outcome: "go", items: [prototype] } } };
-const base = { companyID: "company", projectID: "project", companyName: "Company", projectName: "Project", detail, selection, onNavigate: vi.fn() };
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+  scenarios: [{ id: "tour", name: "Tour", steps: [{ screen_id: "home", state_id: "default" }, { screen_id: "home", state_id: "default" }] }], transitions: [] };
+const summaries = [{ id: "demo", name: "Demo", status: "active", detail_url: `/api/prototypes/${revision}/demo?company_id=company&project_id=project` },
+  { id: "other", name: "Other", status: "archived", detail_url: `/api/prototypes/${revision}/other?company_id=company&project_id=project` }];
+const detailResponse = (item: TestPrototype) => ({ revision, inventory_digest: inventoryDigest, item,
+  file_urls: [`${item.root}/${item.entry_point}`, `${item.root}/home.png`].map((path) => ({ path, url: `/api/prototypes/file/company/project/${revision}/${inventoryDigest.slice(7)}/files/${path}` })) });
+const catalog = { revision, inventory_digest: inventoryDigest, items: summaries };
+const base = { companyID: "company", projectID: "project", companyName: "Company", projectName: "Project", selection, onNavigate: vi.fn() };
+function mockAPI() {
+  const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/prototypes?company_id=company&project_id=project") return new Response(JSON.stringify(catalog), { status: 200 });
+    const summary = summaries.find((item) => url === item.detail_url);
+    if (summary) return new Response(JSON.stringify(detailResponse(summary.id === "demo" ? prototype : { ...prototype, id: "other", name: "Other", status: "archived" })), { status: 200 });
+    if (url.includes("/files/") && init?.method === "HEAD") return new Response(null, { status: 200, headers: { "X-Prototype-Revision": revision, "X-Prototype-Inventory-Digest": inventoryDigest } });
+    return new Response("not found", { status: 404 });
+  });
+  vi.stubGlobal("fetch", fetcher);
+  return fetcher;
+}
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-describe("controlled Prototype inspector", () => {
-  it("lists admitted screens and states without owning Project navigation", () => {
+describe("revision-bound Prototype viewer", () => {
+  it("loads the API catalog and one detail independently of snapshots", async () => {
+    const fetcher = mockAPI();
     render(<LocalArtifactPreview {...base} />);
-    expect(screen.getByRole("navigation", { name: "Telas e estados" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Home / Default" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Abrir apresentação/ })).toHaveAttribute("href", expect.stringContaining("/?"));
-    expect(screen.queryByText("Project directory")).not.toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Home / Default" })).toBeInTheDocument();
+    expect(screen.getByText(/revisão Git/)).toHaveTextContent(revision.slice(0, 12));
+    expect(fetcher.mock.calls.filter(([url]) => String(url).includes("/demo?")).length).toBe(1);
+    expect(fetcher.mock.calls.some(([url]) => String(url).startsWith("/snapshot/"))).toBe(false);
   });
-  it("opens TODO approval evidence by admitted ID and keeps non-TODO evidence on its snapshot file", () => {
+
+  it("fetches detail lazily when another catalog item is selected", async () => {
+    const fetcher = mockAPI();
+    render(<LocalArtifactPreview {...base} />);
+    await screen.findByRole("heading", { name: "Home / Default" });
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes("/other?"))).toBe(false);
+    fireEvent.change(screen.getByLabelText("Status do protótipo"), { target: { value: "all" } });
+    fireEvent.click(screen.getByRole("button", { name: /Other/ }));
+    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).includes("/other?"))).toBe(true));
+  });
+
+  it("preserves repeated scenario steps and verifies presentation HTML against revision and digest", async () => {
+    const fetcher = mockAPI();
     const onNavigate = vi.fn();
-    const approvalPrototype = { ...prototype, screens: prototype.screens.map((item) => ({ ...item, states: item.states.map((state) => ({ ...state, approved_references: [
-      { id: "todo-proof", image: "proof.png", approval_evidence: "todos/active/evidence.md" },
-      { id: "doc-proof", image: "doc.png", approval_evidence: "docs/decision.md" },
-    ] })) })) };
-    const approvalDetail = { ...detail, prototype_todo_sources: [{ prototype_id: "demo", todo_id: "related-todo:abc123", label: "evidence.md", path: "todos/active/evidence.md" }], snapshot_observations: { prototype_status: { outcome: "go", items: [approvalPrototype] } } };
-    render(<LocalArtifactPreview {...base} detail={approvalDetail} onNavigate={onNavigate} />);
-    const todoLink = screen.getByRole("link", { name: /Abrir evidência TODO: evidence.md/ });
-    expect(todoLink).toHaveAttribute("href", expect.stringContaining("todo_id=related-todo%3Aabc123"));
-    expect(todoLink.getAttribute("href")).not.toContain("todos/active/evidence.md");
-    expect(screen.queryByRole("link", { name: /Abrir TODO relacionado: evidence.md/ })).not.toBeInTheDocument();
-    fireEvent.click(todoLink);
-    expect(onNavigate).toHaveBeenCalledWith({ page: "todo", todo_id: "related-todo:abc123" });
-    expect(screen.getByRole("link", { name: "Abrir evidência ↗" })).toHaveAttribute("href", expect.stringContaining("/snapshot/company/project/"));
+    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "tour", scenarioStep: "1", revision, device: "mobile", scale: "fit" }} />);
+    expect(await screen.findByTitle("Demo · Home · Default")).toBeInTheDocument();
+    const htmlURL = String(fetcher.mock.calls.find(([url, init]) => String(url).includes("/files/prototypes/demo/index.html") && (init as RequestInit)?.method === "HEAD")?.[0]);
+    expect(htmlURL).toContain("/api/prototypes/");
+    expect(htmlURL).toContain(`prototype_state=default`);
+    expect(htmlURL).toContain(`/file/company/project/${revision}/${"b".repeat(64)}/files/`);
+    expect(screen.getByTitle("Demo · Home · Default").closest("iframe")).toHaveAttribute("src", expect.stringContaining("/api/prototypes/"));
+    expect(onNavigate).not.toHaveBeenCalled();
   });
-  it("fails closed when TODO approval evidence has no admitted source ID", () => {
-    const approvalPrototype = { ...prototype, screens: prototype.screens.map((item) => ({ ...item, states: item.states.map((state) => ({ ...state, approved_references: [{ id: "todo-proof", image: "proof.png", approval_evidence: "todos/active/evidence.md" }] })) })) };
-    const approvalDetail = { ...detail, snapshot_observations: { prototype_status: { outcome: "go", items: [approvalPrototype] } } };
-    render(<LocalArtifactPreview {...base} detail={approvalDetail} />);
-    expect(screen.getByText("Evidência TODO indisponível")).toHaveAttribute("aria-disabled", "true");
-    expect(screen.queryByRole("link", { name: /evidência/i })).not.toBeInTheDocument();
-    expect(document.querySelector("a[href*='todos/active/evidence.md']")).toBeNull();
-  });
-  it("does not expose a Prototype without an admitted available artifact", () => {
-    render(<LocalArtifactPreview {...base} detail={{ ...detail, artifacts: [] }} />);
-    expect(screen.getByText(/No admitted Prototype/)).toBeInTheDocument();
-  });
-  it("rejects a stale presentation fingerprint before loading HTML", () => {
-    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-    const onNavigate = vi.fn();
-    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint: "b".repeat(64), device: "mobile", scale: "fit" }} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(/Snapshot alterado/);
-    expect(fetcher).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("link", { name: "inspetor" }));
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ page: "prototypes", mode: null, fingerprint: null }));
-    vi.unstubAllGlobals();
-  });
-  it("exits presentation through Project navigation without reloading the document", () => {
-    const onNavigate = vi.fn();
-    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint: "b".repeat(64), device: "mobile", scale: "fit" }} />);
-    fireEvent.click(screen.getByRole("link", { name: /Sair/ }));
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ page: "prototypes", mode: null, fingerprint: null }));
-  });
-  it("verifies selected HTML before the presentation iframe appears", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }) })));
-    render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint, device: "mobile", scale: "fit" }} />);
-    await waitFor(() => expect(screen.getByTitle("Demo · Home · Default")).toBeInTheDocument());
-    vi.unstubAllGlobals();
-  });
-  it("uses the owning Project callback for screen selection", () => {
-    const onNavigate = vi.fn(); render(<LocalArtifactPreview {...base} onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByRole("button", { name: "Default" }));
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ screen_id: "home", state_id: "default" }));
-  });
-  it("does not substitute different evidence for invalid inspector IDs", () => {
-    for (const change of [{ artifact: "prototype:missing" }, { screenID: "missing" }, { stateID: "missing" }]) {
-      const onNavigate = vi.fn();
-      render(<LocalArtifactPreview {...base} selection={{ ...selection, ...change }} onNavigate={onNavigate} />);
-      expect(screen.getByRole("alert")).toHaveTextContent(/selection is unavailable/);
-      expect(screen.queryByRole("heading", { name: "Home / Default" })).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole("button", { name: "Show available Prototypes" }));
-      expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ artifact: null, screen_id: null, state_id: null }));
-      cleanup();
-    }
-  });
-  it("shows an archived direct-link selection in the archived inventory", () => {
-    const archived = { ...prototype, id: "old", name: "Archived Demo", status: "archived" as const };
-    const onNavigate = vi.fn();
-    render(<LocalArtifactPreview {...base} detail={{ ...detail, artifacts: [...detail.artifacts, { id: "old", kind: "prototype", name: "Archived Demo", state: "available", entry_point: "prototypes/demo/index.html" }], snapshot_observations: { prototype_status: { outcome: "go", items: [prototype, archived] } } }} selection={{ ...selection, artifact: "prototype:old", screenID: "home", stateID: "default" }} onNavigate={onNavigate} />);
-    expect(screen.getByLabelText("Status do protótipo")).toHaveValue("archived");
-    expect(screen.getByRole("button", { name: /Archived Demo/ })).toHaveClass("selected");
-    fireEvent.change(screen.getByLabelText("Status do protótipo"), { target: { value: "active" } });
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ artifact: null, screen_id: null, state_id: null }));
-  });
-  it("enters a scenario and advances to its next Screen and State", () => {
-    const nextScreen = { id: "details", name: "Details", path: "details.html", default_state_id: "default", states: [{ id: "default", name: "Default", identifier_image: "details.png", approved_references: [] }] };
-    const twoStep = { ...prototype, screens: [...prototype.screens, nextScreen], scenarios: [{ id: "tour", name: "Tour", steps: [{ screen_id: "home", state_id: "default" }, { screen_id: "details", state_id: "default" }] }] };
-    const scenarioDetail = { ...detail, snapshot_observations: { prototype_status: { outcome: "go", items: [twoStep] } } };
-    const onNavigate = vi.fn();
-    const presentation = { ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint, device: "mobile", scale: "fit" };
-    const { rerender } = render(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={presentation} onNavigate={onNavigate} />);
-    fireEvent.change(screen.getByLabelText("Cenário"), { target: { value: "tour" } });
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ scenario_id: "tour", scenario_step: "0", screen_id: "home" }), true);
-    rerender(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={{ ...presentation, scenarioID: "tour", scenarioStep: "0" }} onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByRole("button", { name: "Próxima" }));
-    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({ scenario_step: "1", screen_id: "details", state_id: "default" }), true);
-  });
-  it("remounts the interactive frame for repeated Screen/State scenario steps", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }) })));
-    const repeated = { ...prototype, scenarios: [{ id: "tour", name: "Tour", steps: [{ screen_id: "home", state_id: "default" }, { screen_id: "home", state_id: "default" }] }] };
-    const scenarioDetail = { ...detail, snapshot_observations: { prototype_status: { outcome: "go", items: [repeated] } } };
-    const presentation = { ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "tour", scenarioStep: "0", fingerprint, device: "mobile", scale: "fit" };
-    const { rerender } = render(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={presentation} />);
-    const firstFrame = await screen.findByTitle("Demo · Home · Default");
-    rerender(<LocalArtifactPreview {...base} detail={scenarioDetail} selection={{ ...presentation, scenarioStep: "1" }} />);
-    const secondFrame = await screen.findByTitle("Demo · Home · Default");
-    expect(secondFrame).not.toBe(firstFrame);
-    vi.unstubAllGlobals();
-  });
-  it("rejects an invalid pinned scenario without fetching HTML", () => {
-    const fetcher = vi.fn(); vi.stubGlobal("fetch", fetcher);
-    render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "missing", scenarioStep: "0", fingerprint, device: "mobile", scale: "fit" }} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(/Seleção inválida/);
-    expect(fetcher).not.toHaveBeenCalled();
-    vi.unstubAllGlobals();
-  });
-  it("ignores an old HTML verification response after presentation selection changes", async () => {
-    let releaseOld!: (value: unknown) => void;
-    const oldResponse = new Promise<unknown>((resolve) => { releaseOld = resolve; });
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => String(input).includes("index.html") ? oldResponse : Promise.resolve({ ok: false, headers: new Headers() })));
-    const presentation = { ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", fingerprint, device: "mobile", scale: "fit" };
-    const { rerender } = render(<LocalArtifactPreview {...base} selection={presentation} />);
-    await waitFor(() => expect(fetch).toHaveBeenCalled());
-    rerender(<LocalArtifactPreview {...base} selection={{ ...presentation, stateID: "missing" }} />);
-    expect(screen.getByRole("alert")).toHaveTextContent(/Seleção inválida/);
-    await act(async () => { releaseOld({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }) }); });
-    expect(screen.queryByTitle("Demo · Home · Default")).not.toBeInTheDocument();
-    vi.unstubAllGlobals();
+
+  it("rejects a stale revision URL before requesting presentation HTML", async () => {
+    const fetcher = mockAPI();
+    render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", revision: "c".repeat(40), device: "mobile", scale: "fit" }} />);
+    expect(await screen.findByRole("alert")).toHaveTextContent(/revisão Git mudou/);
+    expect(fetcher.mock.calls.some(([url]) => String(url).includes("/files/"))).toBe(false);
   });
 });

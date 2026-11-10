@@ -282,7 +282,7 @@ func EvaluateDesignSystem(source Source, projectID, companyID, level string, bin
 		if errors.Is(err, ErrLimit) {
 			code = "limit_exceeded"
 		}
-		if errors.Is(err, ErrMissingCatalog) || errors.Is(err, ErrNotExist) {
+		if errors.Is(err, ErrNotExist) {
 			code = "missing_file"
 		}
 		path := root

@@ -4,9 +4,14 @@ go 1.23
 
 require go.mongodb.org/mongo-driver/v2 v2.6.0
 
-require belluga-builder-viewer v0.0.0
+require (
+	belluga-builder-viewer v0.0.0
+	delphi-local-api v0.0.0
+)
 
 replace belluga-builder-viewer => ../builder-app/service
+
+replace delphi-local-api => ../delphi-ai/local-api
 
 require (
 	github.com/klauspost/compress v1.17.6 // indirect

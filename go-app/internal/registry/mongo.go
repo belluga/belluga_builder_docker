@@ -47,6 +47,8 @@ type MongoStore struct {
 	proofHTTPClient           *http.Client
 	localMatrix               *localProofMatrix
 	designSystemVerifier      designSystemRemoteVerifier
+	prototypeGit              prototypeGitReader
+	prototypeFileCache        *prototypeFileCache
 	designSystemSourceMapRoot string
 }
 
@@ -242,7 +244,8 @@ func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
 	}
-	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier()}
+	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }}
+	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier(), prototypeGit: prototypeGit, prototypeFileCache: newPrototypeFileCache()}
 	if err := store.ensureControlIndexes(pingCtx); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
@@ -980,7 +983,10 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 			return err
 		}
 	}
-	return m.ensureCanonicalCollections(ctx, database)
+	if err := m.ensureCanonicalCollections(ctx, database); err != nil {
+		return err
+	}
+	return m.ensurePrototypeCollections(ctx, database)
 }
 
 func sanitizeProject(project Project) Project { project.Binding = nil; return project }

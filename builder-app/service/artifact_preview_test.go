@@ -15,7 +15,7 @@ import (
 	"testing"
 )
 
-func TestCutoverSnapshotServesPrototypeBesideAPIOnlyDocuments(t *testing.T) {
+func TestCutoverSnapshotDropsLegacyPrototypeContentAndKeepsOtherArtifacts(t *testing.T) {
 	t.Setenv("DELPHI_BUILDER_REGISTRY_CUTOVER", "true")
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
@@ -45,8 +45,8 @@ func TestCutoverSnapshotServesPrototypeBesideAPIOnlyDocuments(t *testing.T) {
 		t.Fatal(err)
 	}
 	loaded, _, err := (&registeredPreview{root: root}).snapshot("trial-project", "trial-company", fingerprint)
-	if err != nil || len(loaded.Artifacts) != 2 {
-		t.Fatalf("cutover snapshot was unavailable: %v", err)
+	if err != nil || len(loaded.Artifacts) != 1 || loaded.Artifacts[0].Kind != "documents" || len(loaded.Files) != 0 || len(loaded.Observations) != 0 {
+		t.Fatalf("legacy Prototype snapshot content was not removed: snapshot=%#v err=%v", loaded, err)
 	}
 }
 
@@ -801,7 +801,7 @@ func TestRegisteredProjectDetailRejectsV2RoadmapWithoutInvalidatingLanding(t *te
 	}
 }
 
-func TestRegisteredProjectDetailExposesOpaquePrototypeTODOEvidenceCorrelation(t *testing.T) {
+func TestRegisteredProjectDetailHidesPrototypeAndTODOEvidence(t *testing.T) {
 	const todoPath = "todos/completed/decision.md"
 	const todoID = "related-todo:opaque"
 	manifest := []byte(`{"schema_version":"2","related":[{"kind":"documentation","path":"todos/completed/decision.md"}]}`)
@@ -812,13 +812,12 @@ func TestRegisteredProjectDetailExposesOpaquePrototypeTODOEvidenceCorrelation(t 
 		Artifacts: []registeredArtifact{{ID: "demo", Kind: "prototype", State: "available", Entry: "prototypes/demo/index.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/index.html"}}},
 	}
 	detail := registeredProjectDetail(snapshot, "fingerprint-a")
-	sources, ok := detail["prototype_todo_sources"].([]map[string]string)
-	if !ok || len(sources) != 1 || sources[0]["prototype_id"] != "demo" || sources[0]["todo_id"] != todoID || sources[0]["path"] != todoPath {
-		t.Fatalf("Prototype TODO evidence was not correlated to its admitted opaque ID and path: %#v", detail["prototype_todo_sources"])
+	if _, ok := detail["prototype_todo_sources"]; ok {
+		t.Fatalf("Prototype TODO evidence leaked into legacy detail: %#v", detail["prototype_todo_sources"])
 	}
 	encoded, err := json.Marshal(detail)
-	if err != nil || strings.Contains(string(encoded), "builder-todo-sources-v2") || strings.Contains(string(encoded), "todo-sources.json") {
-		t.Fatalf("private TODO source-map authority leaked into browser detail: %s, %v", encoded, err)
+	if err != nil || strings.Contains(string(encoded), "builder-todo-sources-v2") || strings.Contains(string(encoded), "todo-sources.json") || strings.Contains(string(encoded), "prototype_status") || strings.Contains(string(encoded), "prototypes/demo") {
+		t.Fatalf("Prototype or private TODO source-map data leaked into browser detail: %s, %v", encoded, err)
 	}
 }
 
@@ -1310,7 +1309,7 @@ func TestRegisteredPreviewRejectsPrivatePrototypeRelatedFromSnapshot(t *testing.
 	}
 }
 
-func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherArtifacts(t *testing.T) {
+func TestRegisteredPreviewHidesPrototypeSnapshotContentButKeepsOtherArtifacts(t *testing.T) {
 	root := t.TempDir()
 	manifest := []byte(`{"schema_version":"2","id":"demo","entry_point":"index.html","related":[]}`)
 	snapshot := registeredSnapshot{
@@ -1363,12 +1362,15 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 			prototype = artifact
 		}
 	}
-	if prototype.State != "invalid" || !strings.Contains(prototype.Diagnostic, "schema v2") || !strings.Contains(prototype.Diagnostic, "TEACH") || !strings.Contains(prototype.Diagnostic, "fresh Prototype status") {
-		t.Fatalf("legacy Prototype did not receive migration TEACH: %#v", prototype)
+	if prototype.Kind != "" {
+		t.Fatalf("legacy Prototype snapshot artifact was exposed: %#v", prototype)
+	}
+	if strings.Contains(response.Body.String(), "prototype_status") || strings.Contains(response.Body.String(), "prototype_todo_sources") || strings.Contains(response.Body.String(), "prototypes/demo") {
+		t.Fatalf("Prototype snapshot details or links were exposed: %s", response.Body.String())
 	}
 	raw := httptest.NewRecorder()
 	testReaderConsumer(t, root).artifactHandler(raw, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/prototypes/demo/index.html", nil))
-	if raw.Code != 404 {
+	if raw.Code != http.StatusGone || !strings.Contains(raw.Body.String(), "prototype_snapshot_retired") {
 		t.Fatalf("unsupported Prototype HTML remained available: status=%d body=%s", raw.Code, raw.Body.String())
 	}
 	landing := httptest.NewRecorder()
@@ -1377,7 +1379,7 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 		t.Fatalf("unrelated Landing was blocked: status=%d body=%s", landing.Code, landing.Body.String())
 	}
 
-	// A v2 observation is harmless when this snapshot has no available Prototype.
+	// An old Prototype observation is ignored when the snapshot carries only Landing.
 	snapshot.Artifacts = []registeredArtifact{{ID: "landing", Kind: "landing", Name: "Landing", State: "available", Entry: "design/landing/index.html", Files: []string{"design/landing/index.html"}}}
 	snapshotBytes, err = json.Marshal(snapshot)
 	if err != nil {
@@ -1401,124 +1403,6 @@ func TestRegisteredPreviewHidesAvailablePrototypeWithLegacyStatusButKeepsOtherAr
 	if withoutPrototype.Code != 200 || !strings.Contains(withoutPrototype.Body.String(), `"consumer_readiness":"ready"`) || strings.Contains(withoutPrototype.Body.String(), `"kind":"prototype"`) {
 		t.Fatalf("v2 observation without an available Prototype blocked unrelated views or exposed Prototype: status=%d body=%s", withoutPrototype.Code, withoutPrototype.Body.String())
 	}
-}
-
-func TestPrototypeStatusRequiresViewerArrays(t *testing.T) {
-	base := registeredSnapshot{
-		ProjectID: "trial-project",
-		Files: map[string][]byte{
-			"prototypes/demo/prototype.json": []byte(`{"schema_version":"3","id":"demo","scenarios":[]}`),
-		},
-		Artifacts: []registeredArtifact{{ID: "demo", Kind: "prototype", State: "available", Entry: "prototypes/demo/start.html"}},
-	}
-	observation := `{"schema_version":"3","project_id":"trial-project","target":"prototypes","authority_scope":"local_structure_only","outcome":"go","items":[{"id":"demo","root":"prototypes/demo","entry_point":"start.html","screens":[{"id":"start","path":"start.html","default_state_id":"default","states":[{"id":"default","approved_references":[]}]}],"transitions":[],"scenarios":[]}]}`
-	base.Observations = map[string]json.RawMessage{"prototype_status": json.RawMessage(observation)}
-	if !validPrototypeStatusObservation(base) {
-		t.Fatal("complete v3 status was rejected")
-	}
-	for _, tc := range []struct {
-		name string
-		old  string
-		new  string
-	}{
-		{"missing transitions", `,"transitions":[]`, ""},
-		{"missing approved references", `,"approved_references":[]`, ""},
-		{"missing scenarios", `,"scenarios":[]`, ""},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			changed := base
-			changed.Observations = map[string]json.RawMessage{"prototype_status": json.RawMessage(strings.Replace(observation, tc.old, tc.new, 1))}
-			if validPrototypeStatusObservation(changed) {
-				t.Fatal("viewer-required array was accepted when absent")
-			}
-		})
-	}
-	manifestMismatch := base
-	manifestMismatch.Files = map[string][]byte{"prototypes/demo/prototype.json": []byte(`{"schema_version":"3","id":"demo","scenarios":[{"id":"other","name":"Other","steps":[{"screen_id":"start","state_id":"default"}]}]}`)}
-	if validPrototypeStatusObservation(manifestMismatch) {
-		t.Fatal("saved scenario projection mismatch was accepted")
-	}
-}
-
-func TestRegisteredPreviewServesMatchingNonemptyScenarioProjectionAndRejectsMalformedRows(t *testing.T) {
-	serve := func(t *testing.T, variant string) (*httptest.ResponseRecorder, *httptest.ResponseRecorder) {
-		t.Helper()
-		root := t.TempDir()
-		if err := os.MkdirAll(filepath.Join(root, "snapshots"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-		scenario := `[{"id":"review","name":"Review path","steps":[{"screen_id":"start","state_id":"default"},{"screen_id":"start","state_id":"default"}]}]`
-		statusScenario := scenario
-		if variant == "mismatch" {
-			scenario = `[{"id":"other","name":"Different path","steps":[{"screen_id":"start","state_id":"default"}]}]`
-		} else if variant == "malformed" {
-			scenario = `[{"id":"review","name":"Review path","steps":[]}]`
-			statusScenario = scenario
-		}
-		manifest := []byte(`{"schema_version":"3","id":"demo","related":[],"scenarios":` + scenario + `}`)
-		entry := []byte("<main>Scenario entry</main>")
-		status := json.RawMessage(`{"schema_version":"3","project_id":"trial-project","target":"prototypes","authority_scope":"local_structure_only","outcome":"go","items":[{"id":"demo","root":"prototypes/demo","entry_point":"start.html","screens":[{"id":"start","path":"start.html","default_state_id":"default","states":[{"id":"default","approved_references":[]}]}],"transitions":[],"scenarios":` + statusScenario + `}]}`)
-		snapshot := registeredSnapshot{
-			SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company", ObservedAt: "2026-10-08T00:00:00Z",
-			Files:        map[string][]byte{"prototypes/demo/prototype.json": manifest, "prototypes/demo/start.html": entry},
-			Artifacts:    []registeredArtifact{{ID: "demo", Kind: "prototype", Name: "Demo", State: "available", Entry: "prototypes/demo/start.html", Files: []string{"prototypes/demo/prototype.json", "prototypes/demo/start.html"}}},
-			Observations: map[string]json.RawMessage{"prototype_status": status},
-		}
-		snapshotBytes, err := json.Marshal(snapshot)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hash := sha256.Sum256(snapshotBytes)
-		fingerprint := hex.EncodeToString(hash[:])
-		if err := os.WriteFile(filepath.Join(root, "snapshots", fingerprint+".json"), snapshotBytes, 0o444); err != nil {
-			t.Fatal(err)
-		}
-		registry := persistedRegistration{
-			SchemaVersion: "builder-project-registry-v1",
-			Companies:     map[string]registeredCompany{"trial-company": {ID: "trial-company", Name: "Trial Company"}},
-			Projects:      map[string]persistedProject{"trial-project": {registeredProject: registeredProject{ID: "trial-project", Name: "Trial Project", CompanyID: "trial-company", PreparationState: "ready", SnapshotFingerprint: fingerprint, Artifacts: snapshot.Artifacts}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/trial", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "belluga/example", PublicationBranch: "main"}}},
-			Preferences:   map[string]persistedPreference{},
-		}
-		registryBytes, err := json.Marshal(registry)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(root, "registry.json"), registryBytes, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		consumer := testReaderConsumer(t, root)
-		api := httptest.NewRecorder()
-		consumer.apiHandler(api, httptest.NewRequest("GET", "/api/local-preview?company_id=trial-company&project_id=trial-project", nil))
-		raw := httptest.NewRecorder()
-		consumer.artifactHandler(raw, httptest.NewRequest("GET", "/snapshot/trial-company/trial-project/"+fingerprint+"/prototypes/demo/start.html", nil))
-		return api, raw
-	}
-	t.Run("matching ordered repeated pairs", func(t *testing.T) {
-		api, raw := serve(t, "matching")
-		var apiBody struct {
-			SnapshotObservations map[string]json.RawMessage `json:"snapshot_observations"`
-		}
-		var statusBody struct {
-			Items []struct {
-				Scenarios []savedScenario `json:"scenarios"`
-			} `json:"items"`
-		}
-		if api.Code != 200 || !strings.Contains(api.Body.String(), `"consumer_readiness":"ready"`) || json.Unmarshal(api.Body.Bytes(), &apiBody) != nil || json.Unmarshal(apiBody.SnapshotObservations["prototype_status"], &statusBody) != nil || len(statusBody.Items) != 1 || !sameSavedScenarios(statusBody.Items[0].Scenarios, []savedScenario{{ID: "review", Name: "Review path", Steps: []savedScenarioStep{{ScreenID: "start", StateID: "default"}, {ScreenID: "start", StateID: "default"}}}}) || raw.Code != 200 || raw.Body.String() != "<main>Scenario entry</main>" {
-			t.Fatalf("matching scenario snapshot was not usable: API=%d %s raw=%d %s", api.Code, api.Body.String(), raw.Code, raw.Body.String())
-		}
-	})
-	t.Run("scenario mismatch fails closed", func(t *testing.T) {
-		api, raw := serve(t, "mismatch")
-		if api.Code != 200 || !strings.Contains(api.Body.String(), `"state":"invalid"`) || !strings.Contains(api.Body.String(), "projection does not match") || raw.Code != 404 {
-			t.Fatalf("scenario mismatch was not rejected: API=%d %s raw=%d %s", api.Code, api.Body.String(), raw.Code, raw.Body.String())
-		}
-	})
-	t.Run("matching but empty steps fail closed", func(t *testing.T) {
-		api, raw := serve(t, "malformed")
-		if api.Code != 200 || !strings.Contains(api.Body.String(), `"state":"invalid"`) || raw.Code != 404 {
-			t.Fatalf("malformed matching scenario was not rejected: API=%d %s raw=%d %s", api.Code, api.Body.String(), raw.Code, raw.Body.String())
-		}
-	})
 }
 
 func TestPrototypeHTMLAllowsOnlyAdmittedSameOriginFonts(t *testing.T) {
@@ -1671,65 +1555,5 @@ func TestRegisteredPreviewRejectsInvalidV2AssetReferences(t *testing.T) {
 				t.Fatal("invalid v2 asset reference was accepted")
 			}
 		})
-	}
-}
-
-func TestV2AssetReferencesFeedOverviewAndPrototypeProjection(t *testing.T) {
-	image := registeredAssetReference{SHA256: strings.Repeat("a", 64), Size: 42}
-	overview := overviewSource{SchemaVersion: "1", DesktopAlt: "desktop", MobileAlt: "mobile", Sections: map[string]overviewSection{
-		"problem": {}, "proposal": {}, "impact": {}, "audience": {},
-	}}
-	data, err := json.Marshal(overview)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot := registeredSnapshot{
-		SchemaVersion: "builder-project-snapshot-v3", ProjectID: "trial-project", CompanyID: "trial-company",
-		Files: map[string][]byte{"project_overview.json": data, "prototypes/example/index.html": []byte("prototype"), "prototypes/example/prototype.json": []byte(`{"related":[]}`)},
-		Assets: map[string]registeredAssetReference{
-			"project_overview/desktop.png": image, "project_overview/mobile.png": image,
-			"prototypes/example/screen.png": image,
-		},
-		Artifacts: []registeredArtifact{
-			{ID: "overview", Kind: "overview", State: "available", Entry: "project_overview.json", Files: []string{"project_overview.json", "project_overview/desktop.png", "project_overview/mobile.png"}},
-			{ID: "example", Kind: "prototype", State: "available", Entry: "prototypes/example/index.html", Files: []string{"prototypes/example/index.html", "prototypes/example/prototype.json", "prototypes/example/screen.png"}},
-		},
-	}
-	detail := registeredProjectDetail(snapshot, "fingerprint")
-	if _, ok := detail["overview"]; ok {
-		t.Fatalf("v2 Foundation Overview image references leaked into Reader detail: %#v", detail["overview"])
-	}
-	if !validPrototypeRelatedFiles(snapshot, snapshot.Artifacts[1], parseTodoSourceMap(snapshot)) {
-		t.Fatal("v2 Prototype image reference was not admitted")
-	}
-}
-
-func TestPrototypeRelatedTODOManifestReconcilesFromAToB(t *testing.T) {
-	entry := registeredArtifact{ID: "sample", Kind: "prototype", State: "available", Entry: "prototypes/sample/index.html", Files: []string{"prototypes/sample/index.html", "prototypes/sample/prototype.json"}}
-	makeMap := func(id, todoPath, digest string) []byte {
-		data, err := json.Marshal(todoSourceMap{SchemaVersion: "builder-todo-sources-v2", Sources: map[string]todoSource{id: {Path: todoPath, SHA256: digest}}})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return data
-	}
-	manifest := func(todoPath string) []byte {
-		return []byte(`{"related":[{"kind":"documentation","path":"` + todoPath + `"}]}`)
-	}
-	pathA, pathB := "todos/active/a.md", "todos/active/b.md"
-	idA, idB := "related-todo:a", "related-todo:b"
-	digestA, digestB := strings.Repeat("a", 64), strings.Repeat("b", 64)
-	snapshot := registeredSnapshot{Files: map[string][]byte{"prototypes/sample/index.html": []byte("<main>sample</main>"), "prototypes/sample/prototype.json": manifest(pathA), "roadmap/todo-sources.json": makeMap(idA, pathA, digestA)}}
-	if !validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
-		t.Fatal("Prototype manifest A did not resolve through its admitted TODO source ID")
-	}
-	snapshot.Files["prototypes/sample/prototype.json"] = manifest(pathB)
-	snapshot.Files["roadmap/todo-sources.json"] = makeMap(idB, pathB, digestB)
-	if !validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
-		t.Fatal("updated Prototype manifest B was not reconciled with the refreshed TODO source map")
-	}
-	snapshot.Files["roadmap/todo-sources.json"] = makeMap(idA, pathA, digestA)
-	if validPrototypeRelatedFiles(snapshot, entry, parseTodoSourceMap(snapshot)) {
-		t.Fatal("stale A source map remained available after the manifest moved to B")
 	}
 }

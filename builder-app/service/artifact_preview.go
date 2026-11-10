@@ -1160,6 +1160,7 @@ func validProjectSHA(value string) bool {
 }
 
 func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) map[string]any {
+	snapshot = withoutPrototypeSnapshotContent(snapshot)
 	result := map[string]any{
 		"schema_version": "1", "company_id": snapshot.CompanyID, "project_id": snapshot.ProjectID,
 		"registration_state": "registered", "consumer_readiness": "ready", "snapshot_fingerprint": fingerprint,
@@ -1172,35 +1173,6 @@ func registeredProjectDetail(snapshot registeredSnapshot, fingerprint string) ma
 		snapshot.todoSourcesParsed = true
 	}
 	snapshot.todoSources = todoSources
-	prototypeTODOs := []map[string]string{}
-	for _, artifact := range snapshot.Artifacts {
-		if artifact.Kind != "prototype" || artifact.State != "available" {
-			continue
-		}
-		parts := strings.Split(artifact.Entry, "/")
-		if len(parts) < 3 {
-			continue
-		}
-		manifest := snapshot.Files[path.Join("prototypes", parts[1], "prototype.json")]
-		var evidence struct {
-			Related []struct {
-				Kind string `json:"kind"`
-				Path string `json:"path"`
-			} `json:"related"`
-		}
-		if json.Unmarshal(manifest, &evidence) != nil {
-			continue
-		}
-		for _, related := range evidence.Related {
-			if !strings.HasPrefix(related.Path, "todos/") {
-				continue
-			}
-			if id := todoSources.byPath[related.Path]; id != "" {
-				prototypeTODOs = append(prototypeTODOs, map[string]string{"prototype_id": artifact.ID, "todo_id": id, "label": path.Base(related.Path), "path": related.Path})
-			}
-		}
-	}
-	result["prototype_todo_sources"] = prototypeTODOs
 	if snapshot.ExternalSourceID != "" {
 		result["external_source_id"] = snapshot.ExternalSourceID
 	}
@@ -1486,6 +1458,7 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 	if rejectDuplicateJSONKeys(data) != nil || json.Unmarshal(data, &snapshot) != nil || snapshot.SchemaVersion != "builder-project-snapshot-v3" || snapshot.ProjectID != projectID || snapshot.CompanyID != companyID || snapshot.Files == nil || snapshot.Artifacts == nil || snapshot.Observations == nil {
 		return registeredSnapshot{}, "", errors.New("snapshot identity invalid")
 	}
+	snapshot = withoutPrototypeSnapshotContent(snapshot)
 	if len(data) > 4<<20 {
 		return registeredSnapshot{}, "", errors.New("snapshot storage bound or version invalid")
 	}
@@ -1539,184 +1512,35 @@ func (p *registeredPreview) snapshot(projectID, companyID, fingerprint string) (
 		if artifact.State == "available" && !apiOnlyDocuments && (!safeSnapshotPath(artifact.Entry) || !seen[artifact.Entry]) {
 			return registeredSnapshot{}, "", errors.New("snapshot available entry is not admitted")
 		}
-		// Mongo owns TODOs after the Roadmap cutover, so the old Foundation
-		// todo-sources map cannot validate Prototype related rows. The current
-		// v3 Prototype status observation is checked below; admitted file paths
-		// and asset digests remain checked above.
-		if artifact.Kind == "prototype" && artifact.State == "available" && !registryCutoverEnabled() && !validPrototypeRelatedFiles(snapshot, artifact, snapshot.todoSources) {
-			return registeredSnapshot{}, "", errors.New("snapshot Prototype evidence is not admitted")
-		}
 	}
 	for name := range snapshot.Assets {
 		if !admitted[name] {
 			return registeredSnapshot{}, "", errors.New("snapshot asset is not admitted by an artifact")
 		}
 	}
-	if hasAvailablePrototype(snapshot.Artifacts) && !validPrototypeStatusObservation(snapshot) {
-		diagnostic := "Current Prototype projection does not match its admitted v3 manifest; correct the source and publish the Foundation branch."
-		if savedPrototypeSchema(snapshot) == "2" {
-			diagnostic = "Prototype schema v2 is not available after the v3 cutover. TEACH: run fresh Prototype status; adapt every offending v2 catalog/manifest, including archived candidates, to schema_version 3; confirm the complete collection is go; then publish the Foundation branch and reload this Project."
-		}
-		for i := range snapshot.Artifacts {
-			artifact := &snapshot.Artifacts[i]
-			if artifact.Kind == "prototype" && artifact.State == "available" {
-				artifact.State = "invalid"
-				artifact.Entry = ""
-				artifact.Files = nil
-				artifact.Diagnostic = diagnostic
-			}
-		}
-	}
 	return snapshot, actual, nil
 }
 
-func hasAvailablePrototype(artifacts []registeredArtifact) bool {
-	for _, artifact := range artifacts {
-		if artifact.Kind == "prototype" && artifact.State == "available" {
-			return true
-		}
-	}
-	return false
-}
-
-func savedPrototypeSchema(snapshot registeredSnapshot) string {
-	var status struct {
-		SchemaVersion string `json:"schema_version"`
-	}
-	_ = json.Unmarshal(snapshot.Observations["prototype_status"], &status)
-	return status.SchemaVersion
-}
-
-func validPrototypeStatusObservation(snapshot registeredSnapshot) bool {
-	data, ok := snapshot.Observations["prototype_status"]
-	if !ok || rejectDuplicateJSONKeys(data) != nil {
-		return false
-	}
-	var status struct {
-		SchemaVersion string `json:"schema_version"`
-		ProjectID     string `json:"project_id"`
-		Target        string `json:"target"`
-		Authority     string `json:"authority_scope"`
-		Outcome       string `json:"outcome"`
-		Items         []struct {
-			ID         string `json:"id"`
-			Root       string `json:"root"`
-			EntryPoint string `json:"entry_point"`
-			Screens    []struct {
-				ID             string `json:"id"`
-				Path           string `json:"path"`
-				DefaultStateID string `json:"default_state_id"`
-				States         []struct {
-					ID                 string            `json:"id"`
-					ApprovedReferences []json.RawMessage `json:"approved_references"`
-				} `json:"states"`
-			} `json:"screens"`
-			Transitions []json.RawMessage `json:"transitions"`
-			Scenarios   []savedScenario   `json:"scenarios"`
-		} `json:"items"`
-	}
-	if json.Unmarshal(data, &status) != nil || status.SchemaVersion != "3" || status.ProjectID != snapshot.ProjectID || status.Target != "prototypes" || status.Authority != "local_structure_only" || status.Outcome != "go" || status.Items == nil {
-		return false
-	}
+func withoutPrototypeSnapshotContent(snapshot registeredSnapshot) registeredSnapshot {
+	artifacts := snapshot.Artifacts[:0]
 	for _, artifact := range snapshot.Artifacts {
-		if artifact.Kind != "prototype" || artifact.State != "available" {
-			continue
-		}
-		var item *struct {
-			ID         string `json:"id"`
-			Root       string `json:"root"`
-			EntryPoint string `json:"entry_point"`
-			Screens    []struct {
-				ID             string `json:"id"`
-				Path           string `json:"path"`
-				DefaultStateID string `json:"default_state_id"`
-				States         []struct {
-					ID                 string            `json:"id"`
-					ApprovedReferences []json.RawMessage `json:"approved_references"`
-				} `json:"states"`
-			} `json:"screens"`
-			Transitions []json.RawMessage `json:"transitions"`
-			Scenarios   []savedScenario   `json:"scenarios"`
-		}
-		for i := range status.Items {
-			if status.Items[i].ID == artifact.ID {
-				item = &status.Items[i]
-				break
-			}
-		}
-		if item == nil || item.Root == "" || item.EntryPoint == "" || len(item.Screens) == 0 || item.Transitions == nil || item.Scenarios == nil {
-			return false
-		}
-		manifestPath := path.Join(item.Root, "prototype.json")
-		manifestBytes, exists := snapshot.Files[manifestPath]
-		if !exists || rejectDuplicateJSONKeys(manifestBytes) != nil {
-			return false
-		}
-		var manifest struct {
-			SchemaVersion string          `json:"schema_version"`
-			ID            string          `json:"id"`
-			Scenarios     []savedScenario `json:"scenarios"`
-		}
-		if json.Unmarshal(manifestBytes, &manifest) != nil || manifest.SchemaVersion != "3" || manifest.ID != artifact.ID || manifest.Scenarios == nil || !sameSavedScenarios(manifest.Scenarios, item.Scenarios) {
-			return false
-		}
-		entryMatches := false
-		declaredPairs := make(map[string]bool)
-		for _, screen := range item.Screens {
-			if !validRegistrationID(screen.ID) || screen.Path == "" || !validRegistrationID(screen.DefaultStateID) || len(screen.States) == 0 {
-				return false
-			}
-			defaultFound := false
-			for _, state := range screen.States {
-				if !validRegistrationID(state.ID) || state.ApprovedReferences == nil {
-					return false
-				}
-				declaredPairs[screen.ID+"\x00"+state.ID] = true
-				if state.ID == screen.DefaultStateID {
-					defaultFound = true
-				}
-			}
-			if !defaultFound {
-				return false
-			}
-			if screen.Path == item.EntryPoint {
-				entryMatches = true
-			}
-		}
-		if !entryMatches || artifact.Entry != path.Join(item.Root, item.EntryPoint) {
-			return false
-		}
-		seenScenarioIDs := make(map[string]bool, len(item.Scenarios))
-		for _, scenario := range item.Scenarios {
-			if !validRegistrationID(scenario.ID) || seenScenarioIDs[scenario.ID] || !validRegistrationName(scenario.Name) || len(scenario.Steps) == 0 {
-				return false
-			}
-			seenScenarioIDs[scenario.ID] = true
-			for _, step := range scenario.Steps {
-				if !validRegistrationID(step.ScreenID) || !validRegistrationID(step.StateID) || !declaredPairs[step.ScreenID+"\x00"+step.StateID] {
-					return false
-				}
-			}
+		if artifact.Kind != "prototype" {
+			artifacts = append(artifacts, artifact)
 		}
 	}
-	return true
-}
-
-type savedScenario struct {
-	ID    string              `json:"id"`
-	Name  string              `json:"name"`
-	Steps []savedScenarioStep `json:"steps"`
-}
-
-type savedScenarioStep struct {
-	ScreenID string `json:"screen_id"`
-	StateID  string `json:"state_id"`
-}
-
-func sameSavedScenarios(left, right []savedScenario) bool {
-	leftBytes, leftErr := json.Marshal(left)
-	rightBytes, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftBytes) == string(rightBytes)
+	snapshot.Artifacts = artifacts
+	for name := range snapshot.Files {
+		if strings.HasPrefix(name, "prototypes/") {
+			delete(snapshot.Files, name)
+		}
+	}
+	for name := range snapshot.Assets {
+		if strings.HasPrefix(name, "prototypes/") {
+			delete(snapshot.Assets, name)
+		}
+	}
+	delete(snapshot.Observations, "prototype_status")
+	return snapshot
 }
 
 func safeSnapshotPath(value string) bool {
@@ -1733,53 +1557,6 @@ func snapshotHasFile(snapshot registeredSnapshot, name string) bool {
 	}
 	_, ok := snapshot.Assets[name]
 	return ok
-}
-
-func validPrototypeRelatedFiles(snapshot registeredSnapshot, artifact registeredArtifact, todoSources todoSourceMap) bool {
-	files := snapshot.Files
-	entryParts := strings.Split(artifact.Entry, "/")
-	if len(entryParts) < 3 || entryParts[0] != "prototypes" {
-		return false
-	}
-	prototypeRoot := path.Join("prototypes", entryParts[1])
-	manifestPath := prototypeRoot + "/prototype.json"
-	var listed = make(map[string]bool, len(artifact.Files))
-	for _, name := range artifact.Files {
-		listed[name] = true
-	}
-	manifestBytes, ok := files[manifestPath]
-	if !ok || !listed[manifestPath] || rejectDuplicateJSONKeys(manifestBytes) != nil {
-		return false
-	}
-	var manifest struct {
-		Related []struct {
-			Kind string `json:"kind"`
-			Path string `json:"path"`
-		} `json:"related"`
-	}
-	if json.Unmarshal(manifestBytes, &manifest) != nil || manifest.Related == nil {
-		return false
-	}
-	relatedPaths := make(map[string]bool, len(manifest.Related))
-	for _, related := range manifest.Related {
-		if !approvedPrototypeRelatedPath(related.Kind, related.Path) || relatedPaths[related.Path] {
-			return false
-		}
-		if strings.HasPrefix(related.Path, "todos/") {
-			if _, ok := todoSources.byPath[related.Path]; !ok {
-				return false
-			}
-		} else if !listed[related.Path] || !snapshotHasFile(snapshot, related.Path) {
-			return false
-		}
-		relatedPaths[related.Path] = true
-	}
-	for _, name := range artifact.Files {
-		if !strings.HasPrefix(name, prototypeRoot+"/") && !relatedPaths[name] {
-			return false
-		}
-	}
-	return true
 }
 
 func parseTodoSourceMap(snapshot registeredSnapshot) todoSourceMap {
@@ -1803,38 +1580,6 @@ func parseTodoSourceMap(snapshot registeredSnapshot) todoSourceMap {
 	return mapping
 }
 
-func approvedPrototypeRelatedPath(kind, value string) bool {
-	if (kind != "todo" && kind != "decision" && kind != "documentation") || !safeSnapshotPath(value) {
-		return false
-	}
-	segments := strings.Split(value, "/")
-	for _, segment := range segments {
-		lower := strings.ToLower(segment)
-		if strings.HasPrefix(segment, ".") || lower == "tmp" || lower == "temp" || lower == "generated" || lower == "ephemeral" {
-			return false
-		}
-	}
-	ext := strings.ToLower(path.Ext(value))
-	if ext != ".md" && ext != ".markdown" {
-		return false
-	}
-	if len(segments) == 1 {
-		base := strings.TrimSuffix(segments[0], path.Ext(segments[0]))
-		switch base {
-		case "domain_entities", "project_constitution", "project_landing", "project_mandate", "system_roadmap":
-			return true
-		default:
-			return false
-		}
-	}
-	switch segments[0] {
-	case "modules", "policies", "todos":
-		return true
-	default:
-		return false
-	}
-}
-
 func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		writeError(w, 404, "not_found")
@@ -1843,6 +1588,10 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/snapshot/"), "/", 4)
 	if len(parts) != 4 || !safeSnapshotPath(parts[3]) {
 		writeError(w, 404, "not_found")
+		return
+	}
+	if strings.HasPrefix(parts[3], "prototypes/") {
+		writeError(w, http.StatusGone, "prototype_snapshot_retired")
 		return
 	}
 	if registryCutoverEnabled() && parts[3] == "roadmap/projection.json" {
@@ -1879,6 +1628,10 @@ func (p *registeredPreview) artifactHandler(w http.ResponseWriter, r *http.Reque
 	}
 	if kind == "" {
 		writeError(w, 404, "artifact_not_admitted")
+		return
+	}
+	if kind == "prototype" {
+		writeError(w, http.StatusGone, "prototype_snapshot_retired")
 		return
 	}
 	if assetBacked {

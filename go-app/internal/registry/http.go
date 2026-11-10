@@ -134,6 +134,12 @@ type overviewService interface {
 	ReadOverviewMedia(context.Context, string, string, int64, string) ([]byte, string, error)
 }
 
+type prototypeReader interface {
+	ReadPrototypes(context.Context, string, string) (PrototypeCatalogResponse, error)
+	ReadPrototype(context.Context, string, string, string, string) (PrototypeReadResponse, error)
+	ReadPrototypeFile(context.Context, string, string, string, string) (prototypeFileResponse, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -171,6 +177,9 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system", h.readDesignSystem)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}", h.readDesignSystem)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}/assets/{path...}", h.readDesignSystemAsset)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes", h.readPrototypes)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}", h.readPrototype)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/files/{path...}", h.readPrototypeFile)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations", h.beginDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover", h.recoverDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)

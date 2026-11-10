@@ -270,44 +270,18 @@ describe("single root Project experience", () => {
     expect(interval.mock.calls.some(([, delay]) => delay === 30_000)).toBe(false);
     interval.mockRestore();
   });
-  it("restarts elapsed time for each retry and Project selection", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
-    const requests = new Map<string, ((value: unknown) => void)[]>();
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+  it("opens Prototype independently of the Project detail reader", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") });
-      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
-      if (url.pathname === "/api/local-preview") return new Promise((resolve) => {
-        const projectID = url.searchParams.get("project_id")!;
-        requests.set(projectID, [...(requests.get(projectID) || []), resolve]);
-      });
-      return Promise.resolve({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme });
-    }));
+      if (url.pathname === "/api/prototypes") return new Response(JSON.stringify({ revision: "a".repeat(40), inventory_digest: `sha256:${"b".repeat(64)}`, items: [] }), { status: 200 });
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("Prototype requested Project detail");
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
     render(<Projects />);
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("builder")).toHaveLength(1);
-    await act(async () => { vi.advanceTimersByTime(5_000); });
-    expect(screen.getByText("Aguardando há 5 s")).toBeInTheDocument();
-    await act(async () => { requests.get("builder")![0]({ ok: false, status: 500 }); await Promise.resolve(); });
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("builder")).toHaveLength(2);
-    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
-    await act(async () => { vi.advanceTimersByTime(2_000); });
-    expect(screen.getByText("Aguardando há 2 s")).toBeInTheDocument();
-    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=prototypes"); window.dispatchEvent(new PopStateEvent("popstate")); });
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("boora")).toHaveLength(1);
-    expect(screen.getByRole("region", { name: "Abrindo projeto" })).toHaveTextContent("Belluga / Bóora!");
-    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
-    await act(async () => { vi.advanceTimersByTime(1_000); });
-    expect(screen.getByText("Aguardando há 1 s")).toBeInTheDocument();
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
-    cleanup();
-    vi.useRealTimers();
+    await waitFor(() => expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/prototypes?company_id=belluga&project_id=builder"))).toBe(true));
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/local-preview?company_id=belluga&project_id=builder"))).toBe(false);
   });
   it("keeps the loaded Project detail through page, brand and invalid-link recovery navigation", async () => {
     const fetcher = vi.mocked(fetch);
@@ -1064,24 +1038,24 @@ describe("single root Project experience", () => {
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#cc99ee");
   });
   it("replaces Prototype evidence and presentation identity when switching Projects", async () => {
-    const booraFingerprint = "b".repeat(64);
-    const registered = projects.map((item) => item.id === "boora" ? { ...item, snapshot_fingerprint: booraFingerprint } : item);
+    const revision = "b".repeat(40);
+    const digest = `sha256:${"c".repeat(64)}`;
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", url.searchParams.get("project_id") || "builder") };
-      if (url.pathname.startsWith("/snapshot/")) {
-        const boora = url.pathname.includes("/boora/");
-        return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": boora ? booraFingerprint : fingerprint }), json: async () => theme };
+      if (url.pathname === "/api/prototypes") {
+        const id = url.searchParams.get("project_id")!;
+        return new Response(JSON.stringify({ revision, inventory_digest: digest, items: [{ id: `${id}-prototype`, name: `${id} Prototype`, status: "active", detail_url: `/api/prototypes/${revision}/${id}-prototype?company_id=belluga&project_id=${id}` }] }), { status: 200 });
       }
-      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects: registered }) };
-      const id = url.searchParams.get("project_id")!;
-      const saved = detail("belluga", id);
-      const prototype = { id: `${id}-prototype`, name: `${id} Prototype`, root: `prototypes/${id}`, status: "active", authoring_mode: "design_system_first", entry_point: "home.html",
+      if (url.pathname.startsWith(`/api/prototypes/${revision}/`)) {
+        const id = url.searchParams.get("project_id")!;
+        const prototype = { id: `${id}-prototype`, name: `${id} Prototype`, root: `prototypes/${id}`, status: "active", authoring_mode: "design_system_first", entry_point: "home.html",
         screens: [{ id: `${id}-screen`, name: `${id} Screen`, path: "home.html", default_state_id: "default", states: [{ id: "default", name: "Default", identifier_image: "home.png", approved_references: [] }] }],
         scenarios: [], transitions: [] };
-      return { ok: true, json: async () => ({ ...saved, snapshot_fingerprint: id === "boora" ? booraFingerprint : fingerprint,
-        artifacts: [...saved.artifacts, { id: prototype.id, kind: "prototype", name: prototype.name, state: "available", entry_point: `${prototype.root}/home.html` }],
-        snapshot_observations: { prototype_status: { outcome: "go", items: [prototype] } } }) };
+        return new Response(JSON.stringify({ revision, inventory_digest: digest, item: prototype, file_urls: [{ path: `${prototype.root}/home.html`, url: `/api/prototypes/file/belluga/${id}/${revision}/${digest.slice(7)}/files/${prototype.root}/home.html` }] }), { status: 200 });
+      }
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      return { ok: true, json: async () => detail("belluga", url.searchParams.get("project_id")!) };
     });
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
@@ -1093,7 +1067,8 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "boora Screen / Default" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "builder Screen / Default" })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Prototype inspector")).toHaveLength(1);
-    expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
+    expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(revision);
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/snapshot/"))).toBe(false);
     expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(true);
   });
   it("restores the visual catalogue and opens the rendered presentation at the selected SHA", async () => {
