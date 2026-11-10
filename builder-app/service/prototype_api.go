@@ -76,8 +76,7 @@ func (p *registeredPreview) prototypeRelativeFile(w http.ResponseWriter, r *http
 		return
 	}
 	filePath := strings.Join(parts[5:], "/")
-	state, hasState := oneQueryValue(r.URL.Query(), "prototype_state")
-	if !validRegistrationID(companyID) || !validRegistrationID(projectID) || !designSystemSHA.MatchString(revision) || !validDigest("sha256:"+digestHex) || ac.ValidateRelativePath(filePath) != nil || len([]byte(filePath)) > ac.MaxPathBytes || strings.Contains(r.URL.RawPath, "\\") || len(r.URL.Query()) > 1 || len(r.URL.Query()) == 1 && !hasState || hasState && (len(r.URL.Query()["prototype_state"]) != 1 || !safePrototypeID(state) || !strings.EqualFold(filepath.Ext(filePath), ".html")) {
+	if !validRegistrationID(companyID) || !validRegistrationID(projectID) || !designSystemSHA.MatchString(revision) || !validDigest("sha256:"+digestHex) || ac.ValidateRelativePath(filePath) != nil || len([]byte(filePath)) > ac.MaxPathBytes || strings.Contains(r.URL.RawPath, "\\") || !validPrototypeFileQuery(r.URL.Query(), filePath) {
 		prototypeError(w, http.StatusBadRequest, "prototype_file_invalid", "TEACH: Use um arquivo declarado na revisão Git exata do Prototype.")
 		return
 	}
@@ -86,6 +85,43 @@ func (p *registeredPreview) prototypeRelativeFile(w http.ResponseWriter, r *http
 		return
 	}
 	p.proxyPrototypeFile(w, r, companyID, projectID, revision, "sha256:"+digestHex, filePath)
+}
+
+func validPrototypeFileQuery(query url.Values, filePath string) bool {
+	if len(query) > 2 {
+		return false
+	}
+	for key, values := range query {
+		if len(values) != 1 {
+			return false
+		}
+		switch key {
+		case "prototype_state":
+			if !strings.EqualFold(filepath.Ext(filePath), ".html") || !safePrototypeID(values[0]) {
+				return false
+			}
+		case "v":
+			if !safePrototypeAssetVersion(values[0]) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func safePrototypeAssetVersion(value string) bool {
+	if len(value) == 0 || len(value) > 64 {
+		return false
+	}
+	for _, c := range value {
+		if c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_' || c == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (p *registeredPreview) prototypeProjectRegistered(companyID, projectID string) bool {

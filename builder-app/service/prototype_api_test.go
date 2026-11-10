@@ -55,6 +55,12 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 				return
 			}
 			_, _ = w.Write([]byte("<main>Prototype</main>"))
+		case "/internal/v1/companies/company/projects/project/prototypes/" + revision + "/files/prototypes/demo/experience.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("ETag", `"`+revision+`-script"`)
+			w.Header().Set("X-Prototype-Revision", revision)
+			w.Header().Set("X-Prototype-Inventory-Digest", digest)
+			_, _ = w.Write([]byte(`document.body.innerHTML = "<main>Rendered</main>";`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -86,6 +92,17 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 	file := request(http.MethodGet, fileURL)
 	if file.Code != http.StatusOK || file.Body.String() != "<main>Prototype</main>" || file.Header().Get("X-Prototype-Revision") != revision || file.Header().Get("X-Prototype-Inventory-Digest") != digest || !strings.Contains(file.Header().Get("Content-Security-Policy"), "sandbox allow-scripts") {
 		t.Fatalf("file proxy status=%d headers=%v body=%s", file.Code, file.Header(), file.Body.String())
+	}
+	assetURL := strings.TrimSuffix(fileURL, "index.html") + "experience.js"
+	versionedAsset := request(http.MethodGet, assetURL+"?v=project-entry-loading-2")
+	if versionedAsset.Code != http.StatusOK || !strings.Contains(versionedAsset.Body.String(), "Rendered") || versionedAsset.Header().Get("X-Prototype-Revision") != revision {
+		t.Fatalf("versioned script proxy status=%d headers=%v body=%s", versionedAsset.Code, versionedAsset.Header(), versionedAsset.Body.String())
+	}
+	for _, invalid := range []string{"?unknown=1", "?v=", "?v=one&v=two", "?v=../../secret", "?prototype_state=default"} {
+		response := request(http.MethodGet, assetURL+invalid)
+		if response.Code != http.StatusBadRequest {
+			t.Errorf("invalid script query %q status=%d body=%s", invalid, response.Code, response.Body.String())
+		}
 	}
 	head := httptest.NewRequest(http.MethodGet, fileURL, nil)
 	head.Header.Set("If-None-Match", `"`+revision+`-body"`)
