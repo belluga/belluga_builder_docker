@@ -142,7 +142,7 @@ func (m *MongoStore) readActivePrototypeProjection(ctx context.Context, companyI
 		log.Printf("prototype active projection read failed (%T)", err)
 		return PrototypeCatalogResponse{}, false, ErrUnavailable
 	}
-	if active.RepositoryID != binding.RepositoryID || active.PublicationBranch != binding.PublicationBranch || active.BindingRevision != binding.Revision || active.Revision != revision || active.EvaluatorVersion != prototypeEvaluatorVersion || knowledgeGeneration != "" && active.KnowledgeGeneration != knowledgeGeneration || knowledgeDigest != "" && active.KnowledgeDigest != knowledgeDigest {
+	if !prototypeProjectionIdentityMatches(active, binding, revision, knowledgeGeneration, knowledgeDigest) {
 		return PrototypeCatalogResponse{}, false, nil
 	}
 	var generation prototypeGenerationDocument
@@ -165,6 +165,10 @@ func (m *MongoStore) readActivePrototypeProjection(ctx context.Context, companyI
 		return PrototypeCatalogResponse{}, false, ErrUnavailable
 	}
 	return prototypeGenerationToCatalog(generation, items, companyID, projectID), true, nil
+}
+
+func prototypeProjectionIdentityMatches(active prototypeActiveDocument, binding RepositoryBinding, revision, knowledgeGeneration, knowledgeDigest string) bool {
+	return active.RepositoryID == binding.RepositoryID && active.PublicationBranch == binding.PublicationBranch && active.BindingRevision == binding.Revision && active.Revision == revision && active.EvaluatorVersion == prototypeEvaluatorVersion && active.KnowledgeGeneration == knowledgeGeneration && active.KnowledgeDigest == knowledgeDigest
 }
 
 func (m *MongoStore) persistPrototypeProjection(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {

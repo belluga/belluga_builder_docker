@@ -267,18 +267,13 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || binding.Revision < 0 {
 		return PrototypeCatalogResponse{}, teachCanonical("", "binding", "configure this Project's exact artifact Git repository and publication branch", ErrNotFound)
 	}
-	var manifest CanonicalManifest
-	var knowledge *ac.CanonicalManifest
-	var knowledgeDigest string
-	if requestedRevision == "" {
-		manifest, err = m.CanonicalManifest(ctx, companyID, projectID, "")
-		if err != nil {
-			return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge", err)
-		}
-		knowledge, knowledgeDigest, err = canonicalManifestForPrototype(manifest, projectID)
-		if err != nil {
-			return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge_contract", err)
-		}
+	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
+	if err != nil {
+		return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge", err)
+	}
+	knowledge, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
+	if err != nil {
+		return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge_contract", err)
 	}
 	reader := m.prototypeGit
 	if reader == nil {
@@ -294,11 +289,7 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if indexed, found, readErr := m.readActivePrototypeProjection(ctx, companyID, projectID, binding, head, manifest.GenerationID, knowledgeDigest); readErr != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("active_projection", readErr)
 	} else if found {
-		fence := m.fencePrototypeIdentity
-		if requestedRevision != "" {
-			fence = m.fencePrototypeBinding
-		}
-		if err := fence(ctx, companyID, projectID, indexed); err != nil {
+		if err := m.fencePrototypeIdentity(ctx, companyID, projectID, indexed); err != nil {
 			return PrototypeCatalogResponse{}, prototypeReadFailure("indexed_fence", err)
 		}
 		return indexed, nil
@@ -521,7 +512,7 @@ func (m *MongoStore) ReadPrototype(ctx context.Context, companyID, projectID, re
 	hot, found := m.prototypeHot.get(companyID, projectID, revision)
 	catalog := hot.catalog
 	if found {
-		if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+		if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
 			return PrototypeReadResponse{}, err
 		}
 	} else {
@@ -560,7 +551,7 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 	hot, found := m.prototypeHot.get(companyID, projectID, revision)
 	catalog := hot.catalog
 	if found {
-		if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+		if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
 			return prototypeFileResponse{}, err
 		}
 	} else {
@@ -610,7 +601,7 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 	if err := source.source.VerifyStable(); err != nil {
 		return prototypeFileResponse{}, ErrUnavailable
 	}
-	if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+	if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
 		return prototypeFileResponse{}, err
 	}
 	response := prototypeFileResponseFor(data, requestedPath, catalog)

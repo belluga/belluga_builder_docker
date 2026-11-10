@@ -166,6 +166,28 @@ func TestPrototypeBindingFenceRejectsProjectRebind(t *testing.T) {
 	}
 }
 
+func TestPrototypeProjectionRejectsChangedKnowledgeAtSameGitRevision(t *testing.T) {
+	binding := RepositoryBinding{State: "configured", RepositoryID: "owner/repo", PublicationBranch: "main", Revision: 3}
+	revision := strings.Repeat("a", 40)
+	active := prototypeActiveDocument{
+		RepositoryID: binding.RepositoryID, PublicationBranch: binding.PublicationBranch,
+		BindingRevision: binding.Revision, Revision: revision, EvaluatorVersion: prototypeEvaluatorVersion,
+		KnowledgeGeneration: "generation-1", KnowledgeDigest: "digest-1",
+	}
+	if !prototypeProjectionIdentityMatches(active, binding, revision, "generation-1", "digest-1") {
+		t.Fatal("unchanged knowledge and Git identity must match")
+	}
+	for _, changed := range []struct{ generation, digest string }{
+		{"generation-2", "digest-1"},
+		{"generation-1", "digest-2"},
+		{"", ""},
+	} {
+		if prototypeProjectionIdentityMatches(active, binding, revision, changed.generation, changed.digest) {
+			t.Fatalf("stale knowledge projection matched current identity: %+v", changed)
+		}
+	}
+}
+
 func TestPrototypeAllowlistIncludesDeclaredNavigationAndEvidencePathsOnly(t *testing.T) {
 	item := ac.Item{
 		AllowedPaths: []string{"prototypes/demo/prototype.json", "prototypes/demo/index.html", "prototypes/demo/media/cover.webp"},
