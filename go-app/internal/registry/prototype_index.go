@@ -85,25 +85,28 @@ func (m *MongoStore) prototypeCollections(ctx context.Context, companyID string)
 		return nil, nil, nil, err
 	}
 	db := m.client.Database(company.DatabaseName)
-	existing, err := db.ListCollectionNames(ctx, bson.D{})
-	if err != nil {
-		log.Printf("prototype collections listing failed (%T)", err)
-		return nil, nil, nil, ErrUnavailable
-	}
-	available := make(map[string]bool, len(existing))
-	for _, name := range existing {
-		available[name] = true
-	}
-	if !available[prototypeGenerationsCollection] || !available[prototypeItemsCollection] || !available[prototypeActiveCollection] {
-		if err := m.ensurePrototypeCollections(ctx, company.DatabaseName); err != nil {
-			var commandErr mongo.CommandError
-			if errors.As(err, &commandErr) {
-				log.Printf("prototype collections unavailable (Mongo code=%d name=%s)", commandErr.Code, commandErr.Name)
-			} else {
-				log.Printf("prototype collections unavailable (%T, deadline=%t)", err, errors.Is(err, context.DeadlineExceeded))
-			}
-			return nil, nil, nil, normalizeMongoError(err)
+	if _, ready := m.prototypeReady.Load(company.DatabaseName); !ready {
+		existing, err := db.ListCollectionNames(ctx, bson.D{})
+		if err != nil {
+			log.Printf("prototype collections listing failed (%T)", err)
+			return nil, nil, nil, ErrUnavailable
 		}
+		available := make(map[string]bool, len(existing))
+		for _, name := range existing {
+			available[name] = true
+		}
+		if !available[prototypeGenerationsCollection] || !available[prototypeItemsCollection] || !available[prototypeActiveCollection] {
+			if err := m.ensurePrototypeCollections(ctx, company.DatabaseName); err != nil {
+				var commandErr mongo.CommandError
+				if errors.As(err, &commandErr) {
+					log.Printf("prototype collections unavailable (Mongo code=%d name=%s)", commandErr.Code, commandErr.Name)
+				} else {
+					log.Printf("prototype collections unavailable (%T, deadline=%t)", err, errors.Is(err, context.DeadlineExceeded))
+				}
+				return nil, nil, nil, normalizeMongoError(err)
+			}
+		}
+		m.prototypeReady.Store(company.DatabaseName, true)
 	}
 	return db.Collection(prototypeGenerationsCollection), db.Collection(prototypeItemsCollection), db.Collection(prototypeActiveCollection), nil
 }
@@ -139,7 +142,7 @@ func (m *MongoStore) readActivePrototypeProjection(ctx context.Context, companyI
 		log.Printf("prototype active projection read failed (%T)", err)
 		return PrototypeCatalogResponse{}, false, ErrUnavailable
 	}
-	if active.RepositoryID != binding.RepositoryID || active.PublicationBranch != binding.PublicationBranch || active.BindingRevision != binding.Revision || active.Revision != revision || active.EvaluatorVersion != prototypeEvaluatorVersion || active.KnowledgeGeneration != knowledgeGeneration || active.KnowledgeDigest != knowledgeDigest {
+	if active.RepositoryID != binding.RepositoryID || active.PublicationBranch != binding.PublicationBranch || active.BindingRevision != binding.Revision || active.Revision != revision || active.EvaluatorVersion != prototypeEvaluatorVersion || knowledgeGeneration != "" && active.KnowledgeGeneration != knowledgeGeneration || knowledgeDigest != "" && active.KnowledgeDigest != knowledgeDigest {
 		return PrototypeCatalogResponse{}, false, nil
 	}
 	var generation prototypeGenerationDocument
@@ -327,7 +330,76 @@ func (m *MongoStore) ensurePrototypeCollections(ctx context.Context, database st
 const (
 	prototypeFileCacheEntries = 512
 	prototypeFileCacheBytes   = 64 << 20
+	prototypeHotProjects      = 4
 )
+
+// A verified catalog is immutable for its Git revision. Keep the small active
+// navigation projection in the Go process so detail and file routes do not
+// repeat Mongo reads while a user browses that revision. Refreshing the
+// catalog replaces (or clears) this lease.
+type prototypeHotEntry struct {
+	catalog PrototypeCatalogResponse
+	allowed map[string]struct{}
+}
+
+type prototypeHotCache struct {
+	mu      sync.Mutex
+	entries map[string]prototypeHotEntry
+	order   []string
+}
+
+func newPrototypeHotCache() *prototypeHotCache {
+	return &prototypeHotCache{entries: make(map[string]prototypeHotEntry)}
+}
+
+func prototypeHotKey(companyID, projectID string) string { return companyID + "\x00" + projectID }
+
+func (c *prototypeHotCache) get(companyID, projectID, revision string) (prototypeHotEntry, bool) {
+	if c == nil {
+		return prototypeHotEntry{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := prototypeHotKey(companyID, projectID)
+	entry, ok := c.entries[key]
+	if !ok || entry.catalog.Revision != revision {
+		return prototypeHotEntry{}, false
+	}
+	for i, candidate := range c.order {
+		if candidate == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	c.order = append(c.order, key)
+	return entry, true
+}
+
+func (c *prototypeHotCache) replace(companyID, projectID string, catalog *PrototypeCatalogResponse) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	key := prototypeHotKey(companyID, projectID)
+	delete(c.entries, key)
+	for i, candidate := range c.order {
+		if candidate == key {
+			c.order = append(c.order[:i], c.order[i+1:]...)
+			break
+		}
+	}
+	if catalog == nil {
+		return
+	}
+	for len(c.order) >= prototypeHotProjects {
+		oldest := c.order[0]
+		delete(c.entries, oldest)
+		c.order = c.order[1:]
+	}
+	c.entries[key] = prototypeHotEntry{catalog: *catalog, allowed: prototypeAllowedPaths(*catalog)}
+	c.order = append(c.order, key)
+}
 
 type prototypeFileCache struct {
 	mu      sync.Mutex
@@ -363,6 +435,16 @@ func (c *prototypeFileCache) get(key string) (prototypeFileResponse, bool) {
 	c.order = append(c.order, key)
 	value.Data = append([]byte(nil), value.Data...)
 	return value, true
+}
+
+func (c *prototypeFileCache) has(key string) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.entries[key]
+	return ok
 }
 
 func (c *prototypeFileCache) put(key string, value prototypeFileResponse) {

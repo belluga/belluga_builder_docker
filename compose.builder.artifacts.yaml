@@ -70,11 +70,15 @@ services:
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       DELPHI_GITHUB_READ_TOKEN: ${DELPHI_GITHUB_READ_TOKEN:-}
       DELPHI_PROJECT_READER_STATE_ROOT: /state
+      DELPHI_PROTOTYPE_GIT_CACHE_ROOT: /prototype-cache
     volumes:
       - type: bind
         source: ${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the shared registry state directory}
         target: /state
         read_only: true
+      - type: volume
+        source: prototype-git-cache
+        target: /prototype-cache
     networks:
       project-reader-private:
       builder-registry-private:
@@ -90,3 +94,6 @@ networks:
   builder-registry-private:
     name: builder-registry-private
     driver: bridge
+
+volumes:
+  prototype-git-cache:

@@ -17,6 +17,7 @@ RUN CGO_ENABLED=0 go build -mod=vendor -trimpath -o /out/registry-api ./cmd/regi
 FROM alpine:3.22 AS runtime
 RUN apk add --no-cache git ca-certificates
 RUN addgroup -S registry && adduser -S -G registry registry
+RUN mkdir /prototype-cache && chown registry:registry /prototype-cache
 COPY --from=build /out/registry-api /app/registry-api
 COPY --from=build /src/go-app/config /app/config
 USER registry

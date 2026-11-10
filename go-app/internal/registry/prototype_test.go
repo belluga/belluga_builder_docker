@@ -2,13 +2,169 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	ac "delphi-local-api/artifactcatalog"
 )
+
+func TestPrototypeGitCacheStaysInsideGoStoreAndReusesExactRevision(t *testing.T) {
+	root := t.TempDir()
+	remote := filepath.Join(root, "remote")
+	cache := filepath.Join(root, "go-cache")
+	if err := os.Mkdir(remote, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cache, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"-C", remote}, args...)...)
+		out, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	runGit("init", "--quiet", "-b", "main")
+	runGit("config", "user.name", "Prototype Test")
+	runGit("config", "user.email", "prototype@example.invalid")
+	writeRevision := func(body string) string {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(remote, "screen.html"), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		runGit("add", "screen.html")
+		runGit("commit", "--quiet", "-m", "screen")
+		return runGit("rev-parse", "HEAD")
+	}
+	first := writeRevision("first")
+	reader := gitDesignSystemVerifier{repositoryURL: func(string) string { return remote }, prototypeCacheRoot: cache}
+	binding := RepositoryBinding{State: "configured", RepositoryID: "owner/project", PublicationBranch: "main"}
+	open := func(companyID, projectID, revision, expected string) string {
+		t.Helper()
+		source, err := reader.OpenRevision(context.Background(), companyID, projectID, binding, revision)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer source.close()
+		data, mode, err := source.source.Read("screen.html", ac.MaxFileBytes)
+		if err != nil || mode != ac.ModeRegular || string(data) != expected {
+			t.Fatalf("cached revision read: data=%q mode=%v err=%v", data, mode, err)
+		}
+		if strings.HasPrefix(source.workspace, remote) || !strings.HasPrefix(source.workspace, cache+string(os.PathSeparator)) {
+			t.Fatalf("Go cache escaped its private root: %s", source.workspace)
+		}
+		return source.workspace
+	}
+	workspace := open("company-a", "project-a", first, "first")
+	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
+		t.Fatalf("cache removed after read: %v", err)
+	}
+	if reused := open("company-a", "project-a", first, "first"); reused != workspace {
+		t.Fatalf("same repository used a new cache directory: %s != %s", reused, workspace)
+	}
+	second := writeRevision("second")
+	otherWorkspace := open("company-b", "project-b", second, "second")
+	if otherWorkspace == workspace {
+		t.Fatal("different Company/Project reused the same physical Git cache")
+	}
+	if retained := open("company-a", "project-a", first, "first"); retained != workspace {
+		t.Fatalf("another Project's refresh displaced the pinned revision: %s != %s", retained, workspace)
+	}
+	if refreshed := open("company-a", "project-a", second, "second"); refreshed != workspace {
+		t.Fatalf("branch update used a new cache directory: %s != %s", refreshed, workspace)
+	}
+	if out, err := exec.Command("git", "-C", workspace, "cat-file", "-e", first+"^{commit}").CombinedOutput(); err == nil {
+		t.Fatalf("superseded Git commit was retained by the cache: %s", out)
+	}
+}
+
+type countingPrototypeGitReader struct {
+	headCalls int
+	head      string
+}
+
+func (r *countingPrototypeGitReader) BranchHead(context.Context, RepositoryBinding) (string, error) {
+	r.headCalls++
+	return r.head, nil
+}
+func (*countingPrototypeGitReader) OpenRevision(context.Context, string, string, RepositoryBinding, string) (prototypeGitSource, error) {
+	return prototypeGitSource{}, ErrUnavailable
+}
+
+func TestPrototypeRevisionUsesRemoteOnlyForCatalogRefresh(t *testing.T) {
+	reader := &countingPrototypeGitReader{head: strings.Repeat("b", 40)}
+	pinned := strings.Repeat("a", 40)
+	got, err := prototypeReadRevision(context.Background(), reader, RepositoryBinding{}, pinned)
+	if err != nil || got != pinned || reader.headCalls != 0 {
+		t.Fatalf("pinned read contacted Git: revision=%q calls=%d err=%v", got, reader.headCalls, err)
+	}
+	got, err = prototypeReadRevision(context.Background(), reader, RepositoryBinding{}, "")
+	if err != nil || got != reader.head || reader.headCalls != 1 {
+		t.Fatalf("catalog refresh did not verify the current head exactly once: revision=%q calls=%d err=%v", got, reader.headCalls, err)
+	}
+	if _, err := prototypeReadRevision(context.Background(), reader, RepositoryBinding{}, "invalid"); !errors.Is(err, ErrInvalid) || reader.headCalls != 1 {
+		t.Fatalf("invalid pinned revision reached Git: calls=%d err=%v", reader.headCalls, err)
+	}
+}
+
+func TestPrototypeCachesAreScopedByCompanyProjectAndRevision(t *testing.T) {
+	revision := strings.Repeat("a", 40)
+	path := "prototypes/demo/index.html"
+	item := ac.Item{ID: "demo", Root: "prototypes/demo", AllowedPaths: []string{path}}
+	catalog := PrototypeCatalogResponse{RepositoryID: "owner/repo", PublicationBranch: "main", Revision: revision,
+		InventoryDigest: "sha256:" + strings.Repeat("b", 64), Items: []PrototypeSummary{{ID: "demo"}}, navigation: []ac.Item{item}}
+	store := &MongoStore{prototypeHot: newPrototypeHotCache(), prototypeFileCache: newPrototypeFileCache()}
+	store.prototypeHot.replace("company", "project", &catalog)
+	store.prototypeFileCache.put(prototypeFileCacheKey("company", "project", catalog, path), prototypeFileResponseFor([]byte("<main>ready</main>"), path, catalog))
+	if hot, found := store.prototypeHot.get("company", "project", revision); !found || hot.catalog.Revision != revision {
+		t.Fatal("own project did not find its verified projection")
+	}
+	for _, identity := range [][2]string{{"company", "other-project"}, {"other-company", "project"}} {
+		if _, found := store.prototypeHot.get(identity[0], identity[1], revision); found {
+			t.Fatalf("projection crossed company/project boundary: %v", identity)
+		}
+		if _, found := store.prototypeFileCache.get(prototypeFileCacheKey(identity[0], identity[1], catalog, path)); found {
+			t.Fatalf("file bytes crossed company/project boundary: %v", identity)
+		}
+	}
+	if _, found := store.prototypeHot.get("company", "project", strings.Repeat("c", 40)); found {
+		t.Fatal("another revision reused the hot projection")
+	}
+	if file, found := store.prototypeFileCache.get(prototypeFileCacheKey("company", "project", catalog, path)); !found || string(file.Data) != "<main>ready</main>" {
+		t.Fatal("own project did not find its file bytes")
+	}
+	store.prototypeHot.replace("company", "project", nil)
+	if _, found := store.prototypeHot.get("company", "project", revision); found {
+		t.Fatal("catalog refresh did not invalidate the previous projection")
+	}
+}
+
+func TestPrototypeBindingFenceRejectsProjectRebind(t *testing.T) {
+	catalog := PrototypeCatalogResponse{RepositoryID: "owner/repo", PublicationBranch: "main", BindingRevision: 3}
+	current := RepositoryBinding{State: "configured", RepositoryID: "owner/repo", PublicationBranch: "main", Revision: 3}
+	if !prototypeBindingMatchesCatalog(current, catalog) {
+		t.Fatal("unchanged binding should remain valid")
+	}
+	for _, changed := range []RepositoryBinding{
+		{State: "absent", Revision: 4},
+		{State: "configured", RepositoryID: "owner/other", PublicationBranch: "main", Revision: 4},
+		{State: "configured", RepositoryID: "owner/repo", PublicationBranch: "release", Revision: 4},
+		{State: "configured", RepositoryID: "owner/repo", PublicationBranch: "main", Revision: 4},
+	} {
+		if prototypeBindingMatchesCatalog(changed, catalog) {
+			t.Fatalf("changed binding reused cached prototype: %+v", changed)
+		}
+	}
+}
 
 func TestPrototypeAllowlistIncludesDeclaredNavigationAndEvidencePathsOnly(t *testing.T) {
 	item := ac.Item{

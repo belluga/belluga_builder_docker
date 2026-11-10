@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	ac "delphi-local-api/artifactcatalog"
 )
@@ -62,14 +63,25 @@ type prototypeGitSource struct {
 	workspace string
 	source    ac.Source
 	sha       string
+	transient bool
+	release   func()
 }
 
 type prototypeGitReader interface {
 	BranchHead(context.Context, RepositoryBinding) (string, error)
-	OpenRevision(context.Context, RepositoryBinding, string) (prototypeGitSource, error)
+	OpenRevision(context.Context, string, string, RepositoryBinding, string) (prototypeGitSource, error)
 }
 
-func (s prototypeGitSource) close() { _ = os.RemoveAll(s.workspace) }
+func (s prototypeGitSource) close() {
+	if s.transient {
+		_ = os.RemoveAll(s.workspace)
+	}
+	if s.release != nil {
+		s.release()
+	}
+}
+
+var prototypeRepositoryLocks sync.Map
 
 func (v gitDesignSystemVerifier) BranchHead(ctx context.Context, binding RepositoryBinding) (string, error) {
 	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || v.repositoryURL == nil {
@@ -90,9 +102,12 @@ func (v gitDesignSystemVerifier) BranchHead(ctx context.Context, binding Reposit
 	return fields[0], nil
 }
 
-func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, binding RepositoryBinding, revision string) (prototypeGitSource, error) {
-	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || !validFullGitSHA(revision) || v.repositoryURL == nil {
+func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, projectID string, binding RepositoryBinding, revision string) (prototypeGitSource, error) {
+	if !validID(companyID) || !validID(projectID) || binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || !validFullGitSHA(revision) || v.repositoryURL == nil {
 		return prototypeGitSource{}, ErrUnavailable
+	}
+	if v.prototypeCacheRoot != "" {
+		return v.openCachedPrototypeRevision(ctx, companyID, projectID, binding, revision)
 	}
 	workspace, err := os.MkdirTemp("", ".builder-prototype-read-*")
 	if err != nil {
@@ -133,7 +148,84 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, binding Repos
 		return prototypeGitSource{}, ErrUnavailable
 	}
 	failed = false
-	return prototypeGitSource{workspace: workspace, source: source, sha: sha}, nil
+	return prototypeGitSource{workspace: workspace, source: source, sha: sha, transient: true}, nil
+}
+
+// The cache is owned by the Go container, never by a registered Project's
+// checkout. Git's immutable objects are retained across container restarts;
+// a new branch SHA fetches only objects absent from this repository.
+func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context, companyID, projectID string, binding RepositoryBinding, revision string) (prototypeGitSource, error) {
+	root := v.prototypeCacheRoot
+	if !filepath.IsAbs(root) || ac.RejectSymlinkComponents(root) != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	remote := v.repositoryURL(binding.RepositoryID)
+	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	key := sha256.Sum256([]byte(companyID + "\x00" + projectID + "\x00" + binding.RepositoryID + "\x00" + remote))
+	workspace := filepath.Join(root, hex.EncodeToString(key[:]))
+	lockValue, _ := prototypeRepositoryLocks.LoadOrStore(workspace, &sync.Mutex{})
+	lock := lockValue.(*sync.Mutex)
+	lock.Lock()
+	failed := true
+	defer func() {
+		if failed {
+			lock.Unlock()
+		}
+	}()
+	if err := os.Mkdir(workspace, 0o700); err != nil && !os.IsExist(err) {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	info, err := os.Lstat(workspace)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	gitPath := filepath.Join(workspace, ".git")
+	if _, err := os.Lstat(gitPath); os.IsNotExist(err) {
+		if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		if _, err := v.git(ctx, workspace, false, "remote", "add", "origin", remote); err != nil {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+	} else if err != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	gitInfo, err := os.Lstat(gitPath)
+	if err != nil || !gitInfo.IsDir() || gitInfo.Mode()&os.ModeSymlink != 0 {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	configuredRemote, err := v.git(ctx, workspace, false, "remote", "get-url", "origin")
+	if err != nil || strings.TrimSpace(string(configuredRemote)) != remote {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	if _, err := v.git(ctx, workspace, false, "cat-file", "-e", revision+"^{commit}"); err != nil {
+		branchRef := "refs/heads/" + binding.PublicationBranch
+		remoteRef := "refs/remotes/origin/" + binding.PublicationBranch
+		if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", "+"+branchRef+":"+remoteRef); err != nil {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		fetched, err := v.git(ctx, workspace, false, "rev-parse", "--verify", remoteRef+"^{commit}")
+		if err != nil || strings.TrimSpace(string(fetched)) != revision {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		// This is a private, rebuildable single-writer cache. Expire the old
+		// tracking-ref reflog before GC so repeated Prototype publications do
+		// not retain every superseded Git object in the Docker volume.
+		if _, err := v.git(ctx, workspace, false, "reflog", "expire", "--expire=now", "--expire-unreachable=now", "--all"); err != nil {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		if _, err := v.git(ctx, workspace, false, "gc", "--prune=now"); err != nil {
+			return prototypeGitSource{}, ErrUnavailable
+		}
+	}
+	source, err := ac.NewGitTree(workspace, revision)
+	if err != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	failed = false
+	return prototypeGitSource{workspace: workspace, source: source, sha: revision, release: lock.Unlock}, nil
 }
 
 func canonicalManifestForPrototype(manifest CanonicalManifest, projectID string) (*ac.CanonicalManifest, string, error) {
@@ -161,7 +253,10 @@ func canonicalManifestForPrototype(manifest CanonicalManifest, projectID string)
 	return converted, hex.EncodeToString(digest[:]), nil
 }
 
-func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID string) (PrototypeCatalogResponse, error) {
+// prototypeSnapshot checks the branch only when opening the current catalog.
+// Revision-pinned detail and file reads use the active, already verified Mongo
+// projection; a later catalog reload is the explicit refresh boundary.
+func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID, requestedRevision string) (PrototypeCatalogResponse, error) {
 	if !validID(companyID) || !validID(projectID) {
 		return PrototypeCatalogResponse{}, ErrInvalid
 	}
@@ -172,19 +267,24 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || binding.Revision < 0 {
 		return PrototypeCatalogResponse{}, teachCanonical("", "binding", "configure this Project's exact artifact Git repository and publication branch", ErrNotFound)
 	}
-	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
-	if err != nil {
-		return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge", err)
-	}
-	knowledge, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
-	if err != nil {
-		return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge_contract", err)
+	var manifest CanonicalManifest
+	var knowledge *ac.CanonicalManifest
+	var knowledgeDigest string
+	if requestedRevision == "" {
+		manifest, err = m.CanonicalManifest(ctx, companyID, projectID, "")
+		if err != nil {
+			return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge", err)
+		}
+		knowledge, knowledgeDigest, err = canonicalManifestForPrototype(manifest, projectID)
+		if err != nil {
+			return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge_contract", err)
+		}
 	}
 	reader := m.prototypeGit
 	if reader == nil {
 		return PrototypeCatalogResponse{}, ErrUnavailable
 	}
-	head, err := reader.BranchHead(ctx, binding)
+	head, err := prototypeReadRevision(ctx, reader, binding, requestedRevision)
 	if err != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("branch_head", err)
 	}
@@ -194,12 +294,19 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if indexed, found, readErr := m.readActivePrototypeProjection(ctx, companyID, projectID, binding, head, manifest.GenerationID, knowledgeDigest); readErr != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("active_projection", readErr)
 	} else if found {
-		if err := m.fencePrototypeCurrent(ctx, companyID, projectID, indexed); err != nil {
+		fence := m.fencePrototypeIdentity
+		if requestedRevision != "" {
+			fence = m.fencePrototypeBinding
+		}
+		if err := fence(ctx, companyID, projectID, indexed); err != nil {
 			return PrototypeCatalogResponse{}, prototypeReadFailure("indexed_fence", err)
 		}
 		return indexed, nil
 	}
-	gitSource, err := reader.OpenRevision(ctx, binding, head)
+	if requestedRevision != "" {
+		return PrototypeCatalogResponse{}, ErrConflict
+	}
+	gitSource, err := reader.OpenRevision(ctx, companyID, projectID, binding, head)
 	if err != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("git_revision", err)
 	}
@@ -241,6 +348,16 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	return catalog, nil
 }
 
+func prototypeReadRevision(ctx context.Context, reader prototypeGitReader, binding RepositoryBinding, requestedRevision string) (string, error) {
+	if requestedRevision != "" {
+		if !validFullGitSHA(requestedRevision) {
+			return "", ErrInvalid
+		}
+		return requestedRevision, nil
+	}
+	return reader.BranchHead(ctx, binding)
+}
+
 func (m *MongoStore) primePrototypeFiles(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse, source ac.Source) {
 	if m.prototypeFileCache == nil {
 		return
@@ -262,15 +379,48 @@ func (m *MongoStore) primePrototypeFiles(ctx context.Context, companyID, project
 	}
 }
 
+func (m *MongoStore) warmPrototypeFiles(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
+	if m.prototypeFileCache == nil {
+		return ErrUnavailable
+	}
+	for path := range prototypeAllowedPaths(catalog) {
+		if !m.prototypeFileCache.has(prototypeFileCacheKey(companyID, projectID, catalog, path)) {
+			binding := RepositoryBinding{State: "configured", RepositoryID: catalog.RepositoryID, PublicationBranch: catalog.PublicationBranch, Revision: catalog.BindingRevision}
+			source, err := m.prototypeGit.OpenRevision(ctx, companyID, projectID, binding, catalog.Revision)
+			if err != nil {
+				return err
+			}
+			defer source.close()
+			m.primePrototypeFiles(ctx, companyID, projectID, catalog, source.source)
+			if err := source.source.VerifyStable(); err != nil {
+				return ErrUnavailable
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
 func prototypeReadFailure(stage string, err error) error {
 	log.Printf("prototype catalog unavailable at %s (%T)", stage, err)
 	return err
 }
 
-func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
+func (m *MongoStore) fencePrototypeBinding(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
 	binding, err := m.ReadRepositoryBinding(ctx, companyID, projectID)
-	if err != nil || binding.State != "configured" || binding.RepositoryID != catalog.RepositoryID || binding.PublicationBranch != catalog.PublicationBranch || binding.Revision != catalog.BindingRevision {
+	if err != nil || !prototypeBindingMatchesCatalog(binding, catalog) {
 		return ErrConflict
+	}
+	return nil
+}
+
+func prototypeBindingMatchesCatalog(binding RepositoryBinding, catalog PrototypeCatalogResponse) bool {
+	return binding.State == "configured" && binding.RepositoryID == catalog.RepositoryID && binding.PublicationBranch == catalog.PublicationBranch && binding.Revision == catalog.BindingRevision
+}
+
+func (m *MongoStore) fencePrototypeIdentity(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
+	if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+		return err
 	}
 	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
 	if err != nil {
@@ -279,6 +429,17 @@ func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, proje
 	_, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
 	if err != nil || manifest.GenerationID != catalog.KnowledgeGeneration || knowledgeDigest != catalog.KnowledgeDigest {
 		return ErrConflict
+	}
+	return nil
+}
+
+func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
+	if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
+		return err
+	}
+	binding, err := m.ReadRepositoryBinding(ctx, companyID, projectID)
+	if err != nil {
+		return err
 	}
 	reader := m.prototypeGit
 	if reader == nil {
@@ -341,13 +502,15 @@ type prototypeFileResponse struct {
 }
 
 func (m *MongoStore) ReadPrototypes(ctx context.Context, companyID, projectID string) (PrototypeCatalogResponse, error) {
-	catalog, err := m.prototypeSnapshot(ctx, companyID, projectID)
+	m.prototypeHot.replace(companyID, projectID, nil)
+	catalog, err := m.prototypeSnapshot(ctx, companyID, projectID, "")
 	if err != nil {
 		return PrototypeCatalogResponse{}, err
 	}
-	if err := m.fencePrototypeCurrent(ctx, companyID, projectID, catalog); err != nil {
-		return PrototypeCatalogResponse{}, prototypeReadFailure("read_fence", err)
+	if err := m.warmPrototypeFiles(ctx, companyID, projectID, catalog); err != nil {
+		return PrototypeCatalogResponse{}, prototypeReadFailure("warm_files", err)
 	}
+	m.prototypeHot.replace(companyID, projectID, &catalog)
 	return catalog, nil
 }
 
@@ -355,18 +518,24 @@ func (m *MongoStore) ReadPrototype(ctx context.Context, companyID, projectID, re
 	if !validFullGitSHA(revision) || !validStableArtifactID(prototypeID) {
 		return PrototypeReadResponse{}, ErrInvalid
 	}
-	catalog, err := m.prototypeSnapshot(ctx, companyID, projectID)
-	if err != nil {
-		return PrototypeReadResponse{}, err
+	hot, found := m.prototypeHot.get(companyID, projectID, revision)
+	catalog := hot.catalog
+	if found {
+		if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+			return PrototypeReadResponse{}, err
+		}
+	} else {
+		var err error
+		catalog, err = m.prototypeSnapshot(ctx, companyID, projectID, revision)
+		if err != nil {
+			return PrototypeReadResponse{}, err
+		}
 	}
 	if catalog.Revision != revision {
 		return PrototypeReadResponse{}, ErrConflict
 	}
 	for _, item := range catalog.navigation {
 		if item.ID == prototypeID {
-			if err := m.fencePrototypeCurrent(ctx, companyID, projectID, catalog); err != nil {
-				return PrototypeReadResponse{}, err
-			}
 			links := make([]PrototypeFileLink, 0)
 			for path := range prototypeAllowedPaths(PrototypeCatalogResponse{navigation: []ac.Item{item}}) {
 				links = append(links, PrototypeFileLink{Path: path, URL: fmt.Sprintf("/internal/v1/companies/%s/projects/%s/prototypes/%s/files/%s", companyID, projectID, revision, path)})
@@ -388,21 +557,31 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 	if !validFullGitSHA(revision) || ac.ValidateRelativePath(requestedPath) != nil {
 		return prototypeFileResponse{}, ErrInvalid
 	}
-	catalog, err := m.prototypeSnapshot(ctx, companyID, projectID)
-	if err != nil {
-		return prototypeFileResponse{}, err
+	hot, found := m.prototypeHot.get(companyID, projectID, revision)
+	catalog := hot.catalog
+	if found {
+		if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
+			return prototypeFileResponse{}, err
+		}
+	} else {
+		var err error
+		catalog, err = m.prototypeSnapshot(ctx, companyID, projectID, revision)
+		if err != nil {
+			return prototypeFileResponse{}, err
+		}
 	}
 	if catalog.Revision != revision {
 		return prototypeFileResponse{}, ErrConflict
 	}
-	if _, allowed := prototypeAllowedPaths(catalog)[requestedPath]; !allowed {
+	allowedPaths := hot.allowed
+	if !found {
+		allowedPaths = prototypeAllowedPaths(catalog)
+	}
+	if _, allowed := allowedPaths[requestedPath]; !allowed {
 		return prototypeFileResponse{}, ErrNotFound
 	}
 	cacheKey := prototypeFileCacheKey(companyID, projectID, catalog, requestedPath)
 	if cached, found := m.prototypeFileCache.get(cacheKey); found {
-		if err := m.fencePrototypeCurrent(ctx, companyID, projectID, catalog); err != nil {
-			return prototypeFileResponse{}, err
-		}
 		return cached, nil
 	}
 	binding, err := m.ReadRepositoryBinding(ctx, companyID, projectID)
@@ -412,7 +591,7 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 	if m.prototypeGit == nil {
 		return prototypeFileResponse{}, ErrUnavailable
 	}
-	source, err := m.prototypeGit.OpenRevision(ctx, binding, revision)
+	source, err := m.prototypeGit.OpenRevision(ctx, companyID, projectID, binding, revision)
 	if err != nil {
 		return prototypeFileResponse{}, err
 	}
@@ -422,9 +601,6 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 		return prototypeFileResponse{}, ErrUnavailable
 	}
 	if cached, found := m.prototypeFileCache.get(cacheKey); found {
-		if err := m.fencePrototypeCurrent(ctx, companyID, projectID, catalog); err != nil {
-			return prototypeFileResponse{}, err
-		}
 		return cached, nil
 	}
 	data, mode, err := source.source.Read(requestedPath, ac.MaxFileBytes)
@@ -434,7 +610,7 @@ func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID
 	if err := source.source.VerifyStable(); err != nil {
 		return prototypeFileResponse{}, ErrUnavailable
 	}
-	if err := m.fencePrototypeCurrent(ctx, companyID, projectID, catalog); err != nil {
+	if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
 		return prototypeFileResponse{}, err
 	}
 	response := prototypeFileResponseFor(data, requestedPath, catalog)

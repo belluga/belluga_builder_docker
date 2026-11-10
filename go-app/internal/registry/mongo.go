@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -49,6 +50,8 @@ type MongoStore struct {
 	designSystemVerifier      designSystemRemoteVerifier
 	prototypeGit              prototypeGitReader
 	prototypeFileCache        *prototypeFileCache
+	prototypeHot              *prototypeHotCache
+	prototypeReady            sync.Map
 	designSystemSourceMapRoot string
 }
 
@@ -244,8 +247,8 @@ func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
 	}
-	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }}
-	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier(), prototypeGit: prototypeGit, prototypeFileCache: newPrototypeFileCache()}
+	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }, prototypeCacheRoot: os.Getenv("DELPHI_PROTOTYPE_GIT_CACHE_ROOT")}
+	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier(), prototypeGit: prototypeGit, prototypeFileCache: newPrototypeFileCache(), prototypeHot: newPrototypeHotCache()}
 	if err := store.ensureControlIndexes(pingCtx); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable

@@ -50,16 +50,17 @@ describe("revision-bound Prototype viewer", () => {
     await waitFor(() => expect(fetcher.mock.calls.some(([url]) => String(url).includes("/other?"))).toBe(true));
   });
 
-  it("preserves repeated scenario steps and verifies presentation HTML against revision and digest", async () => {
+  it("preserves repeated scenario steps and opens verified revision files without a duplicate HEAD request", async () => {
     const fetcher = mockAPI();
     const onNavigate = vi.fn();
     render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", scenarioID: "tour", scenarioStep: "1", revision, device: "mobile", scale: "fit" }} />);
     expect(await screen.findByTitle("Demo · Home · Default")).toBeInTheDocument();
-    const htmlURL = String(fetcher.mock.calls.find(([url, init]) => String(url).includes("/files/prototypes/demo/index.html") && (init as RequestInit)?.method === "HEAD")?.[0]);
+    const htmlURL = screen.getByTitle("Demo · Home · Default").getAttribute("src") || "";
     expect(htmlURL).toContain("/api/prototypes/");
     expect(htmlURL).toContain(`prototype_state=default`);
     expect(htmlURL).toContain(`/file/company/project/${revision}/${"b".repeat(64)}/files/`);
     expect(screen.getByTitle("Demo · Home · Default").closest("iframe")).toHaveAttribute("src", expect.stringContaining("/api/prototypes/"));
+    expect(fetcher.mock.calls.some(([, init]) => (init as RequestInit)?.method === "HEAD")).toBe(false);
     expect(onNavigate).not.toHaveBeenCalled();
   });
 

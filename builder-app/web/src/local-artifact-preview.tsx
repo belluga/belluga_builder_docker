@@ -54,20 +54,6 @@ function PrototypePresentation({ props, prototypes, summaries, reader }: { props
   const stale = Boolean(selection.revision && currentRevision && selection.revision !== currentRevision);
   const entry = valid && prototype && screen && state
     ? (() => { const href = fileURL(prototype, `${prototype.root}/${screen.path}`); if (!href) return ""; const url = new URL(href, location.origin); url.searchParams.set("prototype_state", state.id); return url.pathname + url.search; })() : "";
-  const [check, setCheck] = useState<{ key: string; state: "checking" | "ready" | "error"; message?: string } | null>(null);
-  const entryKey = `${entry}|${currentRevision}|${reader.inventoryDigest || ""}`;
-  useEffect(() => {
-    if (!entry || stale || !currentRevision || reader.state !== "ready") return;
-    const controller = new AbortController();
-    setCheck({ key: entryKey, state: "checking" });
-    fetch(entry, { method: "HEAD", signal: controller.signal }).then((response) => {
-      if (!response.ok || response.headers.get("X-Prototype-Revision") !== selection.revision || response.headers.get("X-Prototype-Inventory-Digest") !== reader.inventoryDigest) throw new Error("The selected HTML is unavailable in this Git revision.");
-      if (!controller.signal.aborted) setCheck({ key: entryKey, state: "ready" });
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setCheck({ key: entryKey, state: "error", message: error instanceof Error ? error.message : "Snapshot verification failed." });
-    });
-    return () => controller.abort();
-  }, [currentRevision, entry, entryKey, reader.inventoryDigest, reader.state, selection.revision, stale]);
   const canvasRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState({ width: window.innerWidth - 32, height: window.innerHeight - 96 });
   useEffect(() => {
@@ -109,16 +95,15 @@ function PrototypePresentation({ props, prototypes, summaries, reader }: { props
       <label>Estado<select aria-label="Estado" value={state?.id || ""} onChange={(event) => choose({ state_id: event.target.value, scenario_id: null, scenario_step: null })}>{(screen?.states || []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <div className="prototype-presentation-toggle" role="group" aria-label="Dispositivo"><button aria-pressed={selection.device === "mobile"} onClick={() => choose({ device: "mobile" })}>Mobile</button><button aria-pressed={selection.device === "desktop"} onClick={() => choose({ device: "desktop" })}>Desktop</button></div>
       <div className="prototype-presentation-toggle" role="group" aria-label="Escala"><button aria-pressed={selection.scale === "fit"} onClick={() => choose({ scale: "fit" })}>Ajustar</button><button aria-pressed={selection.scale === "100"} onClick={() => choose({ scale: "100" })}>100%</button></div>
-      {check?.key === entryKey && check.state === "ready" && entry ? <a href={entry} target="_blank" rel="noopener noreferrer">Abrir HTML bruto ↗</a> : <span aria-disabled="true">Abrir HTML bruto indisponível</span>}
+      {entry && !stale && reader.state === "ready" ? <a href={entry} target="_blank" rel="noopener noreferrer">Abrir HTML bruto ↗</a> : <span aria-disabled="true">Abrir HTML bruto indisponível</span>}
     </header>
     <section ref={canvasRef} className="prototype-presentation-canvas" aria-label={`${props.companyName} / ${props.projectName} · apresentação`}>
       {reader.state === "loading" ? <p role="status">Carregando catálogo Git…</p>
         : reader.state === "error" ? <p role="alert">{reader.message || "O catálogo atual de Prototypes está indisponível."}</p>
           : stale ? <p role="alert">A revisão Git mudou; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
-            : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando arquivo na revisão Git…</p>
-              : check.state === "error" ? <p role="alert">{check.message}</p>
-                : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
+            : !entry ? <p role="alert">O HTML desta tela não consta dos arquivos verificados da revisão.</p>
+              : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
     </section>
   </main>;
 }
