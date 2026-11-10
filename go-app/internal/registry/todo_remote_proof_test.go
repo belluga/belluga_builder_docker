@@ -33,6 +33,31 @@ func TestCommitAttributionUsesOnlyApprovedRepositoryPaths(t *testing.T) {
 	}
 }
 
+func TestCommitPathDoubleStarMatchesRootAndNestedFiles(t *testing.T) {
+	pattern := "builder-app/web/src/**/*.test.tsx"
+	for _, changed := range []string{
+		"builder-app/web/src/projects.test.tsx",
+		"builder-app/web/src/components/projects.test.tsx",
+		"builder-app/web/src/components/nested/projects.test.tsx",
+	} {
+		if !matchesCommitPath(pattern, changed) {
+			t.Fatalf("approved recursive test path rejected: %s", changed)
+		}
+	}
+	for _, changed := range []string{
+		"builder-app/web/src/projects.tsx",
+		"builder-app/web/src/projects.test.ts",
+		"builder-app/web/src-other/projects.test.tsx",
+	} {
+		if matchesCommitPath(pattern, changed) {
+			t.Fatalf("outside recursive test path accepted: %s", changed)
+		}
+	}
+	if matchesCommitPath("go-app/vendor/**", "go-app/vendor") || !matchesCommitPath("go-app/vendor/**", "go-app/vendor/module/file.go") {
+		t.Fatal("directory subtree scope changed")
+	}
+}
+
 func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	badPACEDPath := false

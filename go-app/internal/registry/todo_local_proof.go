@@ -459,8 +459,34 @@ func matchesCommitPath(pattern, changed string) bool {
 	if strings.HasSuffix(pattern, "/**") {
 		return strings.HasPrefix(changed, strings.TrimSuffix(pattern, "/**")+"/")
 	}
-	matched, err := path.Match(pattern, changed)
-	return err == nil && matched
+	patternParts := strings.Split(pattern, "/")
+	changedParts := strings.Split(changed, "/")
+	type position struct{ pattern, changed int }
+	memo := make(map[position]bool)
+	visited := make(map[position]bool)
+	var match func(int, int) bool
+	match = func(patternIndex, changedIndex int) bool {
+		at := position{patternIndex, changedIndex}
+		if visited[at] {
+			return memo[at]
+		}
+		visited[at] = true
+		if patternIndex == len(patternParts) {
+			memo[at] = changedIndex == len(changedParts)
+			return memo[at]
+		}
+		if patternParts[patternIndex] == "**" {
+			memo[at] = match(patternIndex+1, changedIndex) || changedIndex < len(changedParts) && match(patternIndex, changedIndex+1)
+			return memo[at]
+		}
+		if changedIndex == len(changedParts) {
+			return false
+		}
+		matched, err := path.Match(patternParts[patternIndex], changedParts[changedIndex])
+		memo[at] = err == nil && matched && match(patternIndex+1, changedIndex+1)
+		return memo[at]
+	}
+	return match(0, 0)
 }
 
 func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID, repository, branch, sha string, mongoV2 bool) (remoteCommitResult, error) {
