@@ -297,6 +297,12 @@ type remoteCommitResult struct {
 	Outcome    string   `json:"outcome"`
 }
 
+// The private Reader admits up to eleven GitHub commit pages (100 files each).
+// Their complete path list can exceed the former 32 KiB transport limit even
+// when the commit is attributable. Keep the response bounded by that upstream
+// page budget instead of rejecting a valid large commit as an outage.
+const maxRemoteCommitProofBytes = 12 << 20
+
 // The approved scope, not the current checkout diff, decides attribution.
 func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
@@ -472,9 +478,12 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 		return remoteCommitResult{}, todoTeach("remote_proof", "retry when the private Reader can verify the remote release branch", ErrUnavailable)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 32<<10))
-	if err != nil || len(data) == 0 || len(data) >= 32<<10 {
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxRemoteCommitProofBytes+1))
+	if err != nil || len(data) == 0 {
 		return remoteCommitResult{}, ErrUnavailable
+	}
+	if len(data) > maxRemoteCommitProofBytes {
+		return remoteCommitResult{}, todoTeach("remote_proof", "the private Reader commit proof exceeds the bounded response; split the attributable delivery into smaller commits", ErrConflict)
 	}
 	if response.StatusCode != http.StatusOK {
 		var problem struct {

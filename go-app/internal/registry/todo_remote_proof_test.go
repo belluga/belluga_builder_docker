@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,32 @@ func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T
 	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
 	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
 		t.Fatalf("Foundation-free proof = %+v, %v", proof, err)
+	}
+}
+
+func TestRemoteLocalDeliveryAcceptsCompleteLargeCommitPathList(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	paths := make([]string, 450)
+	for i := range paths {
+		paths[i] = "go-app/internal/registry/large-batch/changed-" + strconv.Itoa(i) + "-" + strings.Repeat("x", 72) + ".go"
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		result := remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: paths, Outcome: "verified"}
+		encoded, err := json.Marshal(result)
+		if err != nil || len(encoded) <= 32<<10 {
+			t.Errorf("fixture must exceed former 32 KiB response limit: bytes=%d err=%v", len(encoded), err)
+			return
+		}
+		_, _ = w.Write(encoded)
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	digest := sourceHash([]byte("approved large commit"))
+	todo := TODORecord{ID: "large-commit", ProjectID: "builder", ReleaseID: "r-12", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "r-12-rc", ExpectedPaths: []string{"go-app/internal/registry/**"}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
+	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
+	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+		t.Fatalf("large complete commit proof rejected: proof=%+v err=%v", proof, err)
 	}
 }
 
