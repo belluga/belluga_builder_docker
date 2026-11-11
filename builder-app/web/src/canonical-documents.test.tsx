@@ -13,6 +13,7 @@ const reply = (value: unknown, status = 200): Reply => ({ ok: status === 200, st
 function setup(knowledge: (url: URL) => Reply | Promise<Reply> = (url) => reply(url.searchParams.has("record_id") ? record : manifest), indexPurpose = "Knowledge is owned by the typed API.") {
   const fetcher = vi.fn(async (input: RequestInfo | URL) => {
     const url = new URL(String(input), location.origin);
+    if (url.pathname === "/api/catalog") return reply(catalog);
     if (url.pathname === "/api/knowledge/index") {
       const source = await knowledge(new URL("/api/knowledge?company_id=belluga&project_id=builder", location.origin));
       const current = await source.json() as typeof manifest;
@@ -20,7 +21,6 @@ function setup(knowledge: (url: URL) => Reply | Promise<Reply> = (url) => reply(
       return reply({ project_id: "builder", generation_id: current.generation_id, write_epoch: 1, items: current.documents.map((item) => ({ ...item, purpose: indexPurpose, decisions: record.payload.decisions })) });
     }
     if (url.pathname === "/api/knowledge") return knowledge(url);
-    if (url.pathname === "/api/local-preview" && !url.search) return reply(catalog);
     return reply({ diagnostic: "Foundation reader unavailable" }, 503);
   });
   vi.stubGlobal("fetch", fetcher);
@@ -161,9 +161,9 @@ describe("canonical Documents without Foundation", () => {
     setup((url) => reply(url.searchParams.has("record_id") ? record : manifest), "Knowledge is owned by the typed API.");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return reply(catalog);
       if (url.pathname === "/api/knowledge/index") return reply({ project_id: "builder", generation_id: "launch", write_epoch: 1, items: [{ ...entry, content_digest: `sha256:${"b".repeat(64)}` }] });
       if (url.pathname === "/api/knowledge") return reply(manifest);
-      if (url.pathname === "/api/local-preview" && !url.search) return reply(catalog);
       return reply({ diagnostic: "Foundation reader unavailable" }, 503);
     }));
     open("&doc_family=module");

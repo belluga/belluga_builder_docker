@@ -203,14 +203,27 @@ func TestPublishedViewerRootOpensProjectDirectory(t *testing.T) {
 	}
 }
 
-func TestRegisteredHandlerRoutesExactTODOReadsToConsumer(t *testing.T) {
+func TestRegisteredHandlerRetiresTODOSourceWithoutCallingProjectReader(t *testing.T) {
+	readerCalls := 0
+	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		readerCalls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"todo_id":"todo-a","fingerprint":"` + strings.Repeat("a", 64) + `","markdown":"# Legacy TODO"}`))
+	}))
+	defer reader.Close()
+	t.Setenv("DELPHI_PROJECT_READER_URL", reader.URL)
+	t.Setenv("DELPHI_PROJECT_READER_TOKEN", strings.Repeat("x", 32))
+
 	handler := registeredHandler(t.TempDir(), t.TempDir(), "")
-	request := httptest.NewRequest(http.MethodGet, "/api/local-todo-source", nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/local-todo-source?company_id=belluga-solutions&project_id=builder&todo_id=todo-a&fingerprint="+strings.Repeat("a", 64), nil)
 	request.Host = "127.0.0.1"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "todo_source_request_invalid") {
-		t.Fatalf("exact TODO route did not reach the registered consumer: status=%d body=%s", response.Code, response.Body.String())
+	if response.Code != http.StatusGone || !strings.Contains(response.Body.String(), "todo_source_retired") || !strings.Contains(response.Body.String(), "TEACH") {
+		t.Fatalf("retired TODO source route did not return precise removal guidance: status=%d body=%s", response.Code, response.Body.String())
+	}
+	if readerCalls != 0 {
+		t.Fatalf("retired TODO source route invoked the Project reader %d times", readerCalls)
 	}
 }
 

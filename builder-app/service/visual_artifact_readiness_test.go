@@ -52,42 +52,27 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 
 	t.Run("published Prototype screens", func(t *testing.T) {
 		var result struct {
-			ConsumerReadiness    string `json:"consumer_readiness"`
-			ProjectSHA           string `json:"project_sha"`
-			SnapshotFingerprint  string `json:"snapshot_fingerprint"`
-			SnapshotObservations struct {
-				PrototypeStatus struct {
-					Outcome  string `json:"outcome"`
-					Revision string `json:"revision"`
-					Items    []struct {
-						ID         string `json:"id"`
-						Root       string `json:"root"`
-						EntryPoint string `json:"entry_point"`
-						Screens    []struct {
-							Path string `json:"path"`
-						} `json:"screens"`
-					} `json:"items"`
-					Diagnostics []struct {
-						Code    string `json:"code"`
-						Path    string `json:"path"`
-						Message string `json:"message"`
-					} `json:"diagnostics"`
-				} `json:"prototype_status"`
-			} `json:"snapshot_observations"`
+			Revision        string `json:"revision"`
+			InventoryDigest string `json:"inventory_digest"`
+			Items           []struct {
+				ID        string `json:"id"`
+				Root      string `json:"root"`
+				DetailURL string `json:"detail_url"`
+			} `json:"items"`
 		}
-		readVisualJSON(t, client, base+"/api/local-preview?"+query, &result)
-		status := result.SnapshotObservations.PrototypeStatus
-		if result.ConsumerReadiness != "ready" {
-			t.Errorf("local preview consumer readiness = %q, want ready", result.ConsumerReadiness)
+		readVisualJSON(t, client, base+"/api/prototypes?"+query, &result)
+		if result.Revision != prototypeSHA {
+			t.Errorf("Prototype source revision = %q, want %q", result.Revision, prototypeSHA)
 		}
-		if result.ProjectSHA != prototypeSHA || status.Revision != prototypeSHA {
-			t.Errorf("Prototype source = project %q/status %q, want %q", result.ProjectSHA, status.Revision, prototypeSHA)
+		if !strings.HasPrefix(result.InventoryDigest, "sha256:") {
+			t.Errorf("Prototype catalog has invalid inventory digest %q", result.InventoryDigest)
 		}
-		if status.Outcome != "go" || len(status.Items) < minimum {
-			t.Fatalf("selected Prototype catalog outcome=%q items=%d, want go with at least %d; diagnostics=%+v", status.Outcome, len(status.Items), minimum, status.Diagnostics)
+		if len(result.Items) < minimum {
+			t.Fatalf("selected Prototype catalog has %d items, want at least %d", len(result.Items), minimum)
 		}
-		actualIDs := make(map[string]bool, len(status.Items))
-		for _, item := range status.Items {
+		actualIDs := make(map[string]bool, len(result.Items))
+		inventory := make([]string, 0)
+		for _, item := range result.Items {
 			actualIDs[item.ID] = true
 		}
 		for _, expectedID := range expectedPrototypeIDs {
@@ -95,21 +80,51 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 				t.Errorf("expected Prototype %q is absent from the admitted selection", expectedID)
 			}
 		}
-		inventory := make([]string, 0)
-		for _, item := range status.Items {
-			if item.Root == "" || item.EntryPoint == "" || len(item.Screens) == 0 || result.SnapshotFingerprint == "" {
-				t.Errorf("Prototype %q lacks a published entry point, screens or snapshot identity", item.ID)
+		for _, item := range result.Items {
+			if item.Root == "" || item.DetailURL == "" {
+				t.Errorf("Prototype %q lacks its canonical detail URL or root", item.ID)
 				continue
 			}
-			entryDeclared := false
-			for _, screen := range item.Screens {
-				inventory = append(inventory, item.ID+":"+screen.Path)
-				entryDeclared = entryDeclared || screen.Path == item.EntryPoint
-				path := fmt.Sprintf("/snapshot/%s/%s/%s/%s/%s", url.PathEscape(company), url.PathEscape(project), url.PathEscape(result.SnapshotFingerprint), item.Root, screen.Path)
-				readVisualHTML(t, client, base+path)
+			var detail struct {
+				Revision        string `json:"revision"`
+				InventoryDigest string `json:"inventory_digest"`
+				Item            struct {
+					ID         string `json:"id"`
+					Root       string `json:"root"`
+					EntryPoint string `json:"entry_point"`
+					Screens    []struct {
+						Path string `json:"path"`
+					} `json:"screens"`
+				} `json:"item"`
+				FileURLs []struct {
+					Path string `json:"path"`
+					URL  string `json:"url"`
+				} `json:"file_urls"`
 			}
-			if !entryDeclared {
-				t.Errorf("Prototype %q entry point %q is absent from its selected screen inventory", item.ID, item.EntryPoint)
+			readVisualJSON(t, client, base+item.DetailURL, &detail)
+			if detail.Revision != prototypeSHA || detail.InventoryDigest != result.InventoryDigest || detail.Item.ID != item.ID || detail.Item.Root != item.Root || detail.Item.EntryPoint == "" || len(detail.Item.Screens) == 0 {
+				t.Errorf("Prototype %q detail does not match canonical catalog identity: revision=%q digest=%q item=%+v", item.ID, detail.Revision, detail.InventoryDigest, detail.Item)
+				continue
+			}
+			files := make(map[string]string, len(detail.FileURLs))
+			for _, file := range detail.FileURLs {
+				files[file.Path] = file.URL
+			}
+			entryPath := strings.TrimSuffix(detail.Item.Root, "/") + "/" + detail.Item.EntryPoint
+			entryFound := false
+			for _, screen := range detail.Item.Screens {
+				inventory = append(inventory, item.ID+":"+screen.Path)
+				path := strings.TrimSuffix(detail.Item.Root, "/") + "/" + screen.Path
+				fileURL := files[path]
+				if fileURL == "" {
+					t.Errorf("Prototype %q screen %q is missing from canonical file URLs", item.ID, path)
+					continue
+				}
+				entryFound = entryFound || path == entryPath
+				readVisualHTML(t, client, base+fileURL)
+			}
+			if !entryFound {
+				t.Errorf("Prototype %q entry point %q is absent from selected screens", item.ID, entryPath)
 			}
 		}
 		sort.Strings(inventory)
@@ -119,7 +134,7 @@ func TestSelectedProjectVisualArtifactReadiness(t *testing.T) {
 		}
 		actualInventoryDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(encoded))
 		if actualInventoryDigest != expectedInventoryDigest {
-			t.Errorf("selected Screen inventory digest = %q, want pinned pre-change digest %q", actualInventoryDigest, expectedInventoryDigest)
+			t.Errorf("selected Screen inventory digest = %q, want pinned digest %q", actualInventoryDigest, expectedInventoryDigest)
 		}
 	})
 

@@ -14,7 +14,7 @@ import (
 	"unicode/utf8"
 )
 
-const maxRequestBody = maxSnapshotReferenceBytes
+const maxRequestBody = maxProjectDocumentBytes
 const maxTODOImportRequestBytes = 4 << 20
 const maxDesignSystemMutationRequestBytes = 8 << 10
 const designSystemRecoveryTimeout = 15 * time.Second
@@ -140,6 +140,16 @@ type prototypeReader interface {
 	ReadPrototypeFile(context.Context, string, string, string, string) (prototypeFileResponse, error)
 }
 
+type landingService interface {
+	ReadLanding(context.Context, string, string) (LandingCatalogResponse, error)
+	ReadLandingFile(context.Context, string, string, int64, string, string) (landingFileResponse, error)
+}
+
+type portfolioReader interface {
+	ReadPortfolioCatalog(context.Context, string) (PortfolioCatalogResponse, error)
+	ReadProjectPortfolioFile(context.Context, string, string, int64, string, string, string) (portfolioFileResponse, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
@@ -180,11 +190,14 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes", h.readPrototypes)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}", h.readPrototype)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/files/{path...}", h.readPrototypeFile)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/landing", h.readLanding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/landing/{bindingRevision}/{revision}/files/{path...}", h.readLandingFile)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/portfolios", h.readPortfolioCatalog)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/portfolio/{bindingRevision}/{revision}/{inventoryDigest}/files/{path...}", h.readPortfolioFile)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations", h.beginDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover", h.recoverDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/preference", h.preference)
-	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/snapshot-reference", h.snapshotReference)
 	mux.HandleFunc("GET /internal/v1/lifecycle-control", h.lifecycleControl)
 	mux.HandleFunc("PUT /internal/v1/lifecycle-control", h.updateLifecycleControl)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap", h.roadmap)
@@ -709,14 +722,6 @@ func (h *Handler) decline(w http.ResponseWriter, r *http.Request) {
 }
 func (h *Handler) preference(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Preference(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
-	h.respond(w, value, err)
-}
-func (h *Handler) snapshotReference(w http.ResponseWriter, r *http.Request) {
-	var input SnapshotReference
-	if !h.decode(w, r, &input) {
-		return
-	}
-	value, err := h.service.UpdateSnapshotReference(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
 	h.respond(w, value, err)
 }
 func (h *Handler) lifecycleControl(w http.ResponseWriter, r *http.Request) {

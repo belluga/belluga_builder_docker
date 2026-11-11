@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"log"
 	"net"
 	"net/http"
@@ -16,7 +15,8 @@ var buildSourceSHA = "unknown"
 var buildSHAFormat = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 func main() {
-	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_BUILDER_STATE_ROOT")); stateRoot != "" {
+	stateRoot := strings.TrimSpace(os.Getenv("DELPHI_BUILDER_STATE_ROOT"))
+	if stateRoot != "" {
 		publicHost := strings.TrimSpace(os.Getenv("PUBLIC_PREVIEW_HOST"))
 		address := env("LISTEN_ADDR", "127.0.0.1:8080")
 		host, _, err := net.SplitHostPort(address)
@@ -25,35 +25,7 @@ func main() {
 		}
 		log.Fatal((&http.Server{Addr: address, Handler: registeredHandler(stateRoot, env("WEB_ROOT", "/web"), publicHost), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 105 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}).ListenAndServe())
 	}
-	if len(os.Args) > 1 && os.Args[1] == "export" {
-		flags := flag.NewFlagSet("export", flag.ExitOnError)
-		repo := flags.String("repo", "", "trusted Foundation git checkout")
-		commit := flags.String("commit", approvedCommit, "approved Foundation commit")
-		out := flags.String("out", "", "new bundle destination")
-		_ = flags.Parse(os.Args[2:])
-		if *repo == "" || *out == "" {
-			log.Fatal("repo and out are required")
-		}
-		if err := exportCommit(*repo, *commit, *out); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-	address := env("LISTEN_ADDR", "127.0.0.1:8080")
-	host, _, err := net.SplitHostPort(address)
-	if err != nil || (!isLoopback(host) && os.Getenv("ALLOW_CONTAINER_BIND") != "true") {
-		log.Fatal("listener must use a loopback address")
-	}
-	bundle, err := loadBundle(env("BUNDLE_DIR", "/bundle"))
-	if err != nil {
-		log.Fatal("approved preview bundle is invalid")
-	}
-	mux := http.NewServeMux()
-	mux.Handle("/api/preview", bundle.apiHandler())
-	mux.Handle("/api/preview/documents/", bundle.documentHandler())
-	mux.Handle("/", staticHandler(env("WEB_ROOT", "/web")))
-	server := &http.Server{Addr: address, Handler: secureHeaders(mux), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 1 << 16}
-	log.Fatal(server.ListenAndServe())
+	log.Fatal("DELPHI_BUILDER_STATE_ROOT is required; legacy Foundation bundle and snapshot serving are retired")
 }
 
 func isLoopback(host string) bool {
@@ -69,7 +41,7 @@ func localHostOnly(next http.Handler) http.Handler {
 }
 
 func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
-	consumer := &registeredPreview{root: stateRoot}
+	consumer := &registeredPreview{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/build", func(w http.ResponseWriter, _ *http.Request) {
 		if !buildSHAFormat.MatchString(buildSourceSHA) {
@@ -82,9 +54,10 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 			SourceSHA string `json:"source_sha"`
 		}{SourceSHA: buildSourceSHA})
 	})
-	mux.HandleFunc("/api/local-preview", consumer.apiHandler)
-	mux.HandleFunc("/api/local-todo-source", consumer.apiHandler)
-	mux.HandleFunc("/api/roadmap", consumer.apiHandler)
+	mux.HandleFunc("/api/catalog", consumer.catalogAPIHandler)
+	mux.HandleFunc("/api/local-preview", retiredSnapshotHandler)
+	mux.HandleFunc("/api/local-todo-source", retiredTODOSourceHandler)
+	mux.HandleFunc("/api/roadmap", consumer.roadmapAPIHandler)
 	mux.HandleFunc("/api/overview", consumer.overviewAPIHandler)
 	mux.HandleFunc("/api/overview/media/", consumer.overviewAPIHandler)
 	mux.HandleFunc("/api/knowledge", consumer.knowledgeAPIHandler)
@@ -94,9 +67,24 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/design-system/presentation/", consumer.designSystemAPIHandler)
 	mux.HandleFunc("/api/prototypes", consumer.prototypeAPIHandler)
 	mux.HandleFunc("/api/prototypes/", consumer.prototypeAPIHandler)
-	mux.HandleFunc("/snapshot/", consumer.artifactHandler)
+	mux.HandleFunc("/api/landing", consumer.landingAPIHandler)
+	mux.HandleFunc("/api/landing/file/", consumer.landingAPIHandler)
+	mux.HandleFunc("/api/portfolios", consumer.portfolioAPIHandler)
+	mux.HandleFunc("/api/portfolios/file/", consumer.portfolioAPIHandler)
+	mux.HandleFunc("/snapshot/", retiredSnapshotHandler)
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))
+}
+
+func retiredSnapshotHandler(w http.ResponseWriter, _ *http.Request) {
+	writeError(w, http.StatusGone, "project_snapshot_retired")
+}
+
+func retiredTODOSourceHandler(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusGone, map[string]string{
+		"error": "todo_source_retired",
+		"teach": "TEACH: TODO content is available through the exact Project TODO API; snapshot-backed TODO source transport is retired.",
+	})
 }
 
 func previewHostOnly(next http.Handler, publicHost string) http.Handler {

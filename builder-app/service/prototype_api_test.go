@@ -5,29 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func prototypeTestConsumer(t *testing.T, upstream *httptest.Server) *registeredPreview {
 	t.Helper()
-	root := t.TempDir()
-	registry := persistedRegistration{
-		SchemaVersion: "builder-project-registry-v1",
-		Companies:     map[string]registeredCompany{"company": {ID: "company", Name: "Company"}},
-		Projects:      map[string]persistedProject{"project": {registeredProject: registeredProject{ID: "project", Name: "Project", CompanyID: "company"}, Binding: &persistedBinding{WorkspaceRoot: "/tmp/workspace", ProjectRoot: "project", FoundationRoot: "project/foundation", RepositoryID: "example/project", PublicationBranch: "main"}}},
-		Preferences:   map[string]persistedPreference{},
-	}
-	data, err := json.Marshal(registry)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "registry.json"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return &registeredPreview{root: root, registryURL: upstream.URL, client: upstream.Client()}
+	return &registeredPreview{registryURL: upstream.URL, client: upstream.Client()}
 }
 
 func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
@@ -35,6 +19,11 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 	const digest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	const item = `{"id":"demo","name":"Demo","root":"prototypes/demo","status":"active","authoring_mode":"image_first","entry_point":"index.html","screens":[],"scenarios":[],"transitions":[]}`
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			t.Error("Prototype request fetched the full Project catalog before its scoped Registry route")
+			_ = json.NewEncoder(w).Encode(map[string]any{"schema_version": "1", "companies": []any{map[string]string{"id": "company", "name": "Company"}}, "projects": []any{map[string]string{"id": "project", "name": "Project", "company_id": "company"}}})
+			return
+		}
 		if !strings.HasPrefix(r.URL.Path, "/internal/v1/companies/company/projects/project/prototypes") {
 			t.Errorf("unexpected Registry path %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -54,7 +43,7 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 				w.WriteHeader(http.StatusNotModified)
 				return
 			}
-			_, _ = w.Write([]byte("<main>Prototype</main>"))
+			_, _ = w.Write([]byte(`<main>Prototype <i style="--fill:80%"></i></main>`))
 		case "/internal/v1/companies/company/projects/project/prototypes/" + revision + "/files/prototypes/demo/experience.js":
 			w.Header().Set("Content-Type", "application/javascript")
 			w.Header().Set("ETag", `"`+revision+`-script"`)
@@ -90,8 +79,15 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 		t.Fatalf("detail must expose its revision-bound entry URL: %q, %v", parsedDetail.EntryURL, err)
 	}
 	file := request(http.MethodGet, fileURL)
-	if file.Code != http.StatusOK || file.Body.String() != "<main>Prototype</main>" || file.Header().Get("X-Prototype-Revision") != revision || file.Header().Get("X-Prototype-Inventory-Digest") != digest || !strings.Contains(file.Header().Get("Content-Security-Policy"), "sandbox allow-scripts") {
+	policy := file.Header().Get("Content-Security-Policy")
+	if file.Code != http.StatusOK || file.Body.String() != `<main>Prototype <i style="--fill:80%"></i></main>` || file.Header().Get("X-Prototype-Revision") != revision || file.Header().Get("X-Prototype-Inventory-Digest") != digest || !strings.Contains(policy, "sandbox allow-scripts") {
 		t.Fatalf("file proxy status=%d headers=%v body=%s", file.Code, file.Header(), file.Body.String())
+	}
+	if cspDirective(policy, "style-src-attr") != "'unsafe-inline'" || cspDirective(policy, "style-src-elem") != "'self'" {
+		t.Fatalf("HTML must allow only inline style attributes while keeping stylesheet elements self-hosted: %q", policy)
+	}
+	if cspDirective(policy, "script-src") != "'self'" || strings.Contains(cspDirective(policy, "script-src"), "unsafe-inline") {
+		t.Fatalf("HTML must not relax executable script policy: %q", policy)
 	}
 	assetURL := strings.TrimSuffix(fileURL, "index.html") + "experience.js"
 	versionedAsset := request(http.MethodGet, assetURL+"?v=project-entry-loading-2")
@@ -116,6 +112,16 @@ func TestPrototypeAPIProxiesRevisionBoundCatalogDetailAndFiles(t *testing.T) {
 	if got := base.ResolveReference(relative).String(); got != strings.TrimSuffix(fileURL, "index.html")+"app.css" {
 		t.Fatalf("relative HTML asset escaped its revision-bound file route: %s", got)
 	}
+}
+
+func cspDirective(policy, name string) string {
+	for _, directive := range strings.Split(policy, ";") {
+		fields := strings.Fields(strings.TrimSpace(directive))
+		if len(fields) > 0 && fields[0] == name {
+			return strings.Join(fields[1:], " ")
+		}
+	}
+	return ""
 }
 
 func TestPrototypeAPIRejectsUnregisteredIdentityAndInvalidRevision(t *testing.T) {

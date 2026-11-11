@@ -28,6 +28,7 @@ type PrototypeCatalogResponse struct {
 	InventoryDigest     string             `json:"inventory_digest"`
 	KnowledgeGeneration string             `json:"knowledge_generation_id,omitempty"`
 	KnowledgeDigest     string             `json:"knowledge_digest"`
+	KnowledgeWriteEpoch int64              `json:"-"`
 	Items               []PrototypeSummary `json:"items"`
 	navigation          []ac.Item
 }
@@ -260,14 +261,15 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if !validID(companyID) || !validID(projectID) {
 		return PrototypeCatalogResponse{}, ErrInvalid
 	}
-	binding, err := m.ReadRepositoryBinding(ctx, companyID, projectID)
+	project, err := m.readPrototypeIdentity(ctx, companyID, projectID)
 	if err != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("binding", err)
 	}
+	binding := repositoryBindingFromProject(project)
 	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || binding.Revision < 0 {
 		return PrototypeCatalogResponse{}, teachCanonical("", "binding", "configure this Project's exact artifact Git repository and publication branch", ErrNotFound)
 	}
-	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
+	manifest, err := m.readPrototypeCanonicalManifest(ctx, companyID, projectID)
 	if err != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("knowledge", err)
 	}
@@ -289,6 +291,7 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 	if indexed, found, readErr := m.readActivePrototypeProjection(ctx, companyID, projectID, binding, head, manifest.GenerationID, knowledgeDigest); readErr != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("active_projection", readErr)
 	} else if found {
+		indexed.KnowledgeWriteEpoch = project.CanonicalWriteEpoch
 		if err := m.fencePrototypeIdentity(ctx, companyID, projectID, indexed); err != nil {
 			return PrototypeCatalogResponse{}, prototypeReadFailure("indexed_fence", err)
 		}
@@ -328,6 +331,7 @@ func (m *MongoStore) prototypeSnapshot(ctx context.Context, companyID, projectID
 		BindingRevision: binding.Revision, Revision: gitSource.sha,
 		EvaluatorVersion: prototypeEvaluatorVersion, InventoryDigest: *evaluation.InventoryDigest,
 		KnowledgeGeneration: manifest.GenerationID, KnowledgeDigest: knowledgeDigest, Items: items, navigation: navigation,
+		KnowledgeWriteEpoch: project.CanonicalWriteEpoch,
 	}
 	if err := m.persistPrototypeProjection(ctx, companyID, projectID, catalog); err != nil {
 		return PrototypeCatalogResponse{}, prototypeReadFailure("persist_projection", err)
@@ -410,18 +414,29 @@ func prototypeBindingMatchesCatalog(binding RepositoryBinding, catalog Prototype
 }
 
 func (m *MongoStore) fencePrototypeIdentity(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
-	if err := m.fencePrototypeBinding(ctx, companyID, projectID, catalog); err != nil {
-		return err
-	}
-	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
+	project, err := m.readPrototypeIdentity(ctx, companyID, projectID)
 	if err != nil {
 		return err
 	}
-	_, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
-	if err != nil || manifest.GenerationID != catalog.KnowledgeGeneration || knowledgeDigest != catalog.KnowledgeDigest {
+	binding := repositoryBindingFromProject(project)
+	if !prototypeBindingMatchesCatalog(binding, catalog) || project.CanonicalWriteEpoch != catalog.KnowledgeWriteEpoch || project.KnowledgeGenerationID != catalog.KnowledgeGeneration {
 		return ErrConflict
 	}
 	return nil
+}
+
+func (m *MongoStore) readPrototypeIdentity(ctx context.Context, companyID, projectID string) (Project, error) {
+	if m.prototypeIdentityReader != nil {
+		return m.prototypeIdentityReader(ctx, companyID, projectID)
+	}
+	return m.Project(ctx, companyID, projectID)
+}
+
+func (m *MongoStore) readPrototypeCanonicalManifest(ctx context.Context, companyID, projectID string) (CanonicalManifest, error) {
+	if m.prototypeCanonicalManifestReader != nil {
+		return m.prototypeCanonicalManifestReader(ctx, companyID, projectID)
+	}
+	return m.CanonicalManifest(ctx, companyID, projectID, "")
 }
 
 func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {

@@ -199,7 +199,7 @@ func (m *MongoStore) Import(ctx context.Context, input LegacyImport) (ImportRepo
 		company := Company{ID: project.CompanyID, DatabaseName: m.tenantDatabase(project.CompanyID)}
 		prior, readErr := m.readProject(ctx, company, id)
 		if readErr == nil {
-			if prior.CompanyID != project.CompanyID || prior.Name != project.Name || prior.Binding == nil || *prior.Binding != *project.Binding || prior.RegisteredAt != expected.RegisteredAt || prior.PreparationState != project.PreparationState || prior.PreparationDiagnostic != project.PreparationDiagnostic || prior.SnapshotFingerprint != project.SnapshotFingerprint {
+			if prior.CompanyID != project.CompanyID || prior.Name != project.Name || prior.Binding == nil || *prior.Binding != *project.Binding || prior.RegisteredAt != expected.RegisteredAt || prior.PreparationState != project.PreparationState || prior.PreparationDiagnostic != project.PreparationDiagnostic {
 				return ImportReport{}, ErrConflict
 			}
 		} else if !errors.Is(readErr, ErrNotFound) {

@@ -230,9 +230,6 @@ func (s *testService) Register(_ context.Context, in Registration) (Project, err
 	return Project{ID: in.ProjectID, CompanyID: in.CompanyID}, nil
 }
 func (s *testService) Decline(context.Context, string, string, Binding) error { return nil }
-func (s *testService) UpdateSnapshotReference(_ context.Context, _, id string, _ SnapshotReference) (Project, error) {
-	return Project{ID: id}, nil
-}
 func (s *testService) LifecycleControl(context.Context) (LifecycleControl, error) {
 	return LifecycleControl{Revision: 3, Value: json.RawMessage(`{"state":"started"}`)}, nil
 }
@@ -257,7 +254,7 @@ func TestPrivateRoutesPreserveExplicitEmptyRoadmap(t *testing.T) {
 		{http.MethodGet, "/internal/v1/catalog", "", `"companies":null`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder", "", `"id":"builder"`, http.StatusOK},
 		{http.MethodPost, "/internal/v1/companies/company-1/projects", `{"company_id":"company-1","project_id":"builder"}`, `"id":"builder"`, http.StatusOK},
-		{http.MethodPut, "/internal/v1/companies/company-1/projects/builder/snapshot-reference", `{"company_id":"company-1"}`, `"id":"builder"`, http.StatusOK},
+		{http.MethodPut, "/internal/v1/companies/company-1/projects/builder/snapshot-reference", `{"company_id":"company-1"}`, `404 page not found`, http.StatusNotFound},
 		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder/roadmap", "", `"epics":[]`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/tenants/resolve?type=host&identifier=example.test", "", `"company_id":"company-1"`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/lifecycle-control", "", `"revision":3`, http.StatusOK},
@@ -350,7 +347,7 @@ func (s *testSelectedTODOLifecycle) ReadTODO(_ context.Context, companyID, proje
 	if s.readErr != nil {
 		return TODOReadResponse{}, s.readErr
 	}
-	return TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: "fingerprint", TODO: TODORecord{ID: todoID, ProjectID: projectID, Stage: "Completed", StageVerification: "unverified", Revision: 4}, TODORevision: 4}, nil
+	return TODOReadResponse{CompanyID: companyID, ProjectID: projectID, TODO: TODORecord{ID: todoID, ProjectID: projectID, Stage: "Completed", StageVerification: "unverified", Revision: 4}, TODORevision: 4}, nil
 }
 
 func (s *testSelectedTODOLifecycle) TransitionTODO(_ context.Context, _ string, _ TODOActionRequest) (TODOActionResponse, error) {
@@ -369,7 +366,7 @@ func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	handler := NewHandler(service)
 	read := httptest.NewRecorder()
 	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01?todo_revision=4", nil))
-	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"todo_revision":4`) || !strings.Contains(read.Body.String(), `"snapshot_fingerprint":"fingerprint"`) || service.readCalls != 1 || service.readRevision == nil || *service.readRevision != 4 {
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"todo_revision":4`) || strings.Contains(read.Body.String(), `"snapshot_fingerprint"`) || service.readCalls != 1 || service.readRevision == nil || *service.readRevision != 4 {
 		t.Fatalf("exact TODO read = %d %s; calls=%d revision=%v", read.Code, read.Body.String(), service.readCalls, service.readRevision)
 	}
 

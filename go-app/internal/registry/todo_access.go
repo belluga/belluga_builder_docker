@@ -25,15 +25,14 @@ func validTODOOperationKind(value string) bool {
 }
 
 type TODOReadResponse struct {
-	CompanyID           string              `json:"company_id"`
-	ProjectID           string              `json:"project_id"`
-	SnapshotFingerprint string              `json:"snapshot_fingerprint"`
-	TODO                TODORecord          `json:"todo"`
-	Removal             *TODORemovalDetails `json:"removal,omitempty"`
-	TODORevision        int64               `json:"todo_revision"`
-	ContentRevision     *int64              `json:"content_revision,omitempty"`
-	ContentDigest       string              `json:"content_digest,omitempty"`
-	AuditFloors         map[string]string   `json:"audit_floors,omitempty"`
+	CompanyID       string              `json:"company_id"`
+	ProjectID       string              `json:"project_id"`
+	TODO            TODORecord          `json:"todo"`
+	Removal         *TODORemovalDetails `json:"removal,omitempty"`
+	TODORevision    int64               `json:"todo_revision"`
+	ContentRevision *int64              `json:"content_revision,omitempty"`
+	ContentDigest   string              `json:"content_digest,omitempty"`
+	AuditFloors     map[string]string   `json:"audit_floors,omitempty"`
 }
 
 type TODOActionRequest struct {
@@ -89,7 +88,7 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 	if expectedRevision != nil && *expectedRevision != record.Revision {
 		return TODOReadResponse{}, &todoRevisionConflict{Revision: record.Revision}
 	}
-	response := TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: project.SnapshotFingerprint, TODO: record, TODORevision: record.Revision}
+	response := TODOReadResponse{CompanyID: companyID, ProjectID: projectID, TODO: record, TODORevision: record.Revision}
 	if record.Removed {
 		var event TODOHistoryEvent
 		if err := collection.Database().Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "kind", Value: "todo-removed"}}).Decode(&event); err != nil || event.ActorClaim == nil || event.Changes.Removed == nil || !*event.Changes.Removed {

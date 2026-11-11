@@ -43,15 +43,15 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 		return response
 	}
 	t.Run("catalog remains usable without Foundation reader and strips private fields", func(t *testing.T) {
-		response := read("/api/local-preview")
+		response := read("/api/catalog")
 		if response.Code != 200 || !strings.Contains(response.Body.String(), `"name":"Builder"`) || strings.Contains(response.Body.String(), "private") {
 			t.Fatalf("catalog: %d %s", response.Code, response.Body.String())
 		}
 	})
-	t.Run("unbound Project detail is pending without reader or snapshot", func(t *testing.T) {
+	t.Run("snapshot detail route is retired", func(t *testing.T) {
 		response := read("/api/local-preview?company_id=belluga&project_id=builder")
-		if response.Code != 200 || !strings.Contains(response.Body.String(), `"consumer_readiness":"pending"`) || strings.Contains(response.Body.String(), "snapshot_fingerprint") || paths[len(paths)-1] != "/internal/v1/catalog" {
-			t.Fatalf("unbound detail: %d %s", response.Code, response.Body.String())
+		if response.Code != http.StatusGone || !strings.Contains(response.Body.String(), "project_snapshot_retired") || len(paths) != 1 || paths[len(paths)-1] != "/internal/v1/catalog" {
+			t.Fatalf("retired snapshot detail: %d %s paths=%v", response.Code, response.Body.String(), paths)
 		}
 	})
 	t.Run("active manifest is read from Registry without snapshot", func(t *testing.T) {
@@ -136,12 +136,14 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 	})
 }
 
-func TestCatalogProjectDoesNotExposeLegacyCutoverMarker(t *testing.T) {
-	data, err := json.Marshal(catalogProject{ID: "builder", LegacySourceDisabled: true})
+func TestCatalogProjectContainsOnlyIdentity(t *testing.T) {
+	data, err := json.Marshal(catalogProject{ID: "builder", Name: "Builder", CompanyID: "belluga"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "legacy_source_disabled") {
-		t.Fatalf("internal legacy cutover marker escaped in catalog DTO: %s", data)
+	for _, retired := range []string{"source_bound", "repository_bound", "legacy_source_disabled", "foundation_root", "snapshot_fingerprint"} {
+		if strings.Contains(string(data), retired) {
+			t.Fatalf("retired source-readiness metadata escaped the identity DTO (%s): %s", retired, data)
+		}
 	}
 }

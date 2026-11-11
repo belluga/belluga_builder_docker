@@ -2,7 +2,6 @@ package registry
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,16 +197,6 @@ var branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,255}$`)
 func validID(value string) bool          { return idPattern.MatchString(value) }
 func validName(value string) bool        { return strings.TrimSpace(value) != "" && len([]rune(value)) <= 160 }
 func validFingerprint(value string) bool { return digestPattern.MatchString(value) }
-func validSnapshotFingerprint(value string) bool {
-	if len(value) != 64 || strings.ToLower(value) != value {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
-}
-func validSnapshotState(value string) bool {
-	return value == "ready" || value == "not_ready" || value == "invalid" || value == "unavailable"
-}
 func validBinding(value Binding) bool {
 	legacyLocator := value.WorkspaceRoot != "" || value.ProjectRoot != "" || value.FoundationRoot != ""
 	if value.RepositoryID == "" && value.PublicationBranch == "" {

@@ -28,10 +28,6 @@ func (p *registeredPreview) prototypeAPIHandler(w http.ResponseWriter, r *http.R
 		prototypeError(w, http.StatusBadRequest, "prototype_request_invalid", "TEACH: Informe Company e Project uma única vez e use uma revisão Git exata para conteúdo.")
 		return
 	}
-	if !p.prototypeProjectRegistered(companyID, projectID) {
-		prototypeError(w, http.StatusNotFound, "prototype_not_found", "TEACH: O Project selecionado não possui um Prototype publicado nesta revisão.")
-		return
-	}
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	if path == "/api/prototypes" {
 		if r.Method != http.MethodGet || len(r.URL.Query()) != 2 {
@@ -80,10 +76,6 @@ func (p *registeredPreview) prototypeRelativeFile(w http.ResponseWriter, r *http
 		prototypeError(w, http.StatusBadRequest, "prototype_file_invalid", "TEACH: Use um arquivo declarado na revisão Git exata do Prototype.")
 		return
 	}
-	if !p.prototypeProjectRegistered(companyID, projectID) {
-		prototypeError(w, http.StatusNotFound, "prototype_not_found", "TEACH: O Project selecionado não possui um Prototype publicado nesta revisão.")
-		return
-	}
 	p.proxyPrototypeFile(w, r, companyID, projectID, revision, "sha256:"+digestHex, filePath)
 }
 
@@ -122,19 +114,6 @@ func safePrototypeAssetVersion(value string) bool {
 		return false
 	}
 	return true
-}
-
-func (p *registeredPreview) prototypeProjectRegistered(companyID, projectID string) bool {
-	data, err := p.catalog()
-	if err != nil {
-		return false
-	}
-	for _, project := range data.Projects {
-		if project.CompanyID == companyID && project.ID == projectID {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *registeredPreview) proxyPrototypeCatalog(w http.ResponseWriter, r *http.Request, companyID, projectID string) {
@@ -340,7 +319,7 @@ func prototypeFilePolicy(filePath, contentType string) string {
 		ext = filePath[dot+1:]
 	}
 	if strings.EqualFold(ext, "html") || strings.HasPrefix(contentType, "text/html") {
-		return "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+		return "default-src 'none'; script-src 'self'; style-src 'self'; style-src-elem 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; sandbox allow-scripts"
 	}
 	return "default-src 'none'; sandbox; frame-ancestors 'self'"
 }

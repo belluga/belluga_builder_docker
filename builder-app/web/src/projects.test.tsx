@@ -59,8 +59,11 @@ function detail(companyID: string, projectID: string, documents: { path: string;
     visual_origin: { state: "matching", knowledge_source_state: "matching", roadmap_source_state: "matching", design_system_state: "matching" },
   } }; }
 function overviewRead(companyID: string, projectID: string) { const source = detail(companyID, projectID).overview; return { state: "available", company_id: companyID, project_id: projectID, revision: 1, content: { schema_version: "1", tagline: source.tagline, summary: source.summary, desktop_alt: source.desktop_alt, mobile_alt: source.mobile_alt, sections: source.sections }, media: Object.entries(source.media).map(([slot]) => ({ slot, digest: `sha256:${"a".repeat(64)}`, href: `/api/overview/media/${companyID}/${projectID}/1/${slot}` })) }; }
-function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+function landingRead(companyID: string, projectID: string) { return { state: "available", company_id: companyID, project_id: projectID, revision: "f".repeat(40), inventory_digest: `sha256:${"b".repeat(64)}`, entry_url: `/api/landing/file/${companyID}/${projectID}/3/${"f".repeat(40)}/${"b".repeat(64)}/files/design/landing/index.html` }; }
+function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown, landingResponse?: { state: "available" | "not_authored" | "invalid"; entry_url?: string; teach?: string; revision?: string; inventory_digest?: string }) { const fetcher = vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
+  if (url.pathname === "/api/landing") return { ok: true, json: async () => landingResponse || landingRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/knowledge") return { ok: true, json: async () => ({ project_id: url.searchParams.get("project_id"), active: false, state: "pending", documents: [] }) };
   if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
@@ -70,9 +73,11 @@ function mockFetch(documents: { path: string; url: string }[] = [], documentResp
   if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async (): Promise<string> => todoResponse };
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
-})); }
+}); vi.stubGlobal("fetch", fetcher); return fetcher; }
 function mockProjectDetail(saved: ReturnType<typeof detail>, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
+  if (url.pathname === "/api/landing") return { ok: true, json: async () => landingRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
   if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
@@ -85,6 +90,17 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("loads the directory through the Registry catalog route only", async () => {
+    const fetcher = mockFetch();
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /Belluga/ })).toBeInTheDocument();
+    const catalogCalls = fetcher.mock.calls.filter(([input]) => new URL(String(input), location.origin).pathname === "/api/catalog");
+    expect(catalogCalls).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => {
+      const path = new URL(String(input), location.origin).pathname;
+      return path === "/api/local-preview" || path.startsWith("/snapshot/");
+    })).toBe(false);
+  });
   it("renders Mongo Overview for an unbound registered Project without reading snapshots", async () => {
     const unbound = { id: "accountzz", name: "Accountzz", company_id: "belluga", source_bound: false };
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -243,30 +259,22 @@ describe("single root Project experience", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
   });
 
-  it("does not start another detail request on tab return or elapsed time", async () => {
+  it("loads Overview without a Project snapshot request or a refresh timer", async () => {
     const interval = vi.spyOn(window, "setInterval");
-    let resolveDetail!: (value: unknown) => void;
-    const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
-    const detailCalls = vi.fn();
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", url.searchParams.get("project_id")!) };
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
-      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
-      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("Overview requested a Project snapshot");
       return { ok: true, json: async () => ({ companies, projects }) };
     });
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
-    await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
     for (let index = 0; index < 10; index++) fireEvent(document, new Event("visibilitychange"));
-    expect(detailCalls).toHaveBeenCalledTimes(1);
-    resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
-    expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    fireEvent(document, new Event("visibilitychange"));
-    expect(detailCalls).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls.filter(([input]) => new URL(String(input), location.origin).pathname === "/api/catalog")).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/local-preview")).toBe(false);
     expect(interval.mock.calls.some(([, delay]) => delay === 30_000)).toBe(false);
     interval.mockRestore();
   });
@@ -283,26 +291,46 @@ describe("single root Project experience", () => {
     await waitFor(() => expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/prototypes?company_id=belluga&project_id=builder"))).toBe(true));
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/local-preview?company_id=belluga&project_id=builder"))).toBe(false);
   });
-  it("keeps the loaded Project detail through page, brand and invalid-link recovery navigation", async () => {
+  it("loads API-owned pages through navigation without requesting Project detail", async () => {
     const fetcher = vi.mocked(fetch);
-    const detailCalls = () => fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/local-preview?company_id=")).length;
+    const projectDetailCalls = () => fetcher.mock.calls.filter(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === "/api/local-preview" && url.searchParams.has("project_id");
+    }).length;
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
     expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&page=missing"); window.dispatchEvent(new PopStateEvent("popstate")); });
     fireEvent.click(screen.getByRole("link", { name: "Back to Overview" }));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype%3Ademo"); window.dispatchEvent(new PopStateEvent("popstate")); });
     fireEvent.click(screen.getByRole("link", { name: "Open Prototype" }));
     expect(await screen.findByRole("heading", { name: "Prototypes" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
+  });
+  it.each([
+    ["overview", "/api/overview"], ["roadmap", "/api/roadmap"], ["backlog", "/api/roadmap"],
+    ["release&epic_id=e-01&release_id=r-04", "/api/roadmap"], ["todo&todo_id=roadmap-runtime", "/api/roadmap"],
+    ["documents", "/api/knowledge"], ["design-system", "/api/design-system"], ["prototypes", "/api/prototypes"],
+  ])("opens %s from its owning API without Project detail", async (routeQuery, endpoint) => {
+    const fetcher = vi.mocked(fetch);
+    history.replaceState({}, "", `/?company_id=belluga&project_id=builder&page=${routeQuery}`);
+    render(<Projects />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === endpoint && url.searchParams.get("company_id") === "belluga" && url.searchParams.get("project_id") === "builder";
+    })).toBe(true));
+    expect(fetcher.mock.calls.some(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === "/api/local-preview" && url.searchParams.has("project_id");
+    })).toBe(false);
   });
   it("does not treat Foundation snapshot observations as current Overview state", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -334,6 +362,7 @@ describe("single root Project experience", () => {
     const calls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) {
         calls.push(url);
@@ -377,6 +406,7 @@ describe("single root Project experience", () => {
     mongoRoadmap.epics[0].releases[0].todos.push({ id: "mongo-late", title: "Delayed Mongo TODO", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Delayed objective", objective_state: "complete", next_step: "Review", next_step_state: "complete", ...verifiedStage("Planning") } as typeof mongoRoadmap.backlog.todos[number]);
     const fetcher = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
       if (url.pathname === "/api/overview") return Promise.resolve({ ok: true, json: async () => overviewRead("belluga", url.searchParams.get("project_id")!) });
       if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) return new Promise((resolve) => { resolveTODO = resolve; });
       if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => mongoRoadmap });
@@ -399,6 +429,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog");
     const fetchSpy = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
       if (url.pathname === "/api/design-system") return Promise.resolve({ ok: true, json: async () => designSystemRead("belluga", "builder") });
       if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => detail("belluga", url.searchParams.get("project_id") || "builder").roadmap });
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
@@ -602,6 +633,24 @@ describe("single root Project experience", () => {
     expect(location.pathname).toBe("/");
     expect(screen.getByRole("navigation", { name: "Project pages" })).toBeInTheDocument();
   });
+  it("loads portfolio cards in one Company request without fetching a Project snapshot per card", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/portfolios") return { ok: true, json: async () => ({ company_id: "belluga", projects: [
+        { company_id: "belluga", project_id: "builder", state: "available", summary: "Builder from Git", files: [] },
+        { company_id: "belluga", project_id: "boora", state: "not_authored", files: [] },
+      ] }) };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("portfolio card requested a Project snapshot");
+      return previousFetch(input);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<Projects />);
+    fireEvent.click(await screen.findByRole("button", { name: /Belluga/ }));
+    expect(await screen.findByText("Builder from Git")).toBeInTheDocument();
+    expect(fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/portfolios?company_id=belluga"))).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/local-preview?company_id="))).toBe(false);
+  });
   it("applies Project Design System roles to the whole Project page", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
@@ -649,7 +698,9 @@ describe("single root Project experience", () => {
     expect(narrative).toBeInTheDocument();
     expect(document.querySelector(".overview-status")).not.toBeInTheDocument();
     expect(screen.queryByText(/Saved snapshot:/)).not.toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: /Ver landing independente/ })).toHaveAttribute("target", "_blank");
+    const landingLink = await screen.findByRole("link", { name: /Ver landing independente/ });
+    expect(landingLink).toHaveAttribute("target", "_blank");
+    expect(landingLink).toHaveAttribute("href", `/api/landing/file/belluga/builder/3/${"f".repeat(40)}/${"b".repeat(64)}/files/design/landing/index.html`);
     expect(screen.queryByRole("region", { name: "Executive Landing artifact" })).not.toBeInTheDocument();
     expect(screen.queryByText("MVP")).not.toBeInTheDocument();
     const hero = document.querySelector(".project-hero");
@@ -659,6 +710,15 @@ describe("single root Project experience", () => {
     expect(screen.getByAltText("Mobile Project view")).toBeInTheDocument();
     expect(screen.getByText("CONCEITO · DADOS ILUSTRATIVOS")).toBeInTheDocument();
     expect(screen.getByAltText("Admitted Builder document view")).toHaveAttribute("src", "/api/overview/media/belluga/builder/1/proposal");
+  });
+  it("reports missing canonical Landing as not-authored without consulting snapshot or Markdown", async () => {
+    const fetcher = mockFetch([], undefined, todoMarkdown, { state: "not_authored", teach: "TEACH: Publish Landing v2 in the bound artifact Git repository." });
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText(/Publish Landing v2/)).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("link", { name: /Ver landing independente/ })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/snapshot/"))).toBe(false);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/landing")).toBe(true);
   });
   it("keeps Overview editorial separate from an empty Documents state", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -697,6 +757,7 @@ describe("single root Project experience", () => {
   it("renders stale Mongo Overview TEACH without Foundation review metadata", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => ({ ...overviewRead("belluga", "builder"), state: "stale", teach: "TEACH: Review the current source parity." }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap("builder") };
@@ -933,7 +994,7 @@ describe("single root Project experience", () => {
     mockProjectDetail(saved);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByText("Project Roadmap data is not available in this saved snapshot.")).toBeInTheDocument();
+    expect(await screen.findByText(/TEACH: Mongo Roadmap indisponível/)).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("navigation", { name: "Project pages" })).getByRole("button", { name: "Overview" }));
     expect(await screen.findByText("Product direction")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Ver landing independente/ })).toHaveAttribute("target", "_blank");
@@ -1084,6 +1145,7 @@ describe("single root Project experience", () => {
   it("does not apply the Foundation snapshot theme as the Design System page theme", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
@@ -1099,6 +1161,7 @@ describe("single root Project experience", () => {
   it("uses the selected Design System for Project theming when raw snapshot reads fail", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id") || "", url.searchParams.get("project_id") || "") };
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
@@ -1121,6 +1184,7 @@ describe("single root Project experience", () => {
   it("uses a valid inherited Company Design System without a Project selection", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") {
         const inherited = designSystemRead("belluga", "builder");
@@ -1143,6 +1207,7 @@ describe("single root Project experience", () => {
   it("refuses a Design System response from a different selected revision", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") {
         const selected = designSystemRead("belluga", "builder");

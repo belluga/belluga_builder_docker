@@ -65,8 +65,8 @@ type Project struct {
 	RegisteredAt          string   `json:"registered_at" bson:"registered_at"`
 	PreparationState      string   `json:"preparation_state" bson:"preparation_state"`
 	PreparationDiagnostic string   `json:"preparation_diagnostic,omitempty" bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint   string   `json:"snapshot_fingerprint,omitempty" bson:"snapshot_fingerprint,omitempty"`
 	KnowledgeGenerationID string   `json:"knowledge_generation_id,omitempty" bson:"knowledge_generation_id,omitempty"`
+	CanonicalWriteEpoch   int64    `json:"-" bson:"canonical_write_epoch,omitempty"`
 }
 
 type Catalog struct {
@@ -152,15 +152,6 @@ type DesignSystemState struct {
 	LastOperation    *DesignSystemMutationResult `json:"last_operation,omitempty"`
 }
 
-type SnapshotReference struct {
-	CompanyID           string `json:"company_id"`
-	BindingRevision     int64  `json:"binding_revision"`
-	BindingDigest       string `json:"binding_digest"`
-	ExpectedFingerprint string `json:"expected_fingerprint"`
-	Fingerprint         string `json:"fingerprint"`
-	PreparationState    string `json:"preparation_state"`
-}
-
 type LifecycleControl struct {
 	Revision int64           `json:"revision"`
 	Value    json.RawMessage `json:"value"`
@@ -184,7 +175,6 @@ type Service interface {
 	BindFirst(context.Context, string, string, FirstBindingRequest) (Project, error)
 	Preference(context.Context, string, string) (Preference, error)
 	Decline(context.Context, string, string, Binding) error
-	UpdateSnapshotReference(context.Context, string, string, SnapshotReference) (Project, error)
 	LifecycleControl(context.Context) (LifecycleControl, error)
 	UpdateLifecycleControl(context.Context, int64, json.RawMessage) (LifecycleControl, error)
 	Roadmap(context.Context, string, string) (json.RawMessage, error)

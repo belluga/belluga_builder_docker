@@ -8,6 +8,8 @@ for command_name in docker curl; do
 done
 docker compose version >/dev/null
 : "${DELPHI_BUILDER_STATE_ROOT:?set DELPHI_BUILDER_STATE_ROOT to the explicit shared local state root}"
+: "${BUILDER_SOURCE_SHA:?set BUILDER_SOURCE_SHA to the committed Builder source revision}"
+: "${PACED_SOURCE_SHA:?set PACED_SOURCE_SHA to the committed PACED source revision}"
 case "$DELPHI_BUILDER_STATE_ROOT" in /*) ;; *) printf '%s\n' 'state root must be absolute' >&2; exit 64 ;; esac
 [ "$DELPHI_BUILDER_STATE_ROOT" != / ] || { printf '%s\n' 'state root must not be /' >&2; exit 64; }
 [ -d "$DELPHI_BUILDER_STATE_ROOT" ] || { printf '%s\n' 'state root must already exist' >&2; exit 64; }
@@ -24,15 +26,13 @@ if [ -z "${DELPHI_GITHUB_READ_TOKEN:-}" ] && command -v gh >/dev/null 2>&1; then
 	DELPHI_GITHUB_READ_TOKEN=$(gh auth token 2>/dev/null) || DELPHI_GITHUB_READ_TOKEN=
 	export DELPHI_GITHUB_READ_TOKEN
 fi
-[ -n "${DELPHI_GITHUB_READ_TOKEN:-}" ] || { printf '%s\n' 'preview requires the host GitHub login for the private Foundation reader' >&2; exit 2; }
-docker compose -p builder-local-artifacts -f compose.builder.artifacts.yaml up --build --force-recreate -d project-reader artifact-preview
-served=''
+[ -n "${DELPHI_GITHUB_READ_TOKEN:-}" ] || { printf '%s\n' 'preview requires the host GitHub login for bound artifact Git readers' >&2; exit 2; }
+docker compose -p builder-local-artifacts -f compose.builder.artifacts.yaml up --build --force-recreate -d project-reader builder-registry artifact-preview
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-	if served=$(curl --silent --show-error --fail http://127.0.0.1:8089/api/local-preview 2>/dev/null); then break; fi
+	if curl --silent --show-error --fail http://127.0.0.1:8089/api/build >/dev/null 2>&1 && curl --silent --show-error --fail http://127.0.0.1:8089/api/catalog >/dev/null 2>&1; then break; fi
 	attempt=$((attempt + 1))
 	sleep 1
 done
-[ -n "$served" ] || { printf '%s\n' 'local Builder consumer did not become ready' >&2; exit 70; }
-printf '%s\n' "$served"
+[ "$attempt" -lt 30 ] || { printf '%s\n' 'local Builder API did not become ready' >&2; exit 70; }
 printf 'Registered Project viewer: http://127.0.0.1:8089/\nRead-only state root: %s\n' "$DELPHI_BUILDER_STATE_ROOT"

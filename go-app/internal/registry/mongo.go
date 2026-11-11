@@ -38,21 +38,29 @@ const (
 var mongoDatabaseName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
 type MongoStore struct {
-	client                    *mongo.Client
-	control                   *mongo.Database
-	beforeProjectWrite        func() error
-	beforeSnapshotWrite       func() error
-	tenantPrefix              string
-	proofReaderURL            string
-	proofReaderToken          string
-	proofHTTPClient           *http.Client
-	localMatrix               *localProofMatrix
-	designSystemVerifier      designSystemRemoteVerifier
-	prototypeGit              prototypeGitReader
-	prototypeFileCache        *prototypeFileCache
-	prototypeHot              *prototypeHotCache
-	prototypeReady            sync.Map
-	designSystemSourceMapRoot string
+	client                           *mongo.Client
+	control                          *mongo.Database
+	beforeProjectWrite               func() error
+	tenantPrefix                     string
+	proofReaderURL                   string
+	proofReaderToken                 string
+	proofHTTPClient                  *http.Client
+	localMatrix                      *localProofMatrix
+	designSystemVerifier             designSystemRemoteVerifier
+	prototypeGit                     prototypeGitReader
+	prototypeFileCache               *prototypeFileCache
+	prototypeHot                     *prototypeHotCache
+	prototypeReady                   sync.Map
+	landingMu                        sync.Mutex
+	landingCatalogs                  map[string]LandingCatalogResponse
+	landingOrder                     []string
+	portfolioMu                      sync.Mutex
+	portfolioFiles                   map[string]map[string]portfolioCachedFile
+	landingBindingReader             func(context.Context, string, string) (RepositoryBinding, error)
+	landingManifestReader            func(context.Context, string, string) (CanonicalManifest, error)
+	prototypeIdentityReader          func(context.Context, string, string) (Project, error)
+	prototypeCanonicalManifestReader func(context.Context, string, string) (CanonicalManifest, error)
+	designSystemSourceMapRoot        string
 }
 
 func (m *MongoStore) ConfigureDesignSystemSourceMapRoot(root string) error {
@@ -78,7 +86,7 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 	return nil
 }
 
-const maxSnapshotReferenceBytes = 128 << 10
+const maxProjectDocumentBytes = 128 << 10
 
 type projectDocument struct {
 	ObjectID                    bson.ObjectID               `bson:"_id,omitempty"`
@@ -105,6 +113,7 @@ type projectDocument struct {
 	PreparationDiagnostic       string                      `bson:"preparation_diagnostic,omitempty"`
 	SnapshotFingerprint         string                      `bson:"snapshot_fingerprint,omitempty"`
 	KnowledgeGenerationID       string                      `bson:"knowledge_generation_id,omitempty"`
+	CanonicalWriteEpoch         int64                       `bson:"canonical_write_epoch,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -144,15 +153,16 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 		ObjectID: objectID, ID: project.ID, Name: project.Name, CompanyID: project.CompanyID,
 		RoadmapRevision: project.RoadmapRevision, BindingRevision: project.BindingRevision,
 		RegisteredAt: time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
-		PreparationDiagnostic: project.PreparationDiagnostic, SnapshotFingerprint: project.SnapshotFingerprint,
+		PreparationDiagnostic: project.PreparationDiagnostic,
 		KnowledgeGenerationID: project.KnowledgeGenerationID,
+		CanonicalWriteEpoch:   project.CanonicalWriteEpoch,
 	}
 	if project.Binding != nil && !validBinding(*project.Binding) {
 		return projectDocument{}, ErrInvalid
 	}
 	document.Binding = project.Binding
 	encoded, err := bson.Marshal(document)
-	if err != nil || len(encoded) > maxSnapshotReferenceBytes {
+	if err != nil || len(encoded) > maxProjectDocumentBytes {
 		return projectDocument{}, ErrInvalid
 	}
 	return document, nil
@@ -166,7 +176,8 @@ func (p projectDocument) toAPI() Project {
 		BindingRevision:  p.BindingRevision,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
-		SnapshotFingerprint: p.SnapshotFingerprint, KnowledgeGenerationID: p.KnowledgeGenerationID,
+		KnowledgeGenerationID: p.KnowledgeGenerationID,
+		CanonicalWriteEpoch:   p.CanonicalWriteEpoch,
 	}
 }
 
@@ -451,7 +462,7 @@ func (m *MongoStore) BindFirst(ctx context.Context, companyID, id string, input 
 		{Key: "binding", Value: bson.M{"$eq": nil}},
 		{Key: "binding_revision", Value: bson.M{"$in": []any{nil, int64(0)}}}}
 	update := bson.M{"$set": bson.M{"binding": input.Binding, "binding_revision": int64(1),
-		"binding_operation": input.OperationID, "preparation_state": "not_ready", "snapshot_fingerprint": ""}}
+		"binding_operation": input.OperationID, "preparation_state": "not_ready"}}
 	result, err := collection.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return Project{}, normalizeMongoError(err)
@@ -568,7 +579,7 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		filter = append(filter, bson.E{Key: "binding", Value: *stored.Binding})
 	}
 	filter = append(filter, bson.E{Key: "pending_design_system_mutation", Value: bson.M{"$exists": false}})
-	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": "", "snapshot_fingerprint": ""}
+	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": ""}
 	if input.Action == "unbind" {
 		set["design_system_state"] = "unbound"
 	} else {
@@ -699,48 +710,6 @@ func (m *MongoStore) Preference(ctx context.Context, companyID, id string) (Pref
 		return Preference{}, ErrUnavailable
 	}
 	return stored.toAPI(), nil
-}
-
-func (m *MongoStore) UpdateSnapshotReference(ctx context.Context, companyID, id string, input SnapshotReference) (Project, error) {
-	if !validID(id) || !validID(companyID) || companyID != input.CompanyID || !validSnapshotFingerprint(input.Fingerprint) || !validFingerprint(input.BindingDigest) || !validSnapshotState(input.PreparationState) {
-		return Project{}, ErrInvalid
-	}
-	project, err := m.Project(ctx, companyID, id)
-	if err != nil {
-		return Project{}, err
-	}
-	if project.CompanyID != input.CompanyID || project.Binding == nil || project.BindingRevision != input.BindingRevision || bindingDigest(*project.Binding) != input.BindingDigest || project.SnapshotFingerprint != input.ExpectedFingerprint {
-		return Project{}, ErrConflict
-	}
-	company, err := m.company(ctx, project.CompanyID)
-	if err != nil {
-		return Project{}, err
-	}
-	filter := bson.D{{Key: "id", Value: id}, {Key: "company_id", Value: input.CompanyID}, {Key: "binding", Value: *project.Binding}}
-	if input.BindingRevision == 0 {
-		filter = append(filter, bson.E{Key: "binding_revision", Value: bson.M{"$in": []any{nil, int64(0)}}})
-	} else {
-		filter = append(filter, bson.E{Key: "binding_revision", Value: input.BindingRevision})
-	}
-	if input.ExpectedFingerprint == "" {
-		filter = append(filter, bson.E{Key: "snapshot_fingerprint", Value: bson.M{"$in": []any{"", nil}}})
-	} else {
-		filter = append(filter, bson.E{Key: "snapshot_fingerprint", Value: input.ExpectedFingerprint})
-	}
-	update := bson.M{"$set": bson.M{"snapshot_fingerprint": input.Fingerprint, "preparation_state": input.PreparationState}}
-	if m.beforeSnapshotWrite != nil {
-		if err := m.beforeSnapshotWrite(); err != nil {
-			return Project{}, err
-		}
-	}
-	result, err := m.client.Database(company.DatabaseName).Collection(projectsCollection).UpdateOne(ctx, filter, update)
-	if err != nil {
-		return Project{}, normalizeMongoError(err)
-	}
-	if result.MatchedCount != 1 {
-		return Project{}, ErrConflict
-	}
-	return m.readProject(ctx, company, id)
 }
 
 func (m *MongoStore) LifecycleControl(ctx context.Context) (LifecycleControl, error) {
