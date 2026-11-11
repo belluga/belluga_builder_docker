@@ -946,15 +946,15 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 		{preferencesCollection, bson.D{{Key: "project_id", Value: 1}}, "registration_preferences_project_unique", bson.M{"project_id": bson.M{"$type": "string"}}},
 		{epicsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "id", Value: 1}}, "roadmap_epic_identity_unique", bson.M{"id": bson.M{"$type": "string"}}},
 		{releasesCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "id", Value: 1}}, "roadmap_release_identity_unique", bson.M{"id": bson.M{"$type": "string"}}},
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "revision", Value: 1}}, "overview_project_revision_unique", nil},
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}}, "overview_project_operation_unique", nil},
-		{overviewMediaCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "slot", Value: 1}}, "overview_project_operation_slot_unique", nil},
 	}
 	for _, item := range indexes {
 		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true).SetPartialFilterExpression(item.partial)}
 		if _, err := m.client.Database(database).Collection(item.collection).Indexes().CreateOne(ctx, model); err != nil {
 			return err
 		}
+	}
+	if err := m.ensureOverviewIndexes(ctx, m.client.Database(database)); err != nil {
+		return err
 	}
 	if err := m.ensureCanonicalCollections(ctx, database); err != nil {
 		return err
