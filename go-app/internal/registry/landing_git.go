@@ -386,7 +386,7 @@ func landingOriginFromManifest(manifest CanonicalManifest) (LandingKnowledgeOrig
 }
 
 func sameLandingOrigin(a, b LandingKnowledgeOrigin) bool {
-	if a.ProjectID == "" || a.ProjectID != b.ProjectID || a.GenerationID == "" || a.GenerationID != b.GenerationID || len(a.Documents) == 0 || len(b.Documents) == 0 {
+	if a.ProjectID == "" || a.ProjectID != b.ProjectID || a.GenerationID == "" || a.GenerationID != b.GenerationID || len(a.Documents) == 0 || len(a.Documents) != len(b.Documents) {
 		return false
 	}
 	available := make(map[string]CanonicalManifestEntry, len(b.Documents))

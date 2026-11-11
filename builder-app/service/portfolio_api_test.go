@@ -18,7 +18,10 @@ func TestPortfolioAPIReadsOneCompanyCatalogAndPinnedCover(t *testing.T) {
 		case "/internal/v1/companies/company/portfolios":
 			catalogCalls++
 			_ = json.NewEncoder(w).Encode(map[string]any{"company_id": "company", "projects": []any{
-				map[string]any{"company_id": "company", "project_id": "project", "state": "available", "binding_revision": 3, "revision": revision, "inventory_digest": digest, "schema_version": "1", "summary": "Portfolio summary", "files": []any{map[string]any{"path": "project_portfolio/cover.png", "content_digest": coverDigest, "content_type": "image/png", "url": "/internal/hidden"}}},
+				map[string]any{"company_id": "company", "project_id": "project", "state": "available", "binding_revision": 3, "revision": revision, "inventory_digest": digest, "schema_version": "1", "summary": "Portfolio summary", "files": []any{
+					map[string]any{"path": "project_portfolio.json", "content_digest": coverDigest, "content_type": "application/json", "url": "/internal/hidden"},
+					map[string]any{"path": "project_portfolio/cover.png", "content_digest": coverDigest, "content_type": "image/png", "url": "/internal/hidden"},
+				}},
 				map[string]any{"company_id": "company", "project_id": "other", "state": "not_authored"},
 			}})
 		case "/internal/v1/companies/company/projects/project/portfolio/3/" + revision + "/" + strings.TrimPrefix(digest, "sha256:") + "/files/project_portfolio/cover.png":
@@ -55,5 +58,40 @@ func TestPortfolioAPIReadsOneCompanyCatalogAndPinnedCover(t *testing.T) {
 		if response := request(http.MethodGet, target); response.Code < http.StatusBadRequest {
 			t.Fatalf("invalid or foreign Portfolio URL succeeded: %s -> %d %s", target, response.Code, response.Body.String())
 		}
+	}
+}
+
+func TestPortfolioAPIAcceptsCoverOnlyButRejectsMalformedSummaryEntry(t *testing.T) {
+	const revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const inventory = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	const coverDigest = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	var catalog any = map[string]any{"company_id": "company", "projects": []any{
+		map[string]any{"company_id": "company", "project_id": "project", "state": "available", "binding_revision": 3, "revision": revision, "inventory_digest": inventory, "files": []any{
+			map[string]any{"path": "project_portfolio/cover.png", "content_digest": coverDigest, "content_type": "image/png"},
+		}},
+	}}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(catalog)
+	}))
+	defer upstream.Close()
+	consumer := prototypeTestConsumer(t, upstream)
+	request := func() *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		consumer.portfolioAPIHandler(response, httptest.NewRequest(http.MethodGet, "/api/portfolios?company_id=company", nil))
+		return response
+	}
+	if response := request(); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "/api/portfolios/file/company/project/3/") {
+		t.Fatalf("cover-only portfolio without summary schema must be admitted: status=%d body=%s", response.Code, response.Body.String())
+	}
+	// A non-cover summary entry still requires its own v1 metadata; accepting the
+	// cover must not suppress malformed entries in the same catalog item.
+	catalog = map[string]any{"company_id": "company", "projects": []any{
+		map[string]any{"company_id": "company", "project_id": "project", "state": "available", "binding_revision": 3, "revision": revision, "inventory_digest": inventory, "files": []any{
+			map[string]any{"path": "project_portfolio.json", "content_digest": coverDigest, "content_type": "application/json"},
+			map[string]any{"path": "project_portfolio/cover.png", "content_digest": coverDigest, "content_type": "image/png"},
+		}},
+	}}
+	if response := request(); response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "portfolio_response_invalid") {
+		t.Fatalf("malformed summary entry must invalidate catalog: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

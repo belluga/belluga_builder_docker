@@ -87,17 +87,25 @@ func (p *registeredPreview) portfolioAPIHandler(w http.ResponseWriter, r *http.R
 			}
 			continue
 		}
-		if item.BindingRevision < 0 || !designSystemSHA.MatchString(item.Revision) || !validDigest(item.InventoryDigest) || item.SchemaVersion != "1" || len(item.Files) == 0 || len(item.Files) > 2 {
+		if item.BindingRevision < 0 || !designSystemSHA.MatchString(item.Revision) || !validDigest(item.InventoryDigest) || len(item.Files) == 0 || len(item.Files) > 2 {
 			landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: A seleção do portfólio não contém SHA e inventário válidos.")
 			return
 		}
+		hasSummary := false
 		for j := range item.Files {
 			file := &item.Files[j]
 			if (file.Path != "project_portfolio.json" && file.Path != "project_portfolio/cover.png") || ac.ValidateRelativePath(file.Path) != nil || !validDigest(file.Digest) || file.ContentType != portfolioProxyMIMEType(file.Path) {
 				landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: O inventário do portfólio contém caminho, MIME ou digest inválido.")
 				return
 			}
+			if file.Path == "project_portfolio.json" {
+				hasSummary = true
+			}
 			file.URL = portfolioProxyFileURL(companyID, item.ProjectID, item.BindingRevision, item.Revision, strings.TrimPrefix(item.InventoryDigest, "sha256:"), file.Path)
+		}
+		if (hasSummary && (item.SchemaVersion != "1" || strings.TrimSpace(item.Summary) == "")) || (!hasSummary && (item.SchemaVersion != "" || item.Summary != "")) {
+			landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: A versão e o resumo do portfólio devem corresponder ao arquivo de resumo publicado.")
+			return
 		}
 	}
 	writeJSON(w, http.StatusOK, catalog)

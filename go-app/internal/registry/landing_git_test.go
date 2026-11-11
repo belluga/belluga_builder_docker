@@ -25,7 +25,6 @@ func TestLandingManifestV2PinsSHAInventoryIdentityAndAPIOrigin(t *testing.T) {
 	}
 	origin := landingOriginFixture()
 	activeOrigin := origin
-	activeOrigin.Documents = append(append([]CanonicalManifestEntry(nil), origin.Documents...), CanonicalManifestEntry{Family: FamilyRoadmap, ID: "roadmap", Revision: 9, ContentDigest: "sha256:" + strings.Repeat("d", 64)})
 	catalog, err := evaluateLandingSource(source, "company-a", "project-a", "owner/repo", binding, revision, activeOrigin)
 	if err != nil {
 		t.Fatalf("valid v2 manifest rejected: %v", err)
@@ -33,7 +32,7 @@ func TestLandingManifestV2PinsSHAInventoryIdentityAndAPIOrigin(t *testing.T) {
 	if catalog.Revision != revision || catalog.BindingRevision != binding.Revision || catalog.InventoryDigest == "" || catalog.ManifestVersion != "2" || catalog.EntryPoint != "design/landing/index.html" {
 		t.Fatalf("Landing was not pinned to exact Git and binding identity: %+v", catalog)
 	}
-	if len(catalog.Files) != 2 || catalog.KnowledgeOrigin.GenerationID != origin.GenerationID || len(catalog.KnowledgeOrigin.Documents) != 1 || catalog.KnowledgeOrigin.Documents[0] != origin.Documents[0] {
+	if len(catalog.Files) != 2 || catalog.KnowledgeOrigin.GenerationID != origin.GenerationID || len(catalog.KnowledgeOrigin.Documents) != len(origin.Documents) || catalog.KnowledgeOrigin.Documents[0] != origin.Documents[0] || catalog.KnowledgeOrigin.Documents[1] != origin.Documents[1] {
 		t.Fatalf("manifest inventory/API origin mismatch: %+v", catalog)
 	}
 	staleOrigin := activeOrigin
@@ -41,6 +40,18 @@ func TestLandingManifestV2PinsSHAInventoryIdentityAndAPIOrigin(t *testing.T) {
 	staleOrigin.Documents[0].ContentDigest = "sha256:" + strings.Repeat("e", 64)
 	if _, err := evaluateLandingSource(source, "company-a", "project-a", "owner/repo", binding, revision, staleOrigin); err == nil {
 		t.Fatal("manifest referencing a stale API document digest was admitted")
+	}
+}
+
+func TestSameLandingOriginRequiresCompleteCanonicalDocumentSet(t *testing.T) {
+	complete := landingOriginFixture()
+	subset := complete
+	subset.Documents = complete.Documents[:1]
+	if sameLandingOrigin(subset, complete) || sameLandingOrigin(complete, subset) {
+		t.Fatal("Landing origin with an omitted canonical document was treated as complete")
+	}
+	if !sameLandingOrigin(complete, complete) {
+		t.Fatal("identical complete canonical origins must match")
 	}
 }
 
@@ -356,13 +367,15 @@ func appendLandingFixtureFile(t *testing.T, root, path string, content []byte) {
 }
 
 func landingOriginFixture() LandingKnowledgeOrigin {
-	return LandingKnowledgeOrigin{ProjectID: "project-a", GenerationID: "generation-1", Documents: []CanonicalManifestEntry{{Family: FamilyMandate, ID: "mandate", Revision: 4, ContentDigest: "sha256:" + strings.Repeat("c", 64)}}}
+	return LandingKnowledgeOrigin{ProjectID: "project-a", GenerationID: "generation-1", Documents: []CanonicalManifestEntry{
+		{Family: FamilyMandate, ID: "mandate", Revision: 4, ContentDigest: "sha256:" + strings.Repeat("c", 64)},
+		{Family: FamilyRoadmap, ID: "roadmap", Revision: 9, ContentDigest: "sha256:" + strings.Repeat("d", 64)},
+	}}
 }
 
 func landingAPIFixture() CanonicalManifest {
 	origin := landingOriginFixture()
 	documents := append([]CanonicalManifestEntry(nil), origin.Documents...)
-	documents = append(documents, CanonicalManifestEntry{Family: FamilyRoadmap, ID: "roadmap", Revision: 9, ContentDigest: "sha256:" + strings.Repeat("d", 64)})
 	return CanonicalManifest{ProjectID: origin.ProjectID, GenerationID: origin.GenerationID, Active: true, State: "active", Documents: documents}
 }
 
