@@ -68,8 +68,27 @@ func validateKnowledgeClaimCapacity(content TODOContent) error {
 	for _, item := range content.ValidationScenarios {
 		scenarios = append(scenarios, item.ID)
 	}
+	shortest := func(values []string) []string {
+		if len(values) == 0 {
+			return nil
+		}
+		best := values[0]
+		bestJSON, _ := json.Marshal(best)
+		for _, value := range values[1:] {
+			encoded, _ := json.Marshal(value)
+			if len(encoded) < len(bestJSON) {
+				best, bestJSON = value, encoded
+			}
+		}
+		return []string{best}
+	}
+	minimalCriteria, minimalScenarios := shortest(criteria), shortest(scenarios)
 	for i, target := range content.Delivery.Targets {
-		claim.Items[i] = TODOKnowledgeDeliveryItem{Family: target.Family, RecordID: target.RecordID, GenerationID: target.GenerationID, ToRevision: 9223372036854775807, ToDigest: "sha256:" + sixtyFourHex(), CriterionIDs: criteria, ScenarioIDs: scenarios}
+		criterionIDs, scenarioIDs := minimalCriteria, minimalScenarios
+		if i == 0 {
+			criterionIDs, scenarioIDs = criteria, scenarios
+		}
+		claim.Items[i] = TODOKnowledgeDeliveryItem{Family: target.Family, RecordID: target.RecordID, GenerationID: target.GenerationID, ToRevision: 9223372036854775807, ToDigest: "sha256:" + sixtyFourHex(), CriterionIDs: criterionIDs, ScenarioIDs: scenarioIDs}
 	}
 	revision := int64(9223372036854775807)
 	encoded, err := json.Marshal(TODOActionRequest{ProjectID: strings.Repeat("x", 64), TODOID: strings.Repeat("x", 64), ExpectedRevision: &revision, OperationID: strings.Repeat("x", 128), RequestedStage: "Local-Implemented", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, KnowledgeDelivery: &claim})

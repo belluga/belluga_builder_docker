@@ -59,6 +59,7 @@ type LocalProofResult struct {
 	Position               *int                         `json:"position,omitempty"`
 	RunID                  string                       `json:"run_id"`
 	MatrixDigest           string                       `json:"matrix_digest"`
+	KnowledgeInputDigests  map[string]string            `json:"knowledge_input_digests,omitempty"`
 	StartedAt              string                       `json:"started_at"`
 	FinishedAt             string                       `json:"finished_at"`
 	Before                 localProofSnapshot           `json:"before"`
@@ -134,6 +135,16 @@ func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult)
 	for i, id := range required {
 		if result.Commands[i].ID != id || result.Commands[i].ExitCode != 0 {
 			return TODOProofReference{}, todoTeach("local_proof.commands", "pass every fixed command for this TODO in matrix order", ErrConflict)
+		}
+	}
+	knowledgeRequired := false
+	for _, id := range required {
+		knowledgeRequired = knowledgeRequired || id == "G-KNOWLEDGE-IT"
+	}
+	if knowledgeRequired {
+		inputs := result.KnowledgeInputDigests
+		if len(inputs) != 3 || inputs["matrix"] != result.MatrixDigest || !validSourceDigest(inputs["runner"]) || !validSourceDigest(inputs["script"]) {
+			return TODOProofReference{}, todoTeach("local_proof.knowledge_input_digests", "bind exact committed runner, matrix and Knowledge integration script byte digests to this successful local result", ErrConflict)
 		}
 	}
 	if result.Before != result.After || !validSourceDigest(result.Before.BuilderInputsDigest) || !validSourceDigest(result.Before.PACEDInputsDigest) || len(result.Before.BuilderHead) != 40 || len(result.Before.PACEDHead) != 40 {

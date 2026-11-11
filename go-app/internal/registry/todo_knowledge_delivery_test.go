@@ -42,6 +42,46 @@ func TestKnowledgeOnlyContractIsExplicitAndBoundedByExistingTransitionSize(t *te
 	}
 }
 
+func TestKnowledgeClaimCapacityAcceptsFeasibleDistributedCoverage(t *testing.T) {
+	content := TODOContent{Delivery: &TODODeliveryContract{Kind: "knowledge-only"}}
+	for i := 0; i < 200; i++ {
+		content.Delivery.Targets = append(content.Delivery.Targets, TODOKnowledgeTarget{
+			Family: FamilyModule, RecordID: fmt.Sprintf("module-%03d", i), GenerationID: "g1", ChangeKind: "create",
+		})
+	}
+	for i := 0; i < 40; i++ {
+		content.Criteria = append(content.Criteria, TODOContentItem{ID: fmt.Sprintf("criterion-%02d-%s", i, strings.Repeat("c", 40)), Text: "Covered by a delivered revision."})
+		content.ValidationScenarios = append(content.ValidationScenarios, TODOValidationScenario{ID: fmt.Sprintf("scenario-%02d-%s", i, strings.Repeat("s", 40)), Method: "Verify the exact revision.", Expected: "The revision is verified."})
+	}
+	if err := validateKnowledgeClaimCapacity(content); err != nil {
+		t.Fatalf("a feasible distributed claim was rejected by preflight: %v", err)
+	}
+	large := TODOContent{Delivery: &TODODeliveryContract{Kind: "knowledge-only"}}
+	for i := 0; i < 64; i++ {
+		criterionID := fmt.Sprintf("criterion-%02d-%s", i, strings.Repeat("c", 112))
+		scenarioID := fmt.Sprintf("scenario-%02d-%s", i, strings.Repeat("s", 113))
+		large.Criteria = append(large.Criteria, TODOContentItem{ID: criterionID, Text: "Covered by delivery."})
+		large.ValidationScenarios = append(large.ValidationScenarios, TODOValidationScenario{ID: scenarioID, CriterionIDs: []string{criterionID}, Method: "Check revision.", Expected: "Verified."})
+	}
+	found := false
+	for i := 0; i < 500; i++ {
+		large.Delivery.Targets = append(large.Delivery.Targets, TODOKnowledgeTarget{Family: FamilyModule, RecordID: fmt.Sprintf("module-%03d", i), GenerationID: "g1", ChangeKind: "create"})
+		if err := validateTODODeliveryContract(large.Delivery); err != nil {
+			break
+		}
+		if err := validateKnowledgeClaimCapacity(large); err != nil {
+			if !strings.Contains(err.Error(), "128 KiB") {
+				t.Fatalf("wrong capacity rejection: %v", err)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("no valid target set exposed a required-coverage overflow beyond the target-only bound")
+	}
+}
+
 func TestKnowledgeSetDigestUsesOrderedExactIdentities(t *testing.T) {
 	base := TODOKnowledgeVerifiedItem{TODOKnowledgeTarget: TODOKnowledgeTarget{Family: FamilyModule, RecordID: "accounts", GenerationID: "g1", BaselineRevision: 1, BaselineDigest: "sha256:" + strings.Repeat("a", 64), ChangeKind: "edit"}, ToRevision: 2, ToDigest: "sha256:" + strings.Repeat("b", 64), EventAt: time.Unix(123, 0).UTC(), CriterionIDs: []string{"c-1"}, ScenarioIDs: []string{"v-1"}}
 	first := knowledgeClaimDigest([]TODOKnowledgeVerifiedItem{base})
@@ -319,6 +359,40 @@ func TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation(t *testing.T) {
 		t.Fatalf("Local history proof mismatch: %+v %v", localAsOf, err)
 	}
 	final := &TODOKnowledgeFinalAcceptance{ContentDigest: current.ContentDigest, SetDigest: local.TODO.KnowledgeDeliveryProof.SetDigest, OwnerReference: "owner/final-acceptance", Reason: "Documentation accepted"}
+	for name, acceptance := range map[string]*TODOKnowledgeFinalAcceptance{
+		"missing":             nil,
+		"stale content":       {ContentDigest: "sha256:" + strings.Repeat("f", 64), SetDigest: final.SetDigest, OwnerReference: final.OwnerReference, Reason: final.Reason},
+		"wrong delivered set": {ContentDigest: final.ContentDigest, SetDigest: "sha256:" + strings.Repeat("f", 64), OwnerReference: final.OwnerReference, Reason: final.Reason},
+	} {
+		t.Run("completed rejects "+name+" acceptance", func(t *testing.T) {
+			request := TODOActionRequest{ProjectID: "builder", TODOID: todo.ID, ExpectedRevision: &current.TODORevision, OperationID: "knowledge-reject-" + strings.ReplaceAll(name, " ", "-"), RequestedStage: "Completed", KnowledgeFinalAcceptance: acceptance}
+			if _, err := store.TransitionTODO(ctx, "company-knowledge", request); err == nil {
+				t.Fatal("Completed accepted missing or mismatched Knowledge owner acceptance")
+			}
+			unchanged, err := store.ReadTODO(ctx, "company-knowledge", "builder", todo.ID, nil)
+			if err != nil || unchanged.TODORevision != current.TODORevision || unchanged.TODO.Stage != "Local-Implemented" {
+				t.Fatalf("rejected Completed attempt changed TODO state: %+v %v", unchanged, err)
+			}
+		})
+	}
+	for name, mutate := range map[string]func(*TODOActionRequest){
+		"code-run substitution": func(request *TODOActionRequest) { request.LocalProof = &LocalProofResult{} },
+		"deployment substitution": func(request *TODOActionRequest) {
+			request.ProofReferences = []TODOProofReference{{Kind: "release-publication", Source: "github", Reference: "deployment/123", SourceDigest: current.ContentDigest}}
+		},
+	} {
+		t.Run("completed rejects "+name, func(t *testing.T) {
+			request := TODOActionRequest{ProjectID: "builder", TODOID: todo.ID, ExpectedRevision: &current.TODORevision, OperationID: "knowledge-reject-" + strings.ReplaceAll(name, " ", "-"), RequestedStage: "Completed", KnowledgeFinalAcceptance: final}
+			mutate(&request)
+			if _, err := store.TransitionTODO(ctx, "company-knowledge", request); err == nil {
+				t.Fatal("Completed accepted non-Knowledge proof instead of owner acceptance")
+			}
+			unchanged, err := store.ReadTODO(ctx, "company-knowledge", "builder", todo.ID, nil)
+			if err != nil || unchanged.TODORevision != current.TODORevision || unchanged.TODO.Stage != "Local-Implemented" {
+				t.Fatalf("rejected substitution changed TODO state: %+v %v", unchanged, err)
+			}
+		})
+	}
 	completed := advance("knowledge-completed", "Completed", nil, nil, final)
 	if completed.TODO.VerifiedTransitionRef == nil || completed.TODO.VerifiedTransitionRef.Kind != "knowledge-final-acceptance" {
 		t.Fatalf("Completed missing distinct documentary proof: %+v", completed.TODO)

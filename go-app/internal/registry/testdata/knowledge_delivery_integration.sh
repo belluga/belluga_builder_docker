@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
-if [[ ! -f "$repo_root/go-app/go.mod" ]]; then
-  echo 'Knowledge integration runner must resolve the Builder go-app checkout' >&2
+repo_root="${BUILDER_PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
+if [[ ! -f "$repo_root/go-app/go.mod" || ! -f "$repo_root/builder-app/service/go.mod" || ! -f "$repo_root/delphi-ai/local-api/go.mod" ]]; then
+  echo 'Knowledge integration runner must resolve the Builder and PACED Go modules' >&2
   exit 2
 fi
 
@@ -36,6 +36,9 @@ docker exec "$mongo_container" mongosh --quiet --eval 'rs.initiate({_id:"rs0",me
 docker run --rm --network "$network" \
   --env REGISTRY_TEST_MONGODB_URI='mongodb://mongo:27017/?replicaSet=rs0' \
   --env REGISTRY_REQUIRE_MONGO_INTEGRATION=1 \
-  --volume "$repo_root/go-app:/src:ro" --workdir /src \
+  --volume "$repo_root/go-app:/src/go-app:ro" \
+  --volume "$repo_root/builder-app/service:/src/builder-app/service:ro" \
+  --volume "$(realpath "$repo_root/delphi-ai/local-api"):/src/delphi-ai/local-api:ro" \
+  --workdir /src/go-app \
   golang:1.23-bookworm \
   go test ./internal/registry -run '^TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation$' -count=1

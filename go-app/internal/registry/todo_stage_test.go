@@ -561,6 +561,50 @@ func TestSelectedLocalProofRequiresExactMatrixRun(t *testing.T) {
 	}
 }
 
+func TestKnowledgeLocalProofRequiresCommittedInputDigests(t *testing.T) {
+	store := &MongoStore{}
+	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
+		t.Fatal(err)
+	}
+	id := "builder-knowledge-only-todo-delivery"
+	digest := "sha256:" + strings.Repeat("a", 64)
+	now := time.Now().UTC()
+	result := &LocalProofResult{
+		SchemaVersion: "builder-local-proof-result-v2", TODOID: id,
+		RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest,
+		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano),
+		Before:                 localProofSnapshot{BuilderHead: strings.Repeat("a", 40), PACEDHead: strings.Repeat("b", 40), BuilderInputsDigest: digest, PACEDInputsDigest: digest},
+		OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}},
+		OutsideUntrackedAfter:  map[string]map[string]string{"builder": {}, "paced": {}},
+	}
+	result.After = result.Before
+	for _, command := range store.localMatrix.RequiredBy[id] {
+		result.Commands = append(result.Commands, localProofCommand{ID: command})
+	}
+	seal := func() {
+		data, _ := json.Marshal(result)
+		var value map[string]any
+		_ = json.Unmarshal(data, &value)
+		delete(value, "result_digest")
+		canonical, _ := json.Marshal(value)
+		result.ResultDigest = sourceHash(canonical)
+	}
+	seal()
+	if _, err := store.validateLocalProof(id, result); err == nil || !strings.Contains(err.Error(), "knowledge_input_digests") {
+		t.Fatalf("missing committed inputs were accepted: %v", err)
+	}
+	result.KnowledgeInputDigests = map[string]string{"runner": digest, "script": digest, "matrix": store.localMatrix.digest}
+	seal()
+	if _, err := store.validateLocalProof(id, result); err != nil {
+		t.Fatalf("bound committed inputs were rejected: %v", err)
+	}
+	result.KnowledgeInputDigests["matrix"] = digest
+	seal()
+	if _, err := store.validateLocalProof(id, result); err == nil || !strings.Contains(err.Error(), "knowledge_input_digests") {
+		t.Fatalf("wrong matrix digest was accepted: %v", err)
+	}
+}
+
 func TestLocalProofSubjectRejectsStaleOrForeignPreflight(t *testing.T) {
 	position, revision := 2, int64(7)
 	digest := sourceHash([]byte("current content"))
