@@ -192,6 +192,7 @@ type TODORecord struct {
 	Source                   TODOSource                    `json:"source" bson:"source"`
 	StageVerification        string                        `json:"stage_verification" bson:"stage_verification"`
 	VerifiedTransitionRef    *TODOProofReference           `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
+	KnowledgeDeliveryProof   *TODOKnowledgeDeliveryProof   `json:"knowledge_delivery_proof,omitempty" bson:"knowledge_delivery_proof,omitempty"`
 	LastOperation            *TODOOperationState           `json:"-" bson:"last_operation,omitempty"`
 	Revision                 int64                         `json:"revision" bson:"revision"`
 	CreatedAt                bson.DateTime                 `json:"-" bson:"created_at"`
@@ -380,6 +381,10 @@ func TODOCollectionValidator() bson.D {
 	return todoCollectionValidator(true, true, true)
 }
 
+func TODOCollectionValidatorBeforeKnowledgeDelivery() bson.D {
+	return withoutBSONFieldsAtPath(TODOCollectionValidator(), []string{"$jsonSchema", "properties"}, "knowledge_delivery_proof")
+}
+
 func TODOCollectionValidatorBeforeRemoval() bson.D {
 	validator := TODOCollectionValidator()
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
@@ -443,6 +448,7 @@ func todoCollectionValidatorWithCreation(allowContentEdit, allowRecordEvents, al
 		{Key: "updated_at", Value: bson.D{{Key: "bsonType", Value: "date"}}},
 		{Key: "stage_verification", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"unverified", "verified"}}}},
 		{Key: "verified_transition_ref", Value: verifiedTransitionSchema()},
+		{Key: "knowledge_delivery_proof", Value: todoKnowledgeProofSchema()},
 		{Key: "last_operation", Value: lastTODOOperationSchema(allowContentEdit, allowRecordEvents)},
 	}
 	required := bson.A{"_id", "id", "project_id", "title", "objective", "next_exact_step", "artifact_type", "stage", "qualifiers", "sections", "affected_files", "source", "revision", "created_at", "updated_at", "stage_verification"}

@@ -361,6 +361,37 @@ func (s *testSelectedTODOLifecycle) VerifyCurrentTODOStage(_ context.Context, co
 	return TODOActionResponse{}, todoTeach("verify-current-stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
 }
 
+func TestTODOBodyLimitReturnsActionable413OnBothDecoderReads(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"first read", `{"value":"` + strings.Repeat("a", 128) + `"}`},
+		{"trailing read", `{}` + strings.Repeat(" ", 128)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handler{}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/todo", strings.NewReader(tc.body))
+			var payload map[string]any
+			if h.decodeTODOLimit(recorder, request, &payload, 128) {
+				t.Fatal("oversized TODO body was accepted")
+			}
+			if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), `"error":"request_too_large"`) || !strings.Contains(recorder.Body.String(), "request.body") || !strings.Contains(recorder.Body.String(), "128-byte") {
+				t.Fatalf("wrong TODO limit response: status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	generic := httptest.NewRecorder()
+	if (&Handler{}).decodeLimit(generic, httptest.NewRequest(http.MethodPost, "/other", strings.NewReader(`{"value":"`+strings.Repeat("a", 128)+`"}`)), new(map[string]any), 128) || generic.Code != http.StatusBadRequest {
+		t.Fatal("non-TODO route changed its existing invalid-body response")
+	}
+	malformed := httptest.NewRecorder()
+	if (&Handler{}).decodeTODOLimit(malformed, httptest.NewRequest(http.MethodPost, "/todo", strings.NewReader(`{"value":`)), new(map[string]any), 128) || malformed.Code != http.StatusBadRequest {
+		t.Fatal("malformed JSON was mistaken for an oversized TODO request")
+	}
+}
+
 func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	service := &testSelectedTODOLifecycle{testService: &testService{}}
 	handler := NewHandler(service)

@@ -13,6 +13,7 @@ const todoContentSchemaVersion = 2
 // Operational state and historical verification remain on their existing APIs.
 type TODOContent struct {
 	SchemaVersion       int                       `json:"schema_version,omitempty" bson:"schema_version,omitempty"`
+	Delivery            *TODODeliveryContract     `json:"delivery,omitempty" bson:"delivery,omitempty"`
 	Context             string                    `json:"context,omitempty" bson:"context,omitempty"`
 	Scope               *TODOContentScope         `json:"scope,omitempty" bson:"scope,omitempty"`
 	Criteria            []TODOContentItem         `json:"criteria,omitempty" bson:"criteria,omitempty"`
@@ -24,6 +25,22 @@ type TODOContent struct {
 	LegacyContext       []TODOLegacyContext       `json:"legacy_context,omitempty" bson:"legacy_context,omitempty"`
 	Architecture        *TODOArchitectureDecision `json:"architecture,omitempty" bson:"architecture,omitempty"`
 	Planning            *TODOPlanning             `json:"planning,omitempty" bson:"planning,omitempty"`
+}
+
+// TODODeliveryContract identifies documentary work explicitly. An empty code
+// diff never selects this mode implicitly.
+type TODODeliveryContract struct {
+	Kind    string                `json:"kind" bson:"kind"`
+	Targets []TODOKnowledgeTarget `json:"targets" bson:"targets"`
+}
+
+type TODOKnowledgeTarget struct {
+	Family           CanonicalFamily `json:"family" bson:"family"`
+	RecordID         string          `json:"record_id" bson:"record_id"`
+	GenerationID     string          `json:"generation_id" bson:"generation_id"`
+	BaselineRevision int64           `json:"baseline_revision" bson:"baseline_revision"`
+	BaselineDigest   string          `json:"baseline_digest,omitempty" bson:"baseline_digest,omitempty"`
+	ChangeKind       string          `json:"change_kind" bson:"change_kind"`
 }
 
 // Planning records declared inputs and human review references; it does not
@@ -134,6 +151,9 @@ func validateTODOContent(content TODOContent, allowLegacyContext, requireComplet
 	if content.SchemaVersion != todoContentSchemaVersion {
 		return todoTeach("content.schema_version", "equal 2", ErrInvalid)
 	}
+	if err := validateTODODeliveryContract(content.Delivery); err != nil {
+		return err
+	}
 	if (requireComplete && !validSummaryField(content.Context, 16<<10)) || (!requireComplete && content.Context != "" && !validSummaryField(content.Context, 16<<10)) {
 		return todoTeach("content.context", "contain nonblank valid UTF-8 text up to 16384 bytes", ErrInvalid)
 	}
@@ -239,6 +259,7 @@ func validateTODOContent(content TODOContent, allowLegacyContext, requireComplet
 			}
 		}
 	}
+	if err := validateKnowledgeClaimCapacity(content); err != nil { return err }
 	return nil
 }
 

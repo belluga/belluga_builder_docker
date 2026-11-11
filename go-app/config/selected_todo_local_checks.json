@@ -5,6 +5,7 @@
     {"id": "G-TEST", "argv": ["docker", "build", "--target", "test", "-f", "go-app/Dockerfile", "."]},
     {"id": "G-VET", "argv": ["docker", "build", "--target", "test", "-f", "go-app/Dockerfile", "."]},
     {"id": "G-IMAGE", "argv": ["docker", "build", "--target", "runtime", "-f", "go-app/Dockerfile", "."]},
+    {"id": "G-KNOWLEDGE-IT", "argv": ["bash", "go-app/internal/registry/testdata/knowledge_delivery_integration.sh"]},
     {"id": "P-TEST", "argv": ["docker", "build", "--target", "test", "-f", "delphi-ai/local-api/Dockerfile.test", "delphi-ai"]},
     {"id": "S-TEST", "argv": ["docker", "build", "--target", "go-test", "-f", "builder-app/Dockerfile", "builder-app"]},
     {"id": "V-HTTP", "argv": ["docker", "build", "--no-cache", "--network", "host", "--target", "visual-readiness-test", "--build-arg", "BUILDER_VISUAL_READINESS_BASE_URL=http://127.0.0.1:8089", "--build-arg", "BUILDER_VISUAL_READINESS_COMPANY_ID=belluga-solutions", "--build-arg", "BUILDER_VISUAL_READINESS_PROJECT_ID=boora", "--build-arg", "BUILDER_VISUAL_READINESS_PROTOTYPE_SHA=3e15a6e712bd58be62debacaf78e39eddf0ceaa8", "--build-arg", "BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_SHA=5e7839611735a66a7c5cbd923d7c6bf163fe3948", "--build-arg", "BUILDER_VISUAL_READINESS_PROTOTYPE_IDS=account-workspace,admin-workspace", "--build-arg", "BUILDER_VISUAL_READINESS_DESIGN_SYSTEM_ID=boora-workspace", "--build-arg", "BUILDER_VISUAL_READINESS_MIN_PROTOTYPES=2", "--build-arg", "BUILDER_VISUAL_READINESS_INVENTORY_DIGEST=sha256:d0d44049fa9faf2b10920e5f1468fa04e7d2a1323802c3572656ff28890f9cfb", "-f", "builder-app/Dockerfile", "builder-app"]},
@@ -24,6 +25,7 @@
     "builder-mongo-todo-removal": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "W-TEST", "W-BUILD"],
     "builder-visual-artifacts-precutover-readiness": ["V-HTTP"],
     "builder-prototype-dedicated-git-authority": ["P-TEST"],
-    "builder-retire-project-snapshot": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
+    "builder-retire-project-snapshot": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
+    "builder-knowledge-only-todo-delivery": ["G-TEST", "G-VET", "G-IMAGE", "G-KNOWLEDGE-IT", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
   }
 }

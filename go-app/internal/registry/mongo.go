@@ -51,6 +51,7 @@ type MongoStore struct {
 	prototypeFileCache               *prototypeFileCache
 	prototypeHot                     *prototypeHotCache
 	prototypeReady                   sync.Map
+	knowledgeProofIndex              sync.Map
 	landingMu                        sync.Mutex
 	landingCatalogs                  map[string]LandingCatalogResponse
 	landingOrder                     []string

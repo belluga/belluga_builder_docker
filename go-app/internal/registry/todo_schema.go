@@ -288,6 +288,7 @@ func upgradeTODOCollectionForHistory(ctx context.Context, database *mongo.Databa
 
 func recognizedTODOCollectionValidator(actual bson.Raw) bool {
 	predecessors := []bson.D{
+		TODOCollectionValidatorBeforeKnowledgeDelivery(),
 		TODOCollectionValidatorBeforeAdministrativeAcceptance(),
 		TODOCollectionValidatorBeforeRemoval(),
 		TODOCollectionValidatorBeforeEvidenceCapacity(),
@@ -344,6 +345,7 @@ func TODOCollectionValidatorBeforeMVPParentUpgrade() bson.D {
 	// MVP parent merge 03ba3dc carried the original seven operation kinds.
 	validator := todoCollectionValidatorWithOperationKinds(bson.A{"transition", "verify-current-stage", "content-edit", "evidence-edit", "placement-edit", "historical-adoption", "content-migration"})
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "removed")
+	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties"}, "knowledge_delivery_proof")
 	validator = withoutBSONFieldsAtPath(validator, []string{"$jsonSchema", "properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
 	validator = withoutTODOAdministrativeStateFields(validator)
 	return todoCollectionValidatorWithoutReviewOutcome(validator)

@@ -36,14 +36,16 @@ type TODOReadResponse struct {
 }
 
 type TODOActionRequest struct {
-	ProjectID        string               `json:"project_id"`
-	TODOID           string               `json:"todo_id"`
-	ExpectedRevision *int64               `json:"expected_revision"`
-	OperationID      string               `json:"operation_id"`
-	RequestedStage   string               `json:"requested_stage"`
-	ProofReferences  []TODOProofReference `json:"proof_refs"`
-	WaiverReferences []TODOProofReference `json:"waiver_refs"`
-	LocalProof       *LocalProofResult    `json:"local_proof,omitempty"`
+	ProjectID                string                        `json:"project_id"`
+	TODOID                   string                        `json:"todo_id"`
+	ExpectedRevision         *int64                        `json:"expected_revision"`
+	OperationID              string                        `json:"operation_id"`
+	RequestedStage           string                        `json:"requested_stage"`
+	ProofReferences          []TODOProofReference          `json:"proof_refs"`
+	WaiverReferences         []TODOProofReference          `json:"waiver_refs"`
+	LocalProof               *LocalProofResult             `json:"local_proof,omitempty"`
+	KnowledgeDelivery        *TODOKnowledgeDeliveryClaim   `json:"knowledge_delivery,omitempty"`
+	KnowledgeFinalAcceptance *TODOKnowledgeFinalAcceptance `json:"knowledge_final_acceptance,omitempty"`
 }
 
 type VerifyCurrentTODOStageRequest struct {
@@ -196,6 +198,17 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	}
 	if err := m.exactTODORelease(ctx, companyID, project, record); err != nil {
 		return TODOActionResponse{}, err
+	}
+	content, contentErr := m.contentAtRevision(ctx, m.client.Database(company.DatabaseName), record.ProjectID, record.ID, record.Revision)
+	if contentErr == nil && content.SchemaVersion == todoContentSchemaVersion && content.Delivery != nil && content.Delivery.Kind == "knowledge-only" {
+		record.Content = &content.TODOContent
+		return m.transitionKnowledgeTODO(ctx, companyID, project, collection, record, request, digest)
+	}
+	if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
+		return TODOActionResponse{}, contentErr
+	}
+	if request.KnowledgeDelivery != nil || request.KnowledgeFinalAcceptance != nil {
+		return TODOActionResponse{}, todoTeach("knowledge_delivery/knowledge_final_acceptance", "use Knowledge proof fields only for a TODO explicitly contracted as knowledge-only", ErrConflict)
 	}
 	if record.Stage == "Local-Implemented" && request.RequestedStage == "Completed" && record.StageVerification == "verified" && record.VerifiedTransitionRef != nil && !containsTODOString(record.Qualifiers, "Blocked") {
 		{
@@ -867,6 +880,10 @@ func (m *MongoStore) exactTODOHistoryRetry(ctx context.Context, companyID string
 }
 
 func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, stage string, proof TODOProofReference, operationID, kind, digest string, verifiedProofReferences ...[]TODOProofReference) (TODOActionResponse, error) {
+	return writeVerifiedTODOWithKnowledge(ctx, database, collection, companyID, record, stage, proof, operationID, kind, digest, nil, nil, verifiedProofReferences...)
+}
+
+func writeVerifiedTODOWithKnowledge(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, stage string, proof TODOProofReference, operationID, kind, digest string, knowledge *TODOKnowledgeDeliveryProof, acceptance *TODOKnowledgeFinalAcceptance, verifiedProofReferences ...[]TODOProofReference) (TODOActionResponse, error) {
 	if !validProofReference(proof) || proof.VerificationState != "verified" {
 		return TODOActionResponse{}, ErrInvalid
 	}
@@ -879,6 +896,9 @@ func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection
 	}}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	if record.AdministrativeAcceptance != nil {
 		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}}})
+	}
+	if knowledge != nil {
+		update[0].Value = append(update[0].Value.(bson.D), bson.E{Key: "knowledge_delivery_proof", Value: knowledge})
 	}
 	var additionalProofRefs []TODOProofReference
 	if len(verifiedProofReferences) > 0 {
@@ -908,6 +928,9 @@ func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection
 		changedStage, verification := stage, "verified"
 		verifiedProof := proof
 		changes := TODOHistoryChanges{Stage: &changedStage, StageVerification: &verification, VerifiedTransitionRef: &verifiedProof}
+		if knowledge != nil {
+			changes.KnowledgeDeliveryProof = knowledge
+		}
 		if record.AdministrativeAcceptance != nil {
 			changes.ClearAdministrativeAcceptance = true
 		}
@@ -916,6 +939,10 @@ func writeVerifiedTODO(ctx context.Context, database *mongo.Database, collection
 		}
 		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: record.ProjectID, TODOID: record.ID, Revision: nextRevision, Kind: "state_changed",
 			OccurredAt: time.Now().UTC(), OperationID: operationID, RequestDigest: digest, Changes: changes}
+		if acceptance != nil {
+			event.PermissionDecision = "pre-iam-private-api-allow-all"
+			event.Reason = acceptance.Reason
+		}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {
 			return nil, normalizeMongoError(err)
 		}

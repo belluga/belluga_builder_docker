@@ -55,6 +55,8 @@ type roadmapTODOView struct {
 	DeliveryStageState       string                        `json:"delivery_stage_state"`
 	DeliveryStageBasis       string                        `json:"delivery_stage_basis,omitempty"`
 	DeliveryStageTeach       string                        `json:"delivery_stage_teach,omitempty"`
+	DeliveryKind             string                        `json:"delivery_kind,omitempty"`
+	DocumentaryCompletion    bool                          `json:"documentary_completion,omitempty"`
 	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty"`
 	Disposition              *TODODisposition              `json:"disposition,omitempty"`
 	DispositionState         string                        `json:"disposition_state,omitempty"`
@@ -154,6 +156,10 @@ func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 		Objective: record.Objective, ObjectiveState: "complete", NextStep: record.NextExactStep, NextStepState: "complete",
 		RecordState: "active", AuthoredDeliveryStage: record.Stage, DeliveryStageState: "unverified",
 		Blocked: blocked, QualifierState: "verified", WorkState: workState, TODORevision: record.Revision,
+	}
+	if record.Content != nil && record.Content.Delivery != nil && record.Content.Delivery.Kind == "knowledge-only" {
+		view.DeliveryKind = "knowledge-only"
+		view.DocumentaryCompletion = record.Stage == "Completed" && record.StageVerification == "verified" && record.VerifiedTransitionRef != nil && record.VerifiedTransitionRef.Kind == "knowledge-final-acceptance" && record.KnowledgeDeliveryProof != nil
 	}
 	if record.Disposition != nil {
 		if record.Source.Kind == "mongo-content-revision" {

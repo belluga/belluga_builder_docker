@@ -674,6 +674,7 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 	}{
 		{canonicalVersions, "canonical_versions_lookup", bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "revision", Value: 1}}, true},
 		{canonicalEvents, "canonical_events_timeline", bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}, false},
+		{canonicalEvents, "canonical_events_record_revision", bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "revision", Value: 1}}, false},
 		{canonicalEvents, "canonical_events_project_timeline", bson.D{{Key: "project_id", Value: 1}, {Key: "occurred_at", Value: 1}, {Key: "_id", Value: 1}}, false},
 		{canonicalEvents, "canonical_events_operation_unique", bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "kind", Value: 1}}, true},
 	} {

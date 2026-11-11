@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -765,7 +766,7 @@ func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOAdmissionRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	value, err := admitter.AdmitTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
@@ -851,7 +852,7 @@ func (h *Handler) transitionTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOActionRequest
-	if !h.decode(w, r, &input) {
+	if !h.decodeTODOLimit(w, r, &input, maxRequestBody) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -946,7 +947,7 @@ func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOContentEditRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -1000,7 +1001,7 @@ func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOEvidenceEditRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -1324,18 +1325,46 @@ func (h *Handler) decode(w http.ResponseWriter, r *http.Request, target any) boo
 }
 
 func (h *Handler) decodeLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	return h.decodeBounded(w, r, target, limit, false)
+}
+
+func (h *Handler) decodeTODOLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	return h.decodeBounded(w, r, target, limit, true)
+}
+
+func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target any, limit int64, todo bool) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		if todo && h.writeTODOBodyLimit(w, err, limit) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if todo && h.writeTODOBodyLimit(w, err, limit) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
+	return true
+}
+
+func (h *Handler) writeTODOBodyLimit(w http.ResponseWriter, err error, limit int64) bool {
+	var tooLarge *http.MaxBytesError
+	if !errors.As(err, &tooLarge) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	_ = json.NewEncoder(w).Encode(errorResponse{
+		Error: "request_too_large",
+		Teach: fmt.Sprintf("TEACH: request.body exceeds this TODO route's %d-byte limit; reduce the JSON payload and retry the same operation only after it fits", limit),
+	})
 	return true
 }
 func (h *Handler) respond(w http.ResponseWriter, value any, err error) {

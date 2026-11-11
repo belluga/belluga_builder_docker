@@ -32,6 +32,9 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 	if !(len(record.DiffExpectation) == 0 && len(content.DiffExpectation) == 0) && !reflect.DeepEqual(record.DiffExpectation, content.DiffExpectation) {
 		return todoTeach("content.diff_expectation", "match the current Mongo TODO aggregate and immutable content revision", ErrConflict)
 	}
+	if content.Delivery != nil && len(content.DiffExpectation) != 0 {
+		return todoTeach("content.delivery.kind", "use knowledge-only only for a TODO without implementation repository scopes; keep code/Git-artifact delivery on its ordinary proof path", ErrConflict)
+	}
 	for i, scope := range content.DiffExpectation {
 		field := fmt.Sprintf("content.diff_expectation[%d]", i)
 		if foundationScope(scope.Repository) {

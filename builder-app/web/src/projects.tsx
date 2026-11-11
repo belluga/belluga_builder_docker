@@ -19,7 +19,7 @@ type Catalog = { companies: Company[]; projects: Project[] };
 type OverviewRead = { state: "available" | "not_authored" | "invalid" | "stale"; company_id: string; project_id: string; revision?: number; content?: { tagline: string; summary: string; desktop_alt: string; mobile_alt: string; sections: Record<"problem" | "proposal" | "impact" | "audience", { heading: string; body: string; points: string[]; image_alt?: string }>; }; media?: { slot: string; digest: string; href: string }[]; teach?: string };
 type LandingRead = { state: "available" | "not_authored" | "invalid"; entry_url?: string; teach?: string; revision?: string; inventory_digest?: string };
 type DeliveryStage = "Planning" | "Implementation-Approval-Pending" | "Ready-for-Implementation" | "In-Progress" | "Local-Implemented" | "Promotion-Lane" | "Completed";
-type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning" | "non-delivery"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified" | "administrative"; delivery_stage_basis?: "administrative-acceptance"; administrative_acceptance?: { accepted_stage: DeliveryStage; owner_reference: string; reason: string; permission_decision: string; accepted_at: string; content_digest: string }; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition?: { kind: "Superseded" | "Discarded"; reason: string; successor_todo_id?: string }; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
+type RoadmapTodo = { id: string; title: string; path?: string; kind: "executable" | "planning" | "non-delivery"; todo_revision?: number; missing?: boolean; record_state: string; objective?: string; objective_state: "absent" | "complete" | "too_long"; next_step?: string; next_step_state: "absent" | "complete" | "too_long"; authored_delivery_stage: string; delivery_stage?: DeliveryStage; delivery_stage_state: "verified" | "unverified" | "administrative"; delivery_kind?: "knowledge-only"; documentary_completion?: boolean; delivery_stage_basis?: "administrative-acceptance"; administrative_acceptance?: { accepted_stage: DeliveryStage; owner_reference: string; reason: string; permission_decision: string; accepted_at: string; content_digest: string }; delivery_stage_teach?: string; historical_disposition?: "Superseded" | "Discarded"; disposition?: { kind: "Superseded" | "Discarded"; reason: string; successor_todo_id?: string }; disposition_reason?: string; successor_todo?: string; disposition_state?: "valid" | "invalid"; blocked: boolean; qualifier_state: "verified" | "unverified"; qualifier_teach?: string; work_state?: "blocked" | "unknown" };
 type RoadmapRelease = { id: string; name: string; description: string; todos: RoadmapTodo[]; investigation?: { title: string } };
 type ReleaseInvestigationRead = { company_id: string; project_id: string; release_id: string; state: "available" | "absent"; document?: { title: string; introduction: string; materials: { id: string; title: string; body_markdown: string; source_refs?: string[] }[] } };
 type RoadmapEpic = { id: string; name: string; description: string; releases: RoadmapRelease[] };
@@ -39,8 +39,8 @@ function validRoadmapProjection(value: unknown, projectID: string): value is Roa
 }
 type MongoTODOContentItem = { id: string; text: string };
 type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included: string[]; excluded: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
-type ReleaseStatus = "delivered" | "accepted" | "blocked" | "in-progress" | "planned" | "unknown";
-const releaseStatusLabel: Record<ReleaseStatus, string> = { delivered: "Entregue", accepted: "Concluída por aceite administrativo", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
+type ReleaseStatus = "delivered" | "documentary-complete" | "publication-unverified" | "accepted" | "blocked" | "in-progress" | "planned" | "unknown";
+const releaseStatusLabel: Record<ReleaseStatus, string> = { delivered: "Entregue", "documentary-complete": "Documentação concluída", "publication-unverified": "TODOs concluídos · publicação não verificada", accepted: "Concluída por aceite administrativo", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
 const deliveryStageLabels: Record<DeliveryStage, string> = {
   Planning: "Planejamento",
   "Implementation-Approval-Pending": "Aguardando aprovação",
@@ -85,12 +85,20 @@ function releaseStatus(release: RoadmapRelease): ReleaseStatus {
   if (todos.length === 0) return "unknown";
   if (todos.some((todo) => !["verified", "administrative"].includes(todo.delivery_stage_state) || !todo.delivery_stage || todo.qualifier_state !== "verified")) return "unknown";
   if (todos.some((todo) => todo.blocked)) return "blocked";
-  if (todos.every((todo) => todo.delivery_stage === "Completed")) return todos.some((todo) => todo.delivery_stage_state === "administrative") ? "accepted" : "delivered";
+  if (todos.every((todo) => todo.delivery_stage === "Completed")) {
+    if (todos.some((todo) => todo.delivery_stage_state === "administrative")) return "accepted";
+    const documentary = todos.filter((todo) => todo.delivery_kind === "knowledge-only");
+    if (documentary.length > 0) {
+      if (documentary.some((todo) => !todo.documentary_completion)) return "unknown";
+      return documentary.length === todos.length ? "documentary-complete" : "publication-unverified";
+    }
+    return "delivered";
+  }
   if (todos.some((todo) => ["In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"].includes(todo.delivery_stage!))) return "in-progress";
   return "planned";
 }
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
-  return epic?.releases.find((release) => !["delivered", "accepted"].includes(releaseStatus(release))) || epic?.releases.at(-1);
+  return epic?.releases.find((release) => !["delivered", "documentary-complete", "accepted"].includes(releaseStatus(release))) || epic?.releases.at(-1);
 }
 function TypedTODOContent({ content, legacySections }: { content: NonNullable<MongoTODORead["todo"]["content"]>; legacySections: MongoTODORead["todo"]["sections"] }) {
   const panels: ReactNode[] = [];

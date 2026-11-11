@@ -885,6 +885,9 @@ describe("single root Project experience", () => {
     { name: "blocked ready", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true) }], expected: "Bloqueada" },
     { name: "invalid blocked qualifier remains unknown", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true), qualifier_state: "unverified", qualifier_teach: "TEACH: correct the qualifier" }], expected: "Status indisponível" },
     { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Entregue" },
+    { name: "documentary completion is not production delivery", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }], expected: "Documentação concluída" },
+    { name: "mixed completion lacks release publication proof", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }, { kind: "executable", ...verifiedStage("Completed") }], expected: "TODOs concluídos · publicação não verificada" },
+    { name: "unverified documentary proof cannot complete release", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only" }], expected: "Status indisponível" },
   ])("derives $name Release status without a second delivery field", async ({ todos, expected }) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
