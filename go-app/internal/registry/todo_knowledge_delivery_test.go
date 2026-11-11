@@ -189,6 +189,16 @@ func TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation(t *testing.T) {
 	if _, err := perfDB.Collection(canonicalEvents).InsertMany(ctx, perfEvents); err != nil {
 		t.Fatalf("seed long event history: %v", err)
 	}
+	sameMillisecond := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := perfDB.Collection(canonicalEvents).InsertOne(ctx, bson.D{{Key: "project_id", Value: "builder"}, {Key: "generation_id", Value: "g1"}, {Key: "family", Value: FamilyModule}, {Key: "record_id", Value: "same-ms-history"}, {Key: "revision", Value: int64(1)}, {Key: "occurred_at", Value: sameMillisecond}, {Key: "kind", Value: "record_created"}, {Key: "operation_id", Value: "same-ms-history"}}); err != nil {
+		t.Fatalf("seed same-millisecond event: %v", err)
+	}
+	ambiguousClaim := &TODOKnowledgeDeliveryClaim{Items: []TODOKnowledgeDeliveryItem{{Family: FamilyModule, RecordID: "same-ms-history", GenerationID: "g1", ToRevision: 1}}}
+	ambiguousTargets := map[string]TODOKnowledgeTarget{"module/same-ms-history": {Family: FamilyModule, RecordID: "same-ms-history", GenerationID: "g1", ChangeKind: "create"}}
+	offender, err := knowledgeTemporalOffender(ctx, perfDB, "builder", "g1", ambiguousClaim, ambiguousTargets, true, sameMillisecond.Add(500*time.Microsecond), time.Time{})
+	if err != nil || !offender {
+		t.Fatalf("ambiguous same-millisecond event was accepted as preapproval history: offender=%t err=%v", offender, err)
+	}
 	for _, tc := range []struct {
 		name, comparison string
 		from, to         int64

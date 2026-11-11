@@ -289,6 +289,10 @@ func knowledgeTemporalOffender(ctx context.Context, db *mongo.Database, projectI
 		if !retrospective {
 			boundary = workStartedAt
 			comparison = "$lte"
+		} else {
+			// Canonical events are persisted at millisecond precision. Treat the
+			// entire approval millisecond as ambiguous, not as preapproval work.
+			boundary = approvalAt.Truncate(time.Millisecond)
 		}
 		clauses = append(clauses, bson.D{{Key: "family", Value: item.Family}, {Key: "record_id", Value: item.RecordID}, {Key: "revision", Value: bson.D{{Key: "$gt", Value: target.BaselineRevision}, {Key: "$lte", Value: item.ToRevision}}}, {Key: "occurred_at", Value: bson.D{{Key: comparison, Value: boundary}}}})
 	}
