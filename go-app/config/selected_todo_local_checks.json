@@ -23,6 +23,7 @@
     "builder-design-system-theme-role-projection": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
     "builder-mongo-todo-removal": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "W-TEST", "W-BUILD"],
     "builder-visual-artifacts-precutover-readiness": ["V-HTTP"],
-    "builder-prototype-dedicated-git-authority": ["P-TEST"]
+    "builder-prototype-dedicated-git-authority": ["P-TEST"],
+    "builder-retire-project-snapshot": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
   }
 }
