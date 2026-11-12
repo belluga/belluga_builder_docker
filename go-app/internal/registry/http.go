@@ -1340,6 +1340,9 @@ func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target a
 		if todo && h.writeTODOBodyLimit(w, err, limit) {
 			return false
 		}
+		if todo && h.writeTODOUnknownField(w, err, target) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
@@ -1351,6 +1354,24 @@ func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target a
 		h.writeError(w, ErrInvalid)
 		return false
 	}
+	return true
+}
+
+func (h *Handler) writeTODOUnknownField(w http.ResponseWriter, err error, target any) bool {
+	const prefix = "json: unknown field "
+	quoted, ok := strings.CutPrefix(err.Error(), prefix)
+	if !ok {
+		return false
+	}
+	field, unquoteErr := strconv.Unquote(quoted)
+	if unquoteErr != nil || field == "" {
+		return false
+	}
+	resolution := "remove this unknown field and use the typed request envelope documented for this TODO operation"
+	if _, ok := target.(*TODOContentEditRequest); ok {
+		resolution = "remove this unknown field; use content for the authored TODO fields, with project_id, todo_id, expected_revision, operation_id, and reason in the request envelope"
+	}
+	h.writeError(w, todoTeach("request."+field, resolution, ErrInvalid))
 	return true
 }
 

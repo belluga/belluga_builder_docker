@@ -299,6 +299,30 @@ func TestPrivateAPIRejectsUnknownFieldsAndOversizedBodies(t *testing.T) {
 	}
 }
 
+func TestTODOContentEditUnknownFieldReturnsActionableTeach(t *testing.T) {
+	handler := NewHandler(&MongoStore{})
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/unifast/projects/accountzz/todos/todo-1/content", strings.NewReader(`{"project_id":"accountzz","todo_id":"todo-1","expected_revision":16,"operation_id":"invalid-edit","reason":"diagnose contract","new_content":{}}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest || !strings.Contains(body.Teach, "request.new_content") || !strings.Contains(body.Teach, "use content for the authored TODO fields") {
+		t.Fatalf("unknown field response = %d %+v", response.Code, body)
+	}
+	missing := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/unifast/projects/accountzz/todos/todo-1/content", strings.NewReader(`{"project_id":"accountzz","todo_id":"todo-1","expected_revision":16,"operation_id":"missing-edit","reason":"diagnose contract"}`))
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	var missingBody errorResponse
+	if err := json.Unmarshal(missingResponse.Body.Bytes(), &missingBody); err != nil {
+		t.Fatal(err)
+	}
+	if missingResponse.Code != http.StatusBadRequest || !strings.Contains(missingBody.Teach, "content must provide") {
+		t.Fatalf("missing content response = %d %+v", missingResponse.Code, missingBody)
+	}
+}
+
 func TestPrivateAPIRejectsCompanyMismatchBeforeRegister(t *testing.T) {
 	service := &testService{}
 	req := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/company-a/projects", strings.NewReader(`{"company_id":"company-b","project_id":"project-a"}`))

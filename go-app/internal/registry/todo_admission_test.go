@@ -125,6 +125,9 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 	if !containsTODOString(template.Optional, "todo.release_id") || !containsTODOString(template.Optional, "todo.position") || template.Limits["record_bytes"] != maxTODORecordBytes {
 		t.Fatalf("template omits Backlog placement or record limits: %+v", template)
 	}
+	if !containsTODOString(template.Optional, "todo.content.delivery") || !containsTODOString(template.ContentEditRequired, "content") || !containsTODOString(template.ContentEditRequired, "content.title") || !containsTODOString(template.ContentEditRequired, "content.diff_expectation") || !strings.Contains(template.ContentEditGuide, "read-todo") {
+		t.Fatalf("template does not teach a governed content edit: %+v", template)
+	}
 	for name, mutate := range map[string]func(*TODORecord){
 		"later initial stage":          func(value *TODORecord) { value.Stage = "In-Progress" },
 		"partial placement":            func(value *TODORecord) { value.ReleaseID = "r-08" },
@@ -249,6 +252,13 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	NewHandler(service).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || service.companyID != "belluga-solutions" || service.projectID != "builder" || !strings.Contains(response.Body.String(), `"schema_version":"builder-todo-creation-v2"`) {
 		t.Fatalf("Project creation template response = %d %s; company=%q project=%q", response.Code, response.Body.String(), service.companyID, service.projectID)
+	}
+	var publicTemplate TODOCreationTemplate
+	if err := json.Unmarshal(response.Body.Bytes(), &publicTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") {
+		t.Fatalf("served template does not teach the update-todo envelope: %+v", publicTemplate)
 	}
 }
 

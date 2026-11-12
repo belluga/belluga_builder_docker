@@ -54,6 +54,8 @@ type TODOCreationTemplate struct {
 	Limits                map[string]int       `json:"limits"`
 	IDRules               map[string]string    `json:"id_rules"`
 	ReleaseRules          []string             `json:"release_rules"`
+	ContentEditRequired   []string             `json:"content_edit_required"`
+	ContentEditGuide      string               `json:"content_edit_guide"`
 	Example               TODOAdmissionRequest `json:"example"`
 	AdministrativeExample TODOAdmissionRequest `json:"administrative_example"`
 }
@@ -74,7 +76,7 @@ func ProjectTODOCreationTemplate(projectID string) (TODOCreationTemplate, error)
 	return TODOCreationTemplate{
 		SchemaVersion: todoCreationSchemaVersion,
 		Required:      []string{"operation_id", "todo.id", "todo.project_id", "todo.title", "todo.objective", "todo.next_exact_step", "todo.artifact_type", "todo.stage", "todo.qualifiers", "todo.work_state", "todo.sections", "todo.content.schema_version", "todo.proof_refs", "todo.waiver_refs", "todo.diff_expectation", "todo.implementation_commits", "todo.affected_files"},
-		Optional:      []string{"todo.release_id", "todo.position", "todo.content.context", "todo.content.scope", "todo.content.criteria", "todo.content.validation_scenarios", "todo.content.implementation_plan", "todo.content.decisions", "todo.content.risks", "todo.content.references", "todo.content.architecture", "todo.content.planning", "initial_state_acceptance", "disposition"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...), DispositionKinds: []string{"Superseded", "Discarded"},
+		Optional:      []string{"todo.release_id", "todo.position", "todo.content.context", "todo.content.scope", "todo.content.criteria", "todo.content.validation_scenarios", "todo.content.implementation_plan", "todo.content.decisions", "todo.content.risks", "todo.content.references", "todo.content.architecture", "todo.content.planning", "todo.content.delivery", "initial_state_acceptance", "disposition"}, InitialStage: "Planning", Stages: append([]string{}, canonicalTODOStages...), DispositionKinds: []string{"Superseded", "Discarded"},
 		Qualifiers: append([]string{}, canonicalTODOQualifiers...),
 		ContentShape: map[string]string{
 			"schema_version":       "2",
@@ -88,10 +90,13 @@ func ProjectTODOCreationTemplate(projectID string) (TODOCreationTemplate, error)
 			"references":           "0..64 {kind,ref} items",
 			"architecture":         "optional {decision,rationale,protection}; all fields required together",
 			"planning":             "before Implementation-Approval-Pending declare complexity, impact, assumptions, reviews and audit_triggers: blast_radius local|cross-module|cross-stack, architecture_applicability required|not_needed, and explicit booleans behavioral_change_or_bugfix, changes_public_contract, touches_auth_or_tenant, touches_runtime_or_infra, touches_tests, critical_user_journey, release_or_promotion_critical, high_severity_plan_review_issue, explicit_three_lane_request. After content and placement are final, use update-todo-evidence to cite each review in proof_refs with kind planning_review_<kind>, source human-review, the matching ref, current content source_digest, verification_state unverified, and outcome go. For a review-specific waiver, submit typed JSON via `builder-project grant-todo-review-waiver --company-id ... --project-id ... --todo-id ...`, with review_kind planning_review_<kind> or a currently required delivery audit kind, current expected_revision and expected_content_digest, a unique operation_id, and a reason. Whole-TODO APROVADO is not a review waiver. Reviews are human citations; Go validates the declared outcome but does not independently evaluate review quality. Critique is always required and architecture_opinion when applicable. Read audit_floors for derived decisions.",
+			"delivery":             "optional explicit knowledge-only contract with nonempty exact Knowledge targets; absent delivery keeps ordinary code-backed proof",
 		},
 		Limits:                map[string]int{"title_runes": 160, "objective_bytes": 1024, "next_exact_step_bytes": 512, "context_bytes": 16 << 10, "content_field_bytes": 2048, "scope_entries": 64, "criteria_scenarios_and_plan_entries": 64, "legacy_context_entries": 128, "legacy_body_bytes": 64 << 10, "proof_references": maxTODOProofs, "record_bytes": maxTODORecordBytes},
 		IDRules:               map[string]string{"todo.id": "^[a-z][a-z0-9-]{0,63}$", "operation_id": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
 		ReleaseRules:          []string{"release_id and position are both absent for Backlog", "when assigned, both are required and the Release must belong to this Company and Project", "ordinary Backlog TODOs start in Planning; explicitly accepted initial states may be recorded without Release placement"},
+		ContentEditRequired:   []string{"project_id", "todo_id", "expected_revision", "operation_id", "reason", "content", "content.schema_version", "content.title", "content.objective", "content.diff_expectation", "content.affected_files"},
+		ContentEditGuide:      "For update-todo, read-todo by exact ID, copy its typed todo.content fields excluding archived legacy_context, and include the current todo.title, todo.objective, todo.diff_expectation and todo.affected_files inside content. Add only the intended authored change, such as content.delivery. Use the current aggregate todo_revision as expected_revision; do not send new_content or operational stage fields.",
 		Example:               planningExample,
 		AdministrativeExample: administrativeExample,
 	}, nil
