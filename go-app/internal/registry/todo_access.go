@@ -360,6 +360,9 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			if err := validateMongoPlanningContract(record, content); err != nil {
 				return TODOProofReference{}, err
 			}
+			if err := requireTODOImplementationRepositories(ctx, m, companyID, record); err != nil {
+				return TODOProofReference{}, err
+			}
 			if err := m.verifyPlanningCodeAnchors(ctx, companyID, record.ProjectID, content); err != nil {
 				return TODOProofReference{}, err
 			}

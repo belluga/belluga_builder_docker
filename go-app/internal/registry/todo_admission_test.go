@@ -417,6 +417,19 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	reviewRevision := recordPlanningReviewSubjects(t, ctx, store, "builder", imported.TODO.ID, "typed-review-subject")
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: imported.TODO.ID, ExpectedRevision: &reviewRevision,
+		OperationID: "reject-unconfirmed-implementation-repository", RequestedStage: "Implementation-Approval-Pending",
+	}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "confirm this Git-backed delivery repository") {
+		t.Fatalf("Planning exit accepted an unconfirmed Project repository: %v", err)
+	}
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "builder", ImplementationRepositoryChange{
+		Action: "confirm", ProjectID: "builder", ExpectedRevision: 0,
+		OperationID: "typed-planning-repository-confirmation", Actor: "fixture-owner",
+		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
+	}); err != nil {
+		t.Fatalf("confirm the code-backed fixture repository before Planning exit: %v", err)
+	}
 	// Two independent agents may submit the same approved predecessor at once.
 	// Exactly one stage event must win the aggregate revision CAS.
 	results := make(chan error, 2)
@@ -574,6 +587,13 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		t.Fatalf("refresh Planning review: %v", err)
 	}
 	currentRevision++
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "no-foundation", ImplementationRepositoryChange{
+		Action: "confirm", ProjectID: "no-foundation", ExpectedRevision: 0,
+		OperationID: "anchor-fixture-repository-confirmation", Actor: "fixture-owner",
+		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
+	}); err != nil {
+		t.Fatalf("confirm the code-anchor fixture repository before Planning exit: %v", err)
+	}
 	anchorExists := false
 	anchorReader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()

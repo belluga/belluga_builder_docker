@@ -8,11 +8,14 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 const maxRequestBody = maxProjectDocumentBytes
@@ -151,10 +154,19 @@ type portfolioReader interface {
 	ReadProjectPortfolioFile(context.Context, string, string, int64, string, string, string) (portfolioFileResponse, error)
 }
 
+type sessionService interface {
+	BindSession(context.Context, SessionBindingRequest) (Session, error)
+	ReadSession(context.Context, string, string) (Session, error)
+	ListProjectSessions(context.Context, string, string, bson.ObjectID, int) (SessionList, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
+	mux.HandleFunc("POST /internal/v1/sessions/bind", h.bindSession)
+	mux.HandleFunc("GET /internal/v1/sessions/{provider}/{externalID}", h.readSession)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/sessions", h.listProjectSessions)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template", h.canonicalTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest", h.canonicalManifest)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index", h.canonicalIndex)
@@ -177,6 +189,8 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.readImplementationRepositories)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.changeImplementationRepository)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state", h.readDesignSystemState)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.readOverview)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}", h.readOverview)
@@ -235,7 +249,70 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
-	return mux
+	return sessionScopeGuard(mux, h.service)
+}
+
+const (
+	sessionLaneHeader       = "X-Delphi-Request-Lane"
+	sessionTypeHeader       = "X-Delphi-Session-Type"
+	sessionExternalIDHeader = "X-Delphi-Session-ID"
+)
+
+func writeSessionGuardError(w http.ResponseWriter, status int, code, teach string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Teach: teach})
+}
+
+func sessionScopeGuard(next http.Handler, service Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(sessionLaneHeader) != "conversation" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		companyID, projectID, ok := projectPathIdentity(r.URL.Path)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sessions, ok := service.(sessionService)
+		if !ok {
+			writeSessionGuardError(w, http.StatusServiceUnavailable, "service_unavailable", "Session binding service is unavailable; retry after the private Registry is restored.")
+			return
+		}
+		provider, externalID := r.Header.Get(sessionTypeHeader), r.Header.Get(sessionExternalIDHeader)
+		if provider == "" || externalID == "" {
+			writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Bind this conversation explicitly with builder-project session-bind --company-id <company> --project-id <project> --operation-id <stable-id> --owner-reference <owner-confirmation>.")
+			return
+		}
+		session, err := sessions.ReadSession(r.Context(), provider, externalID)
+		if err != nil {
+			status := http.StatusUnauthorized
+			if errors.Is(err, ErrUnavailable) {
+				status = http.StatusServiceUnavailable
+			}
+			writeSessionGuardError(w, status, "session_unavailable_or_unknown", "The conversation is not bound; run builder-project session-bind with explicit Company and Project selection, or restore the private Registry and retry.")
+			return
+		}
+		if session.Binding.CompanyID != companyID || session.Binding.ProjectID != projectID {
+			writeSessionGuardError(w, http.StatusForbidden, "session_project_mismatch", "This conversation is permanently bound to another Company/Project; use a distinct explicitly bound conversation for the requested Project.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func projectPathIdentity(path string) (string, string, bool) {
+	segments := strings.Split(path, "/")
+	if len(segments) < 7 || segments[1] != "internal" || segments[2] != "v1" || segments[3] != "companies" || segments[5] != "projects" {
+		return "", "", false
+	}
+	companyID, companyErr := url.PathUnescape(segments[4])
+	projectID, projectErr := url.PathUnescape(segments[6])
+	if companyErr != nil || projectErr != nil || !validID(companyID) || !validID(projectID) {
+		return "", "", false
+	}
+	return companyID, projectID, true
 }
 
 func (h *Handler) roadmapChange(action string) http.HandlerFunc {
@@ -453,6 +530,93 @@ type errorResponse struct {
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Catalog(r.Context())
 	h.respond(w, value, err)
+}
+
+func (h *Handler) bindSession(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var request SessionBindingRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, todoTeach("request", "provide one valid session binding object within 8 KiB", ErrInvalid))
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		h.writeError(w, todoTeach("request", "contain exactly one JSON object", ErrInvalid))
+		return
+	}
+	if r.Header.Get(sessionTypeHeader) != request.Type || r.Header.Get(sessionExternalIDHeader) != request.ExternalID {
+		writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Bind only the current CODEX_SESSION_ID; use explicit Company/Project flags and owner confirmation.")
+		return
+	}
+	session, err := service.BindSession(r.Context(), request)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusCreated, session)
+}
+
+func (h *Handler) readSession(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	provider, externalID := r.PathValue("provider"), r.PathValue("externalID")
+	if r.Header.Get(sessionTypeHeader) != provider || r.Header.Get(sessionExternalIDHeader) != externalID {
+		writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Read only the session identified by CODEX_SESSION_ID; another conversation identity is not accepted.")
+		return
+	}
+	session, err := service.ReadSession(r.Context(), provider, externalID)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusOK, session)
+}
+
+func (h *Handler) listProjectSessions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxProjectSessions {
+			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
+			return
+		}
+		limit = parsed
+	}
+	var after bson.ObjectID
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		parsed, err := bson.ObjectIDFromHex(raw)
+		if err != nil {
+			h.writeError(w, todoTeach("after", "be a session ObjectId cursor returned by this endpoint", ErrInvalid))
+			return
+		}
+		after = parsed
+	}
+	result, err := service.ListProjectSessions(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusOK, result)
+}
+
+func writeSessionJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 func (h *Handler) project(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Project(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))

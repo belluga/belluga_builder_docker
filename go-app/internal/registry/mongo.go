@@ -29,6 +29,7 @@ const (
 	lifecycleControlCollection = "lifecycle_control"
 	preferencesCollection      = "registration_preferences"
 	projectsCollection         = "projects"
+	sessionsCollection         = "sessions"
 	epicsCollection            = "roadmap_epics"
 	releasesCollection         = "roadmap_releases"
 	operationTimeout           = 15 * time.Second
@@ -90,31 +91,35 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 const maxProjectDocumentBytes = 128 << 10
 
 type projectDocument struct {
-	ObjectID                    bson.ObjectID               `bson:"_id,omitempty"`
-	ID                          string                      `bson:"id"`
-	Name                        string                      `bson:"name"`
-	CompanyID                   string                      `bson:"company_id"`
-	RoadmapRevision             int64                       `bson:"roadmap_revision,omitempty"`
-	RoadmapLastOperation        *roadmapOperation           `bson:"roadmap_last_operation,omitempty"`
-	Binding                     *Binding                    `bson:"binding,omitempty"`
-	BindingRevision             int64                       `bson:"binding_revision,omitempty"`
-	BindingOperation            string                      `bson:"binding_operation,omitempty"`
-	BindingActor                string                      `bson:"binding_actor,omitempty"`
-	BindingRequestDigest        string                      `bson:"binding_request_digest,omitempty"`
-	PendingDesignSystemMutation *DesignSystemMutationIntent `bson:"pending_design_system_mutation,omitempty"`
-	DesignSystemState           string                      `bson:"design_system_state,omitempty"`
-	DesignSystemSHA             string                      `bson:"design_system_sha,omitempty"`
-	DesignSystemInventoryDigest string                      `bson:"design_system_inventory_digest,omitempty"`
-	DesignSystemLastOperation   *DesignSystemMutationResult `bson:"design_system_last_operation,omitempty"`
-	OverviewRevision            int64                       `bson:"overview_revision,omitempty"`
-	OverviewOperation           string                      `bson:"overview_operation,omitempty"`
-	OverviewDigest              string                      `bson:"overview_digest,omitempty"`
-	RegisteredAt                time.Time                   `bson:"registered_at"`
-	PreparationState            string                      `bson:"preparation_state"`
-	PreparationDiagnostic       string                      `bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint         string                      `bson:"snapshot_fingerprint,omitempty"`
-	KnowledgeGenerationID       string                      `bson:"knowledge_generation_id,omitempty"`
-	CanonicalWriteEpoch         int64                       `bson:"canonical_write_epoch,omitempty"`
+	ObjectID                                bson.ObjectID                          `bson:"_id,omitempty"`
+	ID                                      string                                 `bson:"id"`
+	Name                                    string                                 `bson:"name"`
+	CompanyID                               string                                 `bson:"company_id"`
+	RoadmapRevision                         int64                                  `bson:"roadmap_revision,omitempty"`
+	RoadmapLastOperation                    *roadmapOperation                      `bson:"roadmap_last_operation,omitempty"`
+	Binding                                 *Binding                               `bson:"binding,omitempty"`
+	BindingRevision                         int64                                  `bson:"binding_revision,omitempty"`
+	BindingOperation                        string                                 `bson:"binding_operation,omitempty"`
+	BindingActor                            string                                 `bson:"binding_actor,omitempty"`
+	BindingRequestDigest                    string                                 `bson:"binding_request_digest,omitempty"`
+	ImplementationRepositories              []string                               `bson:"implementation_repositories,omitempty"`
+	ImplementationRepositoryConfirmations   []ImplementationRepositoryConfirmation `bson:"implementation_repository_confirmations,omitempty"`
+	ImplementationRepositoriesRevision      int64                                  `bson:"implementation_repositories_revision,omitempty"`
+	ImplementationRepositoriesLastOperation *implementationRepositoryOperation     `bson:"implementation_repositories_last_operation,omitempty"`
+	PendingDesignSystemMutation             *DesignSystemMutationIntent            `bson:"pending_design_system_mutation,omitempty"`
+	DesignSystemState                       string                                 `bson:"design_system_state,omitempty"`
+	DesignSystemSHA                         string                                 `bson:"design_system_sha,omitempty"`
+	DesignSystemInventoryDigest             string                                 `bson:"design_system_inventory_digest,omitempty"`
+	DesignSystemLastOperation               *DesignSystemMutationResult            `bson:"design_system_last_operation,omitempty"`
+	OverviewRevision                        int64                                  `bson:"overview_revision,omitempty"`
+	OverviewOperation                       string                                 `bson:"overview_operation,omitempty"`
+	OverviewDigest                          string                                 `bson:"overview_digest,omitempty"`
+	RegisteredAt                            time.Time                              `bson:"registered_at"`
+	PreparationState                        string                                 `bson:"preparation_state"`
+	PreparationDiagnostic                   string                                 `bson:"preparation_diagnostic,omitempty"`
+	SnapshotFingerprint                     string                                 `bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID                   string                                 `bson:"knowledge_generation_id,omitempty"`
+	CanonicalWriteEpoch                     int64                                  `bson:"canonical_write_epoch,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -925,6 +930,8 @@ func (m *MongoStore) ensureControlIndexes(ctx context.Context) error {
 		{companiesCollection, bson.D{{Key: "domain_keys", Value: 1}}, "companies_domain_unique", bson.M{"domain_keys": bson.M{"$exists": true}}},
 		{companiesCollection, bson.D{{Key: "app_keys", Value: 1}}, "companies_app_unique", bson.M{"app_keys": bson.M{"$exists": true}}},
 		{lifecycleControlCollection, bson.D{{Key: "key", Value: 1}}, "lifecycle_control_key_unique", bson.M{"key": bson.M{"$type": "string"}}},
+		{sessionsCollection, bson.D{{Key: "type", Value: 1}, {Key: "external_id", Value: 1}}, "sessions_external_identity_unique", bson.M{"type": bson.M{"$type": "string"}, "external_id": bson.M{"$type": "string"}}},
+		{sessionsCollection, bson.D{{Key: "binding.company_id", Value: 1}, {Key: "binding.project_id", Value: 1}, {Key: "_id", Value: 1}}, "sessions_project_listing", bson.M{"binding.company_id": bson.M{"$type": "string"}, "binding.project_id": bson.M{"$type": "string"}}},
 	}
 	for _, item := range indexes {
 		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true).SetPartialFilterExpression(item.partial)}
