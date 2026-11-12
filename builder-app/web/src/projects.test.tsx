@@ -187,6 +187,7 @@ describe("single root Project experience", () => {
     const roadmapView = render(<Projects />);
     const releaseToggle = await screen.findByRole("button", { name: /First local viewer/ });
     expect(releaseToggle.querySelector(".roadmap-release-status")).toHaveClass("completed");
+    expect(releaseToggle).toHaveTextContent("2 / 2 TODOs concluídos");
     expect(screen.getByText("Concluída")).toHaveClass("completed");
     if (!releaseToggle.closest(".roadmap-release")?.classList.contains("focused")) {
       fireEvent.click(releaseToggle);
@@ -213,6 +214,34 @@ describe("single root Project experience", () => {
       expect(row).not.toBeNull();
       expect(within(row!).getByText("Concluído")).toHaveClass("done");
     }
+  });
+
+  it.each([
+    { name: "partially completed", incomplete: true, count: "1 / 2 TODOs concluídos", status: "Em andamento" },
+    { name: "empty", incomplete: false, count: "0 / 0 TODOs concluídos", status: "Status indisponível" },
+  ])("keeps $name Release counts aligned across Roadmap and detail", async ({ incomplete, count, status }) => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.epics[0].releases[0].todos = incomplete ? [
+      completedTodo("completed-one", "Completed one", "administrative"),
+      { ...completedTodo("open-two", "Open two", "verified"), authored_delivery_stage: "In-Progress", delivery_stage: "In-Progress" },
+    ] as never : [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-01&release_id=r-01");
+    const roadmapView = render(<Projects />);
+    const releaseToggle = await screen.findByRole("button", { name: /First local viewer/ });
+    expect(releaseToggle).toHaveTextContent(count);
+    expect(releaseToggle).toHaveTextContent(status);
+    roadmapView.unmount();
+
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-hero")).toHaveTextContent(count);
+    expect(document.querySelector(".release-badge")).toHaveTextContent(status);
   });
 
   it("loads the Mongo Overview independently when the Foundation Reader fails", async () => {

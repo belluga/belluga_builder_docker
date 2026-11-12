@@ -933,6 +933,7 @@
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-toggle.release-toggle { min-height: 72px; grid-template-columns: 35px minmax(130px,1fr) minmax(150px,auto); gap: 10px; padding: 11px 60px 11px 16px; }
 .roadmap-view:not(.roadmap-view-compact) .release-name { display: block; font-size: 15px; font-weight: 650; }
 .roadmap-view:not(.roadmap-view-compact) .release-description { display: block; margin-top: 4px; color: var(--project-muted); font-size: 12px; font-weight: 400; line-height: 1.4; letter-spacing: 0; }
+.roadmap-view:not(.roadmap-view-compact) .release-completion-count { display: block; color: var(--project-muted); font-size: 12px; font-weight: 500; line-height: 1.4; letter-spacing: 0; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-chevron.chevron { color: var(--project-text); font-size: 24px; transition: transform .16s; }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release.open .chevron { transform: rotate(90deg); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.release-status { justify-self: start; padding: 7px 12px; font-size: 12px; }

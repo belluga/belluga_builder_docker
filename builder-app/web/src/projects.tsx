@@ -89,6 +89,10 @@ function releaseStatus(release: RoadmapRelease): ReleaseStatus {
   if (todos.some((todo) => ["In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"].includes(todo.delivery_stage!))) return "in-progress";
   return "planned";
 }
+function releaseCompletion(release: RoadmapRelease) {
+  const executable = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
+  return { completed: executable.filter((todo) => todo.delivery_stage === "Completed" && ["verified", "administrative"].includes(todo.delivery_stage_state)).length, total: executable.length };
+}
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
   return epic?.releases.find((release) => releaseStatus(release) !== "completed") || epic?.releases.at(-1);
 }
@@ -258,13 +262,13 @@ function ReleaseDetailView({ roadmap, companyID, projectID, epicID, releaseID, t
   if (!epic || !release) return <section className="project-notice" role="alert"><h1>Release indisponível</h1><p>Esta Release não existe no Roadmap salvo deste projeto.</p><button onClick={() => navigate({ page: "roadmap", epic_id: null, release_id: null })}>Voltar ao Roadmap</button></section>;
   const executable = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
   const historical = release.todos.filter((todo) => todo.disposition_state === "valid");
-  const completed = executable.filter((todo) => todo.delivery_stage === "Completed" && ["verified", "administrative"].includes(todo.delivery_stage_state)).length;
+  const completion = releaseCompletion(release);
   const status = releaseStatus(release);
   const back = () => navigate({ page: "roadmap", epic_id: epic.id, release_id: release.id });
   return <article className="release-page" aria-label="Detalhe da Release">
     <button ref={releaseBackRef} className="release-back" onClick={back}><span aria-hidden="true">←</span> Voltar ao Roadmap</button>
     <nav className="release-breadcrumb" aria-label="Localização"><button onClick={back}>Roadmap</button><span aria-hidden="true">›</span><span>{epic.name}</span><span aria-hidden="true">›</span><span aria-current="page">{release.name}</span></nav>
-    <header className="release-hero"><div><span className="release-kicker">RELEASE · {release.id}</span><h1>{release.name}</h1>{release.description && <p>{release.description}</p>}<p>{completed} / {executable.length} TODOs concluídos</p></div><span className={`release-badge ${status}`}><span aria-hidden="true">◉</span> {releaseStatusLabel[status]}</span></header>
+    <header className="release-hero"><div><span className="release-kicker">RELEASE · {release.id}</span><h1>{release.name}</h1>{release.description && <p>{release.description}</p>}<p>{completion.completed} / {completion.total} TODOs concluídos</p></div><span className={`release-badge ${status}`}><span aria-hidden="true">◉</span> {releaseStatusLabel[status]}</span></header>
     <section className="release-context-strip without-investigation" aria-label="Contexto da release">
       <div className="release-context-epic"><span className="release-context-icon" aria-hidden="true">◉</span><div><small>Épico</small><strong>{epic.name}</strong>{epic.description && <span>{epic.description}</span>}</div></div>
     </section>
@@ -481,16 +485,16 @@ function RoadmapView({ roadmap, projectID, epicID, releaseID, compact = false }:
       </div>
     </div>}
     {!compact && <div className="roadmap-full-body"><div className="roadmap-release-panel release-panel"><header className="roadmap-release-panel-heading release-heading"><div><span>{selectedEpic ? "RELEASES DO ÉPICO" : "PLANEJAMENTO"}</span><h2>{selectedEpic ? `Releases de ${selectedEpic.name}` : "Sem plano de releases"}</h2><p>{selectedEpic?.description || (!selectedEpic ? "TODOs ativos identificados pela Foundation aparecem no Backlog; nenhum agrupamento foi inferido." : "")}</p></div></header><div className="roadmap-release-list release-list" role="group" aria-label="Releases for selected Epic">
-      {releases.map((release) => <section className={`roadmap-release release-card${release.id === focusedRelease ? " focused" : ""}${expandedReleaseIDs.includes(release.id) ? " open" : ""}`} key={release.id}>
+      {releases.map((release) => { const completion = releaseCompletion(release); return <section className={`roadmap-release release-card${release.id === focusedRelease ? " focused" : ""}${expandedReleaseIDs.includes(release.id) ? " open" : ""}`} key={release.id}>
         <button className="roadmap-release-toggle release-toggle" aria-expanded={expandedReleaseIDs.includes(release.id)} onClick={() => { if (release.id !== focusedRelease) selectRelease(release); else setExpandedReleaseIDs((current) => current.includes(release.id) ? current.filter((id) => id !== release.id) : [...current, release.id]); }}>
-          <span className="roadmap-release-chevron chevron" aria-hidden="true">›</span><span className="roadmap-release-name release-name">{release.name}<span className="release-description">{release.description}</span></span>
+          <span className="roadmap-release-chevron chevron" aria-hidden="true">›</span><span className="roadmap-release-name release-name">{release.name}<span className="release-description">{release.description}</span><span className="release-completion-count">{completion.completed} / {completion.total} TODOs concluídos</span></span>
           <span className={`roadmap-release-status release-status ${releaseStatus(release)}`}>{releaseStatusLabel[releaseStatus(release)]}</span>
         </button>
         <button className="roadmap-release-open" type="button" aria-label="Abrir Release" title={`Abrir ${release.name}`} onClick={() => navigate({ page: "release", epic_id: selectedEpicID, release_id: release.id })}><span aria-hidden="true">›</span></button>
         {expandedReleaseIDs.includes(release.id) && <div className="roadmap-release-details release-details"><div className="roadmap-table-scroll"><table className="roadmap-todo-table todo-table"><thead><tr><th>#</th><th>TODO</th><th>TIPO · REGISTRO</th><th>STATUS</th></tr></thead><tbody>{release.todos.map((todo, index) => <tr key={todo.id}>
           <td>{String(index + 1).padStart(2, "0")}</td><td className="todo-name" title={todo.path}>{isTODOReadable(todo) ? <button className="roadmap-todo-link" onClick={() => navigate({ todo_id: todo.id })}>▤ &nbsp;{todo.title}</button> : <>▤ &nbsp;{todo.title}</>}</td><td><span className="roadmap-todo-meta">{todo.kind === "planning" ? "Planning ledger" : "Executable TODO"}<small>{todo.record_state === "completed" ? "Local record: completed" : todo.record_state === "active" ? "Local record: active" : "Local record: other"}</small></span></td><td>{todo.kind === "planning" ? <span className="roadmap-todo-stage">—</span> : <TodoStageStatus todo={todo} className="roadmap-todo-stage todo-status" />}</td>
         </tr>)}</tbody></table></div></div>}
-      </section>)}
+      </section>; })}
       {releases.length === 0 && <p className="project-notice">No Releases defined yet.</p>}
     </div></div>
     {!compact && (roadmap.unclassified.length > 0 || roadmap.diagnostics.length > 0) && <section className="roadmap-planning-diagnostics">
