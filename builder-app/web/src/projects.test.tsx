@@ -142,7 +142,7 @@ describe("single root Project experience", () => {
     const registryRoadmap = roadmap("builder");
     registryRoadmap.epics[0].releases[0].todos.push({ ...completedTodo("accepted-complete", "Accepted historical delivery", "administrative"), todo_revision: 0 } as never);
     registryRoadmap.epics[0].releases[0].todos.push({ id: "discarded", title: "Discarded historical obligation", kind: "non-delivery", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Planning", delivery_stage_state: "unverified", disposition: { kind: "Discarded", reason: "No longer required" }, disposition_state: "valid", blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
-    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"c".repeat(64)}`, todo: { id: "accepted-complete", project_id: "builder", revision: 0, title: "Accepted historical delivery", objective: "Accepted objective", next_exact_step: "Review historical acceptance", stage: "Completed", sections: [] } };
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"c".repeat(64)}`, todo: { id: "accepted-complete", project_id: "builder", revision: 0, title: "Accepted historical delivery", objective: "Accepted objective", next_exact_step: "Review historical acceptance", stage: "Completed", sections: [], content: { schema_version: 2, context: "Historical context", scope: { included: ["One approved path"] }, references: [{ kind: "historical-foundation-source", ref: "todos/completed/example.md" }] } } };
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
@@ -162,6 +162,7 @@ describe("single root Project experience", () => {
     await userEvent.setup().click(screen.getByRole("button", { name: /Abrir TODO completo/ }));
     expect(await screen.findByText("Accepted objective")).toBeInTheDocument();
     expect(screen.getByText("Aceite administrativo de APROVADO: Already delivered. Não é uma promoção verificada.")).toBeInTheDocument();
+    expect(screen.getByText("One approved path")).toBeInTheDocument();
     const exactRead = vi.mocked(fetch).mock.calls.map(([input]) => new URL(String(input), location.origin)).find((url) => url.searchParams.has("todo_id"));
     expect(exactRead?.searchParams.get("todo_id")).toBe("accepted-complete");
     expect(exactRead?.searchParams.get("todo_revision")).toBe("0");
