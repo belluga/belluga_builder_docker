@@ -39,8 +39,8 @@ function validRoadmapProjection(value: unknown, projectID: string): value is Roa
 }
 type MongoTODOContentItem = { id: string; text: string };
 type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included: string[]; excluded: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
-type ReleaseStatus = "delivered" | "documentary-complete" | "publication-unverified" | "accepted" | "blocked" | "in-progress" | "planned" | "unknown";
-const releaseStatusLabel: Record<ReleaseStatus, string> = { delivered: "Entregue", "documentary-complete": "Documentação concluída", "publication-unverified": "TODOs concluídos · publicação não verificada", accepted: "Concluída por aceite administrativo", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
+type ReleaseStatus = "completed" | "blocked" | "in-progress" | "planned" | "unknown";
+const releaseStatusLabel: Record<ReleaseStatus, string> = { completed: "Concluída", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
 const deliveryStageLabels: Record<DeliveryStage, string> = {
   Planning: "Planejamento",
   "Implementation-Approval-Pending": "Aguardando aprovação",
@@ -61,12 +61,12 @@ const deliveryStageTone: Record<DeliveryStage, string> = {
 };
 function deliveryStageLabel(todo: RoadmapTodo) {
   if (todo.disposition_state === "valid") return (todo.disposition?.kind || todo.historical_disposition) === "Superseded" ? "Substituído" : "Descartado";
-  if (todo.delivery_stage_state === "administrative" && todo.delivery_stage) return `${deliveryStageLabels[todo.delivery_stage]} · aceite administrativo`;
+  if (todo.delivery_stage_state === "administrative" && todo.delivery_stage) return deliveryStageLabels[todo.delivery_stage];
   return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageLabels[todo.delivery_stage] : "Status indisponível";
 }
 function deliveryStageClass(todo: RoadmapTodo) {
   if (todo.disposition_state === "valid") return "historical";
-  if (todo.delivery_stage_state === "administrative") return "historical";
+  if (todo.delivery_stage_state === "administrative" && todo.delivery_stage === "Completed") return "done";
   return todo.delivery_stage_state === "verified" && todo.delivery_stage ? deliveryStageTone[todo.delivery_stage] : "unknown";
 }
 function todoStatusTeach(todo: RoadmapTodo) {
@@ -85,20 +85,12 @@ function releaseStatus(release: RoadmapRelease): ReleaseStatus {
   if (todos.length === 0) return "unknown";
   if (todos.some((todo) => !["verified", "administrative"].includes(todo.delivery_stage_state) || !todo.delivery_stage || todo.qualifier_state !== "verified")) return "unknown";
   if (todos.some((todo) => todo.blocked)) return "blocked";
-  if (todos.every((todo) => todo.delivery_stage === "Completed")) {
-    if (todos.some((todo) => todo.delivery_stage_state === "administrative")) return "accepted";
-    const documentary = todos.filter((todo) => todo.delivery_kind === "knowledge-only");
-    if (documentary.length > 0) {
-      if (documentary.some((todo) => !todo.documentary_completion)) return "unknown";
-      return documentary.length === todos.length ? "documentary-complete" : "publication-unverified";
-    }
-    return "delivered";
-  }
+  if (todos.every((todo) => todo.delivery_stage === "Completed")) return "completed";
   if (todos.some((todo) => ["In-Progress", "Local-Implemented", "Promotion-Lane", "Completed"].includes(todo.delivery_stage!))) return "in-progress";
   return "planned";
 }
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
-  return epic?.releases.find((release) => !["delivered", "documentary-complete", "accepted"].includes(releaseStatus(release))) || epic?.releases.at(-1);
+  return epic?.releases.find((release) => releaseStatus(release) !== "completed") || epic?.releases.at(-1);
 }
 function TypedTODOContent({ content, legacySections }: { content: NonNullable<MongoTODORead["todo"]["content"]>; legacySections: MongoTODORead["todo"]["sections"] }) {
   const panels: ReactNode[] = [];
@@ -176,7 +168,7 @@ function TodoPreview({ todo, context, epicID = "", releaseID = "", onClose, focu
   }, [focusOnMobile, todo.id]);
   return <aside ref={previewRef} tabIndex={-1} className="todo-preview roadmap-todo-preview" aria-label="Prévia do TODO">
     <div className="todo-preview-top"><span>{todo.todo_revision === undefined ? "TODO · LEITURA DA FOUNDATION" : `TODO · REGISTRO MONGO · revisão ${todo.todo_revision}`}</span><button type="button" aria-label="Fechar prévia" onClick={onClose}>×</button></div>
-    <p className="todo-preview-context">{context}</p><h2>{todo.title}</h2><p className={`todo-preview-status ${todo.blocked ? "blocked" : deliveryStageClass(todo)}`}>{todoStatusText(todo)}</p>{todoStatusTeach(todo) && <small className="todo-stage-teach" role="note">{todoStatusTeach(todo)}</small>}{todo.administrative_acceptance && <p className="todo-preview-context">Aceite administrativo: {todo.administrative_acceptance.owner_reference} · {todo.administrative_acceptance.reason}. Não é prova de promoção verificada.</p>}
+    <p className="todo-preview-context">{context}</p><h2>{todo.title}</h2><p className={`todo-preview-status ${todo.blocked ? "blocked" : deliveryStageClass(todo)}`}>{todoStatusText(todo)}</p>{todoStatusTeach(todo) && <small className="todo-stage-teach" role="note">{todoStatusTeach(todo)}</small>}
     {error && <p className="project-notice" role="alert">Este TODO não está disponível na revisão publicada do projeto.</p>}
     <div className="todo-preview-body">{objective && <section><h3>Objetivo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{objective}</ReactMarkdown></div></section>}{todo.objective_state === "too_long" && <p>O objetivo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}{nextStep && <section><h3>Próximo passo</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: () => null }}>{nextStep}</ReactMarkdown></div></section>}{todo.next_step_state === "too_long" && <p>O próximo passo completo é extenso para a prévia. Abra o TODO para ler o texto original.</p>}</div>
     <button className="todo-preview-open" type="button" disabled={error} onClick={openFullTODO}>Abrir TODO completo <span aria-hidden="true">↗</span></button>
@@ -266,14 +258,13 @@ function ReleaseDetailView({ roadmap, companyID, projectID, epicID, releaseID, t
   if (!epic || !release) return <section className="project-notice" role="alert"><h1>Release indisponível</h1><p>Esta Release não existe no Roadmap salvo deste projeto.</p><button onClick={() => navigate({ page: "roadmap", epic_id: null, release_id: null })}>Voltar ao Roadmap</button></section>;
   const executable = release.todos.filter((todo) => todo.kind === "executable" && todo.disposition_state !== "valid");
   const historical = release.todos.filter((todo) => todo.disposition_state === "valid");
-  const verifiedComplete = executable.filter((todo) => todo.delivery_stage === "Completed" && todo.delivery_stage_state === "verified").length;
-  const administrativelyComplete = executable.filter((todo) => todo.delivery_stage === "Completed" && todo.delivery_stage_state === "administrative").length;
+  const completed = executable.filter((todo) => todo.delivery_stage === "Completed" && ["verified", "administrative"].includes(todo.delivery_stage_state)).length;
   const status = releaseStatus(release);
   const back = () => navigate({ page: "roadmap", epic_id: epic.id, release_id: release.id });
   return <article className="release-page" aria-label="Detalhe da Release">
     <button ref={releaseBackRef} className="release-back" onClick={back}><span aria-hidden="true">←</span> Voltar ao Roadmap</button>
     <nav className="release-breadcrumb" aria-label="Localização"><button onClick={back}>Roadmap</button><span aria-hidden="true">›</span><span>{epic.name}</span><span aria-hidden="true">›</span><span aria-current="page">{release.name}</span></nav>
-    <header className="release-hero"><div><span className="release-kicker">RELEASE · {release.id}</span><h1>{release.name}</h1>{release.description && <p>{release.description}</p>}<p>{verifiedComplete} concluído(s) com promoção verificada · {administrativelyComplete} aceito(s) administrativamente · {executable.length} executável(is)</p></div><span className={`release-badge ${status}`}><span aria-hidden="true">◉</span> {releaseStatusLabel[status]}</span></header>
+    <header className="release-hero"><div><span className="release-kicker">RELEASE · {release.id}</span><h1>{release.name}</h1>{release.description && <p>{release.description}</p>}<p>{completed} / {executable.length} TODOs concluídos</p></div><span className={`release-badge ${status}`}><span aria-hidden="true">◉</span> {releaseStatusLabel[status]}</span></header>
     <section className="release-context-strip without-investigation" aria-label="Contexto da release">
       <div className="release-context-epic"><span className="release-context-icon" aria-hidden="true">◉</span><div><small>Épico</small><strong>{epic.name}</strong>{epic.description && <span>{epic.description}</span>}</div></div>
     </section>
@@ -411,11 +402,11 @@ function RoadmapView({ roadmap, projectID, epicID, releaseID, compact = false }:
   const epics = roadmap?.epics || [];
   const requestedReleaseEpic = releaseID ? epics.find((epic) => epic.releases.some((release) => release.id === releaseID)) : undefined;
   const invalidFocus = (releaseID && !requestedReleaseEpic) || (epicID && !epics.some((epic) => epic.id === epicID)) || (epicID && requestedReleaseEpic && epicID !== requestedReleaseEpic.id);
-  const selectedEpic = invalidFocus ? undefined : requestedReleaseEpic || epics.find((epic) => epic.id === epicID) || epics.find((epic) => epic.releases.some((release) => !["delivered", "accepted"].includes(releaseStatus(release)))) || epics.find((epic) => epic.releases.length > 0) || epics[0];
+  const selectedEpic = invalidFocus ? undefined : requestedReleaseEpic || epics.find((epic) => epic.id === epicID) || epics.find((epic) => epic.releases.some((release) => releaseStatus(release) !== "completed")) || epics.find((epic) => epic.releases.length > 0) || epics[0];
   const focusedRelease = releaseID || initialRelease(selectedEpic)?.id || "";
   const selectedEpicID = selectedEpic?.id || "";
   const focusedReleaseStatus = selectedEpic?.releases.find((release) => release.id === focusedRelease);
-  const initiallyExpanded = focusedRelease && focusedReleaseStatus && !["delivered", "accepted"].includes(releaseStatus(focusedReleaseStatus)) ? [focusedRelease] : [];
+  const initiallyExpanded = focusedRelease && focusedReleaseStatus && releaseStatus(focusedReleaseStatus) !== "completed" ? [focusedRelease] : [];
   const [expandedReleaseIDs, setExpandedReleaseIDs] = useState<string[]>(initiallyExpanded);
   const epicRail = useRef<HTMLDivElement>(null);
   const releaseRail = useRef<HTMLDivElement>(null);

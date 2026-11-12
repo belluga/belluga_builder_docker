@@ -575,12 +575,12 @@
 .roadmap-view-compact .roadmap-release-chip > small { grid-column: 2; margin-top: 3px; color: var(--project-muted); font-size: 10px; letter-spacing: 0; }
 .roadmap-view-compact .roadmap-rail > button.selected > small,
 .roadmap-view-compact .roadmap-release-chip.focused > small { color: var(--project-accentText); }
-.roadmap-view-compact .roadmap-release-chip.delivered > small { color: var(--project-success, #82e0d0); }
+.roadmap-view-compact .roadmap-release-chip.completed > small { color: var(--project-success, #82e0d0); }
 .roadmap-view-compact .roadmap-release-chip.blocked > small { color: var(--project-text); }
 .roadmap-view-compact .roadmap-release-chip.unknown > small { color: var(--project-text); }
 .roadmap-journey-status { grid-column: 1; grid-row: 1 / span 3; width: 17px; height: 17px; border: 1px solid var(--project-muted); border-radius: 50%; align-self: start; margin-top: 1px; }
 .roadmap-journey-status.active { border: 2px solid var(--project-accent); box-shadow: inset 0 0 0 3px var(--project-surface); background: var(--project-accent); }
-.roadmap-journey-status.delivered { border-color: var(--project-success, #82e0d0); background: var(--project-success, #82e0d0); }
+.roadmap-journey-status.completed { border-color: var(--project-success, #82e0d0); background: var(--project-success, #82e0d0); }
 .roadmap-journey-status.blocked { border-color: #edaa91; background: #edaa91; }
 .roadmap-journey-status.unknown { border-color: #e8c879; }
 .roadmap-view-compact .roadmap-epic-rail > button.selected::after { position: absolute; bottom: -31px; left: 50%; z-index: 1; width: 1px; height: 29px; background: var(--project-accent); box-shadow: 0 0 7px var(--project-accent); content: ""; }
@@ -892,7 +892,7 @@
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release { position: relative; overflow: hidden; padding: 0; border-radius: 10px; background: var(--project-canvas); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release.focused { box-shadow: 0 0 0 1px var(--project-accent); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status { color: var(--project-muted); background: var(--project-surface); }
-.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.delivered { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
+.roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.completed { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.blocked { border-color: #c77664; color: var(--project-text); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.in-progress { border-color: var(--project-accentText); color: var(--project-accentText); }
 .roadmap-view:not(.roadmap-view-compact) .roadmap-release-status.unknown { border-color: #b9933e; color: var(--project-text); }

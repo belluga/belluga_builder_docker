@@ -24,6 +24,9 @@ function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "
 function unverifiedStage(authored = "unknown", teach = "TEACH: stage requires review.") {
   return { authored_delivery_stage: authored, delivery_stage_state: "unverified", delivery_stage_teach: teach, blocked: false, qualifier_state: "verified", work_state: "unknown" } as const;
 }
+function completedTodo(id: string, title: string, basis: "verified" | "administrative") {
+  return { id, title, kind: "executable", record_state: "active", authored_delivery_stage: "Completed", delivery_stage: "Completed", delivery_stage_state: basis, ...(basis === "administrative" ? { delivery_stage_basis: "administrative-acceptance", administrative_acceptance: { accepted_stage: "Completed", owner_reference: "APROVADO", reason: "Already delivered", permission_decision: "pre-iam-private-api-allow-all", accepted_at: "2026-11-07T00:00:00Z", content_digest: "sha256:accepted" } } : {}), objective_state: "complete", next_step_state: "complete", blocked: false, qualifier_state: "verified", work_state: "unknown" };
+}
 function roadmap(projectID: string) { return { schema_version: "builder-roadmap-projection-v3", project_id: projectID, focus_release_id: "r-04", backlog: { todos: [{ id: "backlog:todos/active/backlog-item.md", title: "Unassigned active task", path: "todos/active/backlog-item.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }, { id: "backlog:todos/active/backlog-item-two.md", title: "Second unassigned task", path: "todos/active/backlog-item-two.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }], folders: [] }, unclassified: [], diagnostics: [], epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
     { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
@@ -135,21 +138,80 @@ describe("single root Project experience", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/roadmap?"))).toBe(true);
   });
 
-  it("distinguishes administrative completion and non-delivery dispositions in a Release", async () => {
+  it("presents administrative completion like other completed work while preserving dispositions", async () => {
     const registryRoadmap = roadmap("builder");
-    registryRoadmap.epics[0].releases[0].todos.push({ id: "accepted-complete", title: "Accepted historical delivery", kind: "executable", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Completed", delivery_stage: "Completed", delivery_stage_state: "administrative", delivery_stage_basis: "administrative-acceptance", administrative_acceptance: { accepted_stage: "Completed", owner_reference: "APROVADO", reason: "Already delivered", permission_decision: "pre-iam-private-api-allow-all", accepted_at: "2026-11-07T00:00:00Z", content_digest: "sha256:old" }, blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    registryRoadmap.epics[0].releases[0].todos.push({ ...completedTodo("accepted-complete", "Accepted historical delivery", "administrative"), todo_revision: 0 } as never);
     registryRoadmap.epics[0].releases[0].todos.push({ id: "discarded", title: "Discarded historical obligation", kind: "non-delivery", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Planning", delivery_stage_state: "unverified", disposition: { kind: "Discarded", reason: "No longer required" }, disposition_state: "valid", blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"c".repeat(64)}`, todo: { id: "accepted-complete", project_id: "builder", revision: 0, title: "Accepted historical delivery", objective: "Accepted objective", next_exact_step: "Review historical acceptance", stage: "Completed", sections: [] } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByText("Concluída")).toBeInTheDocument();
+    const acceptedRow = screen.getByText("Accepted historical delivery").closest("article");
+    expect(acceptedRow).not.toBeNull();
+    expect(within(acceptedRow!).getByText("Concluído")).toHaveClass("done");
+    expect(screen.getByText("Histórico não entregue")).toBeInTheDocument();
+    expect(screen.getByText("Descartado")).toBeInTheDocument();
+    fireEvent.click(within(acceptedRow!).getByRole("button", { name: /Accepted historical delivery/ }));
+    expect(await screen.findByRole("dialog", { name: "Prévia do TODO" })).toBeInTheDocument();
+    expect(screen.queryByText(/Aceite administrativo/)).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByText("Accepted objective")).toBeInTheDocument();
+    expect(screen.getByText("Aceite administrativo de APROVADO: Already delivered. Não é uma promoção verificada.")).toBeInTheDocument();
+    const exactRead = vi.mocked(fetch).mock.calls.map(([input]) => new URL(String(input), location.origin)).find((url) => url.searchParams.has("todo_id"));
+    expect(exactRead?.searchParams.get("todo_id")).toBe("accepted-complete");
+    expect(exactRead?.searchParams.get("todo_revision")).toBe("0");
+  });
+
+  it.each([
+    { name: "all administrative", bases: ["administrative", "administrative"] as const },
+    { name: "mixed verified and administrative", bases: ["verified", "administrative"] as const },
+  ])("shows $name completion consistently on Roadmap and Release detail", async ({ bases }) => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.epics[0].releases[0].todos = [
+      completedTodo("basis-one", "Basis one", bases[0]),
+      completedTodo("basis-two", "Basis two", bases[1]),
+    ] as never;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
+
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-01");
+    const roadmapView = render(<Projects />);
+    const releaseToggle = await screen.findByRole("button", { name: /First local viewer/ });
+    expect(releaseToggle.querySelector(".roadmap-release-status")).toHaveClass("completed");
+    expect(screen.getByText("Concluída")).toHaveClass("completed");
+    if (!releaseToggle.closest(".roadmap-release")?.classList.contains("focused")) {
+      fireEvent.click(releaseToggle);
+      await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ }).closest(".roadmap-release")).toHaveClass("focused"));
+    }
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true"));
+    for (const title of ["Basis one", "Basis two"]) {
+      const row = (await screen.findByText(new RegExp(title))).closest("tr");
+      expect(row).not.toBeNull();
+      expect(within(row!).getByText("Concluído")).toHaveClass("done");
+    }
+    roadmapView.unmount();
+
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
-    expect(await screen.findByText("Concluída por aceite administrativo")).toBeInTheDocument();
-    expect(screen.getByText("Concluído · aceite administrativo")).toBeInTheDocument();
-    expect(screen.getByText("Histórico não entregue")).toBeInTheDocument();
-    expect(screen.getByText("Descartado")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
+    expect(document.querySelector(".release-badge")).toHaveClass("completed");
+    expect(document.querySelector(".release-hero")).toHaveTextContent("2 / 2 TODOs concluídos");
+    for (const title of ["Basis one", "Basis two"]) {
+      const row = screen.getByText(new RegExp(title)).closest("article");
+      expect(row).not.toBeNull();
+      expect(within(row!).getByText("Concluído")).toHaveClass("done");
+    }
   });
 
   it("loads the Mongo Overview independently when the Foundation Reader fails", async () => {
@@ -600,7 +662,8 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 }, { timeout: 5000 })).toBeInTheDocument();
-    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
+    expect(document.querySelector(".release-hero")).toHaveTextContent("3 / 3 TODOs concluídos");
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Builder genesis ledger");
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-02&release_id=r-01");
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -615,7 +678,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
-    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
     expect(screen.getByRole("region", { name: "Histórico não entregue" })).toHaveTextContent("Replaced historical plan");
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Replaced historical plan");
   });
@@ -781,7 +844,7 @@ describe("single root Project experience", () => {
     expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
     expect(document.querySelector(".roadmap-context")).toHaveTextContent("Project UI and real Roadmap");
     expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Concluída");
     expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Project UI and real Roadmap")).toBeInTheDocument();
@@ -859,7 +922,7 @@ describe("single root Project experience", () => {
     expect(within(overview).getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Project UI and real Roadmap");
     const releaseRail = within(overview).getByRole("group", { name: "Releases for selected Epic" });
-    expect(within(releaseRail).getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(within(releaseRail).getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Concluída");
     expect(within(releaseRail).getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(overview).queryByText("1 / 5")).not.toBeInTheDocument();
     fireEvent.click(within(overview).getByRole("button", { name: "Next Epic" }));
@@ -884,10 +947,10 @@ describe("single root Project experience", () => {
     { name: "planning-only", todos: [{ kind: "planning", ...verifiedStage("Completed") }], expected: "Status indisponível" },
     { name: "blocked ready", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true) }], expected: "Bloqueada" },
     { name: "invalid blocked qualifier remains unknown", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true), qualifier_state: "unverified", qualifier_teach: "TEACH: correct the qualifier" }], expected: "Status indisponível" },
-    { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Entregue" },
-    { name: "documentary completion is not production delivery", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }], expected: "Documentação concluída" },
-    { name: "mixed completion lacks release publication proof", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }, { kind: "executable", ...verifiedStage("Completed") }], expected: "TODOs concluídos · publicação não verificada" },
-    { name: "unverified documentary proof cannot complete release", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only" }], expected: "Status indisponível" },
+    { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Concluída" },
+    { name: "documentary completion uses the shared completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }], expected: "Concluída" },
+    { name: "mixed completed bases use the shared completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }, { kind: "executable", ...verifiedStage("Completed") }], expected: "Concluída" },
+    { name: "documentary basis does not alter completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only" }], expected: "Concluída" },
   ])("derives $name Release status without a second delivery field", async ({ todos, expected }) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
