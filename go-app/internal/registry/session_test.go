@@ -172,6 +172,33 @@ func TestConversationLaneEnforcesImmutableProjectBinding(t *testing.T) {
 	}
 }
 
+func TestConversationLaneRejectsEncodedOrNoncanonicalProjectIdentity(t *testing.T) {
+	service := &sessionHTTPService{
+		testService: testService{project: Project{ID: "project-b", CompanyID: "company-a", Name: "Other Project"}},
+		session:     Session{Type: "codex", ExternalID: "conversation-1", Binding: SessionProjectBinding{CompanyID: "company-a", ProjectID: "project-a"}, Revision: 1},
+	}
+	handler := NewHandler(service)
+	for _, path := range []string{
+		"/internal/v1/companies/company-a/projects/%20project-b%20",
+		"/internal/v1/companies/%20company-a%20/projects/project-b",
+		"/internal/v1/companies/company-a/projects/project-b%2Falias",
+		"/%69nternal/v1/companies/company-a/projects/project-b",
+		"/internal/v1/%63ompanies/company-a/projects/project-b",
+	} {
+		t.Run(path, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			request.Header.Set(sessionLaneHeader, "conversation")
+			request.Header.Set(sessionTypeHeader, "codex")
+			request.Header.Set(sessionExternalIDHeader, "conversation-1")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "Other Project") {
+				t.Fatalf("noncanonical route escaped session binding: status=%d body=%s", response.Code, response.Body)
+			}
+		})
+	}
+}
+
 func TestProjectReaderLaneWithoutConversationIdentityRemainsAvailable(t *testing.T) {
 	service := &sessionHTTPService{testService: testService{project: Project{ID: "project-a", CompanyID: "company-a", Name: "Project A"}}}
 	response := httptest.NewRecorder()

@@ -270,7 +270,7 @@ func sessionScopeGuard(next http.Handler, service Service) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		companyID, projectID, ok := projectPathIdentity(r.URL.Path)
+		companyID, projectID, ok := projectPathIdentity(r.URL.EscapedPath())
 		if !ok {
 			next.ServeHTTP(w, r)
 			return
@@ -302,17 +302,23 @@ func sessionScopeGuard(next http.Handler, service Service) http.Handler {
 	})
 }
 
-func projectPathIdentity(path string) (string, string, bool) {
-	segments := strings.Split(path, "/")
-	if len(segments) < 7 || segments[1] != "internal" || segments[2] != "v1" || segments[3] != "companies" || segments[5] != "projects" {
+func projectPathIdentity(escapedPath string) (string, string, bool) {
+	segments := strings.Split(escapedPath, "/")
+	if len(segments) < 7 {
 		return "", "", false
 	}
-	companyID, companyErr := url.PathUnescape(segments[4])
-	projectID, projectErr := url.PathUnescape(segments[6])
-	if companyErr != nil || projectErr != nil || !validID(companyID) || !validID(projectID) {
+	decoded := make([]string, 7)
+	for index := 1; index < 7; index++ {
+		value, err := url.PathUnescape(segments[index])
+		if err != nil {
+			return "", "", true
+		}
+		decoded[index] = value
+	}
+	if decoded[1] != "internal" || decoded[2] != "v1" || decoded[3] != "companies" || decoded[5] != "projects" {
 		return "", "", false
 	}
-	return companyID, projectID, true
+	return decoded[4], decoded[6], true
 }
 
 func (h *Handler) roadmapChange(action string) http.HandlerFunc {
