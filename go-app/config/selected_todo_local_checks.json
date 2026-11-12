@@ -26,6 +26,7 @@
     "builder-visual-artifacts-precutover-readiness": ["V-HTTP"],
     "builder-prototype-dedicated-git-authority": ["P-TEST"],
     "builder-retire-project-snapshot": ["G-TEST", "G-VET", "G-IMAGE", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
-    "builder-knowledge-only-todo-delivery": ["G-TEST", "G-VET", "G-IMAGE", "G-KNOWLEDGE-IT", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"]
+    "builder-knowledge-only-todo-delivery": ["G-TEST", "G-VET", "G-IMAGE", "G-KNOWLEDGE-IT", "P-TEST", "S-TEST", "W-TEST", "W-BUILD"],
+    "builder-canonical-completed-administrative-basis": ["W-TEST", "W-BUILD"]
   }
 }
