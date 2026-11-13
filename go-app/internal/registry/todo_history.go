@@ -611,6 +611,7 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		priorV2Match := matchesPredecessor(priorV2, historyValidatorBeforeSchemaV2(preRemovalEvents))
 		beforeRepositoryIdentity := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforePlanningAndRepositoryIdentity())
 		beforeAuditTriggers := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeAuditTriggers())
+		beforeLocalChecks := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeLocalChecks())
 		beforeDigest := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentDigest(validator))
 		beforePlacement := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeClearPlacement(validator), historyValidatorBeforeClearPlacement(preRemovalEvents))
 		beforeAdoption := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeHistoricalAdoption(validator), historyValidatorBeforeHistoricalAdoption(preRemovalEvents))
@@ -619,10 +620,10 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		beforeReviewWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewWaiver(validator), historyValidatorBeforeReviewWaiver(preRemovalEvents))
 		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(preRemovalEvents)))
 		beforeAdoptionAndContentMigration := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(preRemovalEvents)))
-		if !beforeKnowledge && !beforeAdministrative && !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
+		if !beforeKnowledge && !beforeAdministrative && !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeLocalChecks && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
-		if !beforeDigest && !beforePlacement {
+		if !beforeDigest && !beforeLocalChecks && !beforePlacement {
 			if err := scanLegacyHistoryOwnership(ctx, database, name); err != nil {
 				return err
 			}
@@ -1781,6 +1782,16 @@ func contentVersionsValidatorBeforePlanningAndRepositoryIdentity() bson.D {
 
 func contentVersionsValidatorBeforeAuditTriggers() bson.D {
 	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "planning", "properties"}, "audit_triggers")
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+// contentVersionsValidatorBeforeLocalChecks is the exact strict/error
+// predecessor deployed immediately before repository-scoped local checks were
+// added to authored content v2. Only the optional v2 field is absent; v1 and
+// every other history/content constraint remain unchanged.
+func contentVersionsValidatorBeforeLocalChecks() bson.D {
+	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "local_checks")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
