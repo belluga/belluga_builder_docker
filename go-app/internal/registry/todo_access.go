@@ -299,7 +299,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 			if !available {
 				return TODOActionResponse{}, todoTeach("content_revision", "resolve the current immutable Mongo content before verifying delivery evidence", ErrConflict)
 			}
-			verifiedRequirementRefs, err = verifyLocalRequirementReferences(record.Content, record.ProofReferences, request.LocalProof, contentDigest)
+			err = validateExternalRequirementReferences(record.Content, record.ProofReferences, contentDigest)
 			if err != nil {
 				return TODOActionResponse{}, err
 			}
@@ -388,30 +388,14 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 				return TODOProofReference{}, err
 			}
 		}
-		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
-			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run and remotely verified implementation commits", ErrConflict)
+		if request.LocalProof != nil || len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
+			return TODOProofReference{}, todoTeach("local_proof/proof_refs/waiver_refs", "omit local runner results and provide external citations through TODO evidence before remote code verification", ErrConflict)
 		}
 		branchPlan, err := confirmedTODOReleaseBranches(ctx, m, companyID, record)
 		if err != nil {
 			return TODOProofReference{}, err
 		}
-		if content.SchemaVersion == todoContentSchemaVersion {
-			if err := validateLocalProofSubject(ctx, m.client.Database(company.DatabaseName), companyID, record, contentDigest, request.LocalProof); err != nil {
-				return TODOProofReference{}, err
-			}
-		}
-		local, err := m.validateLocalProof(content, branchPlan, request.LocalProof)
-		if err != nil {
-			return TODOProofReference{}, err
-		}
-		if err := m.verifyLocalProofHeads(ctx, companyID, record, branchPlan, request.LocalProof); err != nil {
-			return TODOProofReference{}, err
-		}
-		testedHeads := make(map[string]string, len(request.LocalProof.Repositories))
-		for _, repository := range request.LocalProof.Repositories {
-			testedHeads[repository.RepositoryID] = repository.HeadBefore
-		}
-		return m.verifyRemoteLocalDeliveryWithBranchPlan(ctx, companyID, "", record, contentDigest, local, branchPlan, testedHeads)
+		return m.verifyRemoteLocalDeliveryWithBranchPlan(ctx, companyID, "", record, contentDigest, TODOProofReference{}, branchPlan)
 	}
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
 }
@@ -841,7 +825,7 @@ func restoredLocalProof(record TODORecord, current TODOAuthoredContent, prior TO
 	if record.Stage != "Local-Implemented" || record.StageVerification != "unverified" || record.VerifiedTransitionRef != nil ||
 		prior.ProjectID != record.ProjectID || prior.TODOID != record.ID || prior.Revision >= record.Revision ||
 		prior.State.Stage != "Local-Implemented" || prior.State.StageVerification != "verified" || prior.State.VerifiedTransitionRef == nil ||
-		prior.State.VerifiedTransitionRef.Kind != "remote-local-delivery" || prior.State.VerifiedTransitionRef.VerificationState != "verified" ||
+		!verifiedCodeDeliveryIdentity(prior.State.VerifiedTransitionRef) ||
 		record.Position == nil || !prior.State.PlacementAssigned || prior.State.ReleaseID != record.ReleaseID || prior.State.Position != *record.Position ||
 		!reflect.DeepEqual(current, prior.Content) || !reflect.DeepEqual(record.ImplementationCommits, prior.State.ImplementationCommits) {
 		return TODOProofReference{}, todoTeach("local_delivery_recovery", "restore the exact previously verified content, Release placement and implementation commits before reusing its immutable local proof", ErrConflict)

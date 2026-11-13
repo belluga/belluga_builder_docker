@@ -202,11 +202,11 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 		case strings.TrimSpace(proof.Kind) == "":
 			return TODOContentEditResponse{}, todoTeach("proof_refs.kind", "provide the exact evidence kind", ErrInvalid)
 		case strings.TrimSpace(proof.Source) == "":
-			return TODOContentEditResponse{}, todoTeach(field+".source", "provide the reference source; PACED command evidence uses exactly paced-local-runner", ErrInvalid)
+			return TODOContentEditResponse{}, todoTeach(field+".source", "provide the exact evidence source; new criterion and scenario citations use external-evidence", ErrInvalid)
 		case strings.TrimSpace(proof.Reference) == "":
-			return TODOContentEditResponse{}, todoTeach(field+".ref", "provide a non-empty reference; PACED command evidence uses the exact successful check ID, not a run UUID or argv", ErrInvalid)
+			return TODOContentEditResponse{}, todoTeach(field+".ref", "provide a non-empty attributable evidence reference", ErrInvalid)
 		case !validSourceDigest(proof.SourceDigest):
-			return TODOContentEditResponse{}, todoTeach(field+".source_digest", "provide the exact current TODO content digest for new command evidence", ErrInvalid)
+			return TODOContentEditResponse{}, todoTeach(field+".source_digest", "provide the exact current TODO content digest for new evidence", ErrInvalid)
 		case !validReviewOutcome(proof.Outcome):
 			return TODOContentEditResponse{}, todoTeach(field+".outcome", "provide a valid review outcome when required", ErrInvalid)
 		case proof.VerificationState != "unverified" && proof.VerificationState != "verified":

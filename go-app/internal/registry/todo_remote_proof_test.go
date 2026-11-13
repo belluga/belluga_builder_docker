@@ -121,6 +121,25 @@ func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T
 	}
 }
 
+func TestRemoteCodeDeliveryMintsOnlyReaderVerifiedCodeFacts(t *testing.T) {
+	baseline, commit, head := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("todo_authority") != "mongo-v2" || q.Get("tested_head_sha") != "" || q.Get("baseline_sha") != baseline {
+			t.Errorf("new proof passed wrong Reader bounds: %s", r.URL.String())
+		}
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), BaselineSHA: q.Get("baseline_sha"), RemoteHead: head, ParentSHA: baseline, Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	digest := sourceHash([]byte("approved code only"))
+	todo := TODORecord{ID: "code-only", ProjectID: "builder", ReleaseID: "r-12", Source: TODOSource{Kind: "mongo-content-revision"}, Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", Baseline: baseline, ExpectedPaths: []string{"go-app/internal/registry/**"}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: commit, SourceDigest: digest, VerificationState: "unverified"}}}
+	proof, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", "", todo, digest, TODOProofReference{}, map[string]string{"belluga/belluga_builder_docker": "r-12-rc"})
+	if err != nil || proof.Kind != "remote-code-delivery" || proof.Source != "private-reader" || proof.VerificationState != "verified" || strings.Contains(proof.Reference, "run=") || !strings.Contains(proof.Reference, "belluga/belluga_builder_docker@r-12-rc:"+commit) {
+		t.Fatalf("remote code proof=%+v err=%v", proof, err)
+	}
+}
+
 func TestRemoteLocalDeliveryClaimsMustBeAtOrBeforeTheTestedHead(t *testing.T) {
 	older, testedHead, later := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
 	digest := sourceHash([]byte("approved content"))

@@ -136,8 +136,8 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 	if !containsTODOString(template.Optional, "todo.content.delivery") || !containsTODOString(template.ContentEditRequired, "content") || !containsTODOString(template.ContentEditRequired, "content.title") || !containsTODOString(template.ContentEditRequired, "content.diff_expectation") || !strings.Contains(template.ContentEditGuide, "read-todo") {
 		t.Fatalf("template does not teach a governed content edit: %+v", template)
 	}
-	if !strings.Contains(template.ContentShape["proof_refs"], "paced-local-runner") || !strings.Contains(template.ContentShape["proof_refs"], "exact TODO content_digest") || !strings.Contains(template.ContentEditGuide, "BEFORE running a fresh local runner") || !strings.Contains(template.ContentEditGuide, "<successful-check-id>") || len(template.Example.TODO.Content.Criteria) != 1 || len(template.Example.TODO.Content.ValidationScenarios) != 1 {
-		t.Fatalf("template does not teach copyable current-digest local proof references: %+v", template)
+	if !strings.Contains(template.ContentShape["proof_refs"], "external-evidence") || !strings.Contains(template.ContentEditGuide, "submit no inline executable proof") || containsTODOString(template.Optional, "todo.content.local_checks") || len(template.Example.TODO.Content.Criteria) != 1 || len(template.Example.TODO.Content.ValidationScenarios) != 1 {
+		t.Fatalf("template does not teach API-only external evidence: %+v", template)
 	}
 	for name, mutate := range map[string]func(*TODORecord){
 		"later initial stage":          func(value *TODORecord) { value.Stage = "In-Progress" },
@@ -268,7 +268,7 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &publicTemplate); err != nil {
 		t.Fatal(err)
 	}
-	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") || !strings.Contains(publicTemplate.ContentEditGuide, "paced-local-runner") || !strings.Contains(publicTemplate.ContentEditGuide, "<successful-check-id>") || !strings.Contains(response.Body.String(), "example-criterion") {
+	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") || !strings.Contains(publicTemplate.ContentEditGuide, "external-evidence") || !strings.Contains(publicTemplate.ContentEditGuide, "submit no inline executable proof") || !strings.Contains(response.Body.String(), "example-criterion") {
 		t.Fatalf("served template does not teach the update-todo envelope: %+v", publicTemplate)
 	}
 }

@@ -63,10 +63,10 @@ func TestVerifyLocalRequirementReferencesTeachesExactCorrectionForSourceReferenc
 		{Kind: "scenario:scenario-build", Source: "paced-local-runner", Reference: "CHECK-BUILD", SourceDigest: digest, VerificationState: "unverified"},
 	}
 	cases := []struct {
-		name          string
-		mutate        func([]TODOProofReference)
-		field         string
-		guidance      string
+		name     string
+		mutate   func([]TODOProofReference)
+		field    string
+		guidance string
 	}{
 		{"wrong source", func(refs []TODOProofReference) { refs[0].Source = "local-run" }, "proof_refs.criterion:criterion-build.source", "paced-local-runner"},
 		{"argv is not a check reference", func(refs []TODOProofReference) { refs[0].Reference = "docker build --target test" }, "proof_refs.criterion:criterion-build.ref", "check ID"},
@@ -128,5 +128,37 @@ func TestLocalProofRequirementMatchesDeliveryScope(t *testing.T) {
 	}
 	if !requiresLocalProofForTODO(TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "Foundation"}, {Repository: "Builder"}}}) {
 		t.Fatal("mixed Foundation and implementation scope skipped the local runner")
+	}
+}
+
+func TestExternalRequirementCitationsStayUnverified(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	content := &TODOContent{SchemaVersion: todoContentSchemaVersion,
+		Criteria:            []TODOContentItem{{ID: "criterion-one", Text: "Code is scoped."}},
+		ValidationScenarios: []TODOValidationScenario{{ID: "scenario-one", CriterionIDs: []string{"criterion-one"}, Method: "Inspect external evidence.", Expected: "Citation is recorded."}},
+	}
+	criterion := TODOProofReference{Kind: "criterion:criterion-one", Source: "external-evidence", Reference: "https://example.invalid/review/1", SourceDigest: digest, VerificationState: "unverified"}
+	scenario := TODOProofReference{Kind: "scenario:scenario-one", Source: "external-evidence", Reference: "https://example.invalid/run/2", SourceDigest: digest, VerificationState: "unverified"}
+	old := criterion
+	old.SourceDigest = "sha256:" + strings.Repeat("b", 64)
+	old.VerificationState = "verified"
+	if err := validateExternalRequirementReferences(content, []TODOProofReference{old, criterion, scenario}, digest); err != nil {
+		t.Fatalf("valid citations rejected: %v", err)
+	}
+	if err := validateExternalRequirementReferences(content, []TODOProofReference{old, scenario}, digest); err == nil {
+		t.Fatal("stale citation satisfied current criterion")
+	}
+	if err := validateExternalRequirementReferences(content, []TODOProofReference{criterion, criterion, scenario}, digest); err == nil {
+		t.Fatal("duplicate current citation accepted")
+	}
+	forged := criterion
+	forged.VerificationState = "verified"
+	if err := validateExternalRequirementReferences(content, []TODOProofReference{forged, scenario}, digest); err == nil {
+		t.Fatal("caller-declared verified test accepted")
+	}
+	forged = criterion
+	forged.Source = "paced-local-runner"
+	if err := validateExternalRequirementReferences(content, []TODOProofReference{forged, scenario}, digest); err == nil {
+		t.Fatal("local runner citation accepted for new code proof")
 	}
 }

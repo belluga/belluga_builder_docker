@@ -1221,6 +1221,9 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if preserveArchived && requestedContent.SchemaVersion == todoContentSchemaVersion && current.SchemaVersion == todoContentSchemaVersion {
 		requestedContent.LegacyContext = current.LegacyContext
 	}
+	if requestedContent.SchemaVersion == todoContentSchemaVersion && len(requestedContent.LocalChecks) != 0 && !reflect.DeepEqual(requestedContent.LocalChecks, current.LocalChecks) {
+		return TODOContentEditResponse{}, todoTeach("content.local_checks", "retain existing legacy checks unchanged or remove them; new executable Project checks are not admitted", ErrConflict)
+	}
 	if reflect.DeepEqual(current, requestedContent) {
 		if record.Source.Kind == "mongo-content-revision" && record.AdministrativeAcceptance == nil && record.StageVerification == "unverified" && (record.Stage == "Local-Implemented" || record.Stage == "Promotion-Lane" || record.Stage == "Completed") {
 			contentRevision, contentDigest, contentRef, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)

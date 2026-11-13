@@ -24,8 +24,8 @@ func TestTODOEvidenceEditGivesFieldSpecificProofReferenceGuidance(t *testing.T) 
 		field string
 		teach string
 	}{
-		{"missing source", TODOProofReference{Kind: "criterion:build", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.criterion:build.source", "paced-local-runner"},
-		{"missing ref", TODOProofReference{Kind: "scenario:build", Source: "paced-local-runner", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.scenario:build.ref", "successful check ID"},
+		{"missing source", TODOProofReference{Kind: "criterion:build", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.criterion:build.source", "external-evidence"},
+		{"missing ref", TODOProofReference{Kind: "scenario:build", Source: "paced-local-runner", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.scenario:build.ref", "attributable evidence reference"},
 		{"invalid state", TODOProofReference{Kind: "criterion:build", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "pending"}, "proof_refs.criterion:build.verification_state", "unverified"},
 	}
 	store := &MongoStore{}

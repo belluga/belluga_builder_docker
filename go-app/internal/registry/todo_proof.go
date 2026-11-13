@@ -47,8 +47,8 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 		return TODOProofReference{}, todoTeach("proof_refs", "bind the MVP Deployment claim to this TODO's current immutable content digest", ErrConflict)
 	}
 	if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
-		if todo.VerifiedTransitionRef.Kind != "remote-local-delivery" || todo.VerifiedTransitionRef.Source != "private-reader-and-paced-runner" || len(todo.ImplementationCommits) == 0 {
-			return TODOProofReference{}, todoTeach("local_proof", "require a current v2 local delivery verified by the private Reader and PACED runner", ErrConflict)
+		if !verifiedCodeDeliveryIdentity(todo.VerifiedTransitionRef) || len(todo.ImplementationCommits) == 0 {
+			return TODOProofReference{}, todoTeach("remote_proof", "require an exact verified historical local delivery or Reader-backed remote-code delivery", ErrConflict)
 		}
 		for _, implementation := range todo.ImplementationCommits {
 			if implementation.SourceDigest != contentDigest {
@@ -138,7 +138,7 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 // Reuse only that verified identity; never infer it from a label or a current branch.
 func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, error) {
 	proof := todo.VerifiedTransitionRef
-	if proof == nil || proof.Kind != "remote-local-delivery" || proof.Source != "private-reader-and-paced-runner" || proof.VerificationState != "verified" || len(commits) == 0 {
+	if !verifiedCodeDeliveryIdentity(proof) || len(commits) == 0 {
 		return "", "", todoTeach("local_proof", "production must use one verified local-delivery record for every PACED implementation commit", ErrConflict)
 	}
 	var scopedRepository string
@@ -157,10 +157,20 @@ func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, erro
 	type identity struct{ repository, branch string }
 	verified := make(map[string]identity, len(commits))
 	requested := stringSliceSet(commits)
-	for _, item := range strings.Split(proof.Reference, ";") {
+	items := strings.Split(proof.Reference, ";")
+	if proof.Kind == "remote-local-delivery" {
+		if len(items) < 2 || !strings.HasPrefix(items[0], "run=") || items[0] == "run=" {
+			return "", "", todoTeach("local_proof", "preserve the exact historical run and repository tuples", ErrConflict)
+		}
+		items = items[1:]
+	}
+	if len(items) == 0 {
+		return "", "", todoTeach("remote_proof", "include exact verified repository and commit tuples", ErrConflict)
+	}
+	for _, item := range items {
 		key, detail, ok := strings.Cut(item, ":")
 		if !ok || key == "" || strings.HasPrefix(key, "run=") {
-			continue
+			return "", "", todoTeach("remote_proof", "use only exact repository/branch/commit tuples", ErrConflict)
 		}
 		repository, branch, ok := strings.Cut(key, "@")
 		parts := strings.Split(detail, "/")
@@ -189,6 +199,12 @@ func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, erro
 		selected = candidate
 	}
 	return selected.repository, selected.branch, nil
+}
+
+func verifiedCodeDeliveryIdentity(proof *TODOProofReference) bool {
+	return proof != nil && proof.VerificationState == "verified" &&
+		(proof.Kind == "remote-local-delivery" && proof.Source == "private-reader-and-paced-runner" ||
+			proof.Kind == "remote-code-delivery" && proof.Source == "private-reader")
 }
 
 func stringSliceSet(values []string) map[string]struct{} {

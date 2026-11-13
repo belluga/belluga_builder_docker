@@ -217,8 +217,8 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	}
 	missingChecks := content
 	missingChecks.LocalChecks = nil
-	if err := validateMongoPlanningContract(record, missingChecks); err == nil || !strings.Contains(err.Error(), "content.local_checks") {
-		t.Fatalf("code TODO without explicit local checks was accepted: %v", err)
+	if err := validateMongoPlanningContract(record, missingChecks); err != nil {
+		t.Fatalf("code TODO without executable checks was rejected: %v", err)
 	}
 	wrongRepository := content
 	wrongRepository.LocalChecks = []TODOLocalCheck{{ID: "G-TEST", RepositoryID: "other/repo", Argv: []string{"go", "test"}, WorkingDirectory: ".", InputPaths: []string{"**"}}}
@@ -242,8 +242,9 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	withoutOrigin.DiffExpectation = append([]TODORepositoryScope{}, content.DiffExpectation...)
 	withoutOrigin.DiffExpectation[0].RepositoryID = ""
 	withoutOrigin.DiffExpectation[0].DeliveryBranch = ""
+	withoutOrigin.LocalChecks = nil
 	record.DiffExpectation = withoutOrigin.DiffExpectation
-	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "content.local_checks[0].repository_id") {
+	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "content.diff_expectation[0].repository_id") {
 		t.Fatalf("missing code origin accepted or wrong TEACH: %v", err)
 	}
 	record.DiffExpectation = content.DiffExpectation

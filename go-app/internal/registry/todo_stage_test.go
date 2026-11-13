@@ -72,6 +72,27 @@ func TestMVPUsesVerifiedLocalPACEDIdentityForOlderScope(t *testing.T) {
 	}
 }
 
+func TestMVPUsesExactNewRemoteCodeIdentity(t *testing.T) {
+	commit, parent, head := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	proof := TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", VerificationState: "verified", Reference: "belluga/delphi-ai@builder:" + commit + "/parent=" + parent + "/head=" + head}
+	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED", RepositoryID: "belluga/delphi-ai"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
+	if repo, branch, err := mvpPACEDRepository(todo, []string{commit}); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
+		t.Fatalf("new proof identity = %q @ %q, %v", repo, branch, err)
+	}
+	bad := proof
+	bad.Reference = "run=forged;" + proof.Reference
+	todo.VerifiedTransitionRef = &bad
+	if _, _, err := mvpPACEDRepository(todo, []string{commit}); err == nil {
+		t.Fatal("new remote proof accepted a run alias")
+	}
+	bad = proof
+	bad.Source = "private-reader-and-paced-runner"
+	todo.VerifiedTransitionRef = &bad
+	if _, _, err := mvpPACEDRepository(todo, []string{commit}); err == nil {
+		t.Fatal("forged source alias accepted")
+	}
+}
+
 func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
 	todo := TODORecord{Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ImplementationCommits: []TODOCommitReference{{Repository: "belluga_builder_foundation_documentation", Commit: strings.Repeat("a", 40)}}}
 	if _, _, _, err := mvpImplementationClaims(todo); err == nil || !strings.Contains(err.Error(), "implementation_commits.repository") {
