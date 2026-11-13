@@ -106,26 +106,32 @@ func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
 
 func TestMVPProductionRequiresReaderToConfirmPACEDClaims(t *testing.T) {
 	commit, root, digest := strings.Repeat("a", 40), strings.Repeat("d", 40), sourceHash([]byte("contract"))
-	local := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved;belluga/delphi-ai@builder:" + commit + "/parent=" + strings.Repeat("b", 40) + "/head=" + strings.Repeat("c", 40), VerificationState: "verified", SourceDigest: digest}
-	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
-	confirmed := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := remoteProductionResult{CompanyID: "company-a", ProjectID: "builder", TODOID: todo.ID, DeploymentID: 17, Environment: "production", RootSHA: root, ModulePath: "project", CommitSHA: root, Outcome: "verified", ProjectMode: "mvp", ReaderSHA: strings.Repeat("e", 40)}
-		if confirmed {
-			response.PACEDCommits = []string{commit}
-		}
-		_ = json.NewEncoder(w).Encode(response)
-	}))
-	defer server.Close()
-	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
-	claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
-	request := TODOActionRequest{ProofReferences: []TODOProofReference{claim}}
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
-		t.Fatal("unconfirmed PACED commits accepted")
-	}
-	confirmed = true
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err != nil {
-		t.Fatalf("confirmed PACED-only proof: %v", err)
+	for _, proof := range []TODOProofReference{
+		{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved;belluga/delphi-ai@builder:" + commit + "/parent=" + strings.Repeat("b", 40) + "/head=" + strings.Repeat("c", 40), VerificationState: "verified", SourceDigest: digest},
+		{Kind: "remote-code-delivery", Source: "private-reader", Reference: "belluga/delphi-ai@builder:" + commit + "/parent=" + strings.Repeat("b", 40) + "/head=" + strings.Repeat("c", 40), VerificationState: "verified", SourceDigest: digest},
+	} {
+		t.Run(proof.Kind, func(t *testing.T) {
+			todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &proof, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
+			confirmed := false
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				response := remoteProductionResult{CompanyID: "company-a", ProjectID: "builder", TODOID: todo.ID, DeploymentID: 17, Environment: "production", RootSHA: root, ModulePath: "project", CommitSHA: root, Outcome: "verified", ProjectMode: "mvp", ReaderSHA: strings.Repeat("e", 40)}
+				if confirmed {
+					response.PACEDCommits = []string{commit}
+				}
+				_ = json.NewEncoder(w).Encode(response)
+			}))
+			defer server.Close()
+			store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
+			claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
+			request := TODOActionRequest{ProofReferences: []TODOProofReference{claim}}
+			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
+				t.Fatal("unconfirmed PACED commits accepted")
+			}
+			confirmed = true
+			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err != nil {
+				t.Fatalf("confirmed PACED-only proof: %v", err)
+			}
+		})
 	}
 }
 
