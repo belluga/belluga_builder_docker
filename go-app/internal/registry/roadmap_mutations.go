@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"time"
 	"unicode/utf8"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -23,6 +24,9 @@ type RoadmapChange struct {
 	Description             string                `json:"description,omitempty"`
 	OrderedIDs              []string              `json:"ordered_ids,omitempty"`
 	Investigation           *ReleaseInvestigation `json:"investigation,omitempty"`
+	RepositoryID            string                `json:"repository_id,omitempty"`
+	Branch                  string                `json:"branch,omitempty"`
+	OwnerReference          string                `json:"owner_reference,omitempty"`
 }
 
 type RoadmapChangeResult struct {
@@ -30,6 +34,8 @@ type RoadmapChangeResult struct {
 	ProjectID       string `json:"project_id"`
 	Action          string `json:"action"`
 	ID              string `json:"id,omitempty"`
+	RepositoryID    string `json:"repository_id,omitempty"`
+	Branch          string `json:"branch,omitempty"`
 	RoadmapRevision int64  `json:"roadmap_revision"`
 	NoOp            bool   `json:"no_op"`
 }
@@ -42,6 +48,79 @@ type roadmapOperation struct {
 	Revision      int64  `bson:"revision"`
 }
 
+type releaseBranchOperationResult struct {
+	ID            string
+	RequestDigest string
+}
+
+func findReleaseBranchOperation(ctx context.Context, database *mongo.Database, projectID, operationID string) (releaseBranchOperationResult, bool, error) {
+	var release roadmapRelease
+	err := database.Collection(releasesCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "delivery_branches.operation_id", Value: operationID}}).Decode(&release)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return releaseBranchOperationResult{}, false, nil
+	}
+	if err != nil || release.ProjectID != projectID {
+		return releaseBranchOperationResult{}, false, ErrUnavailable
+	}
+	for _, branch := range release.DeliveryBranches {
+		if branch.OperationID == operationID {
+			return releaseBranchOperationResult{ID: release.ID, RequestDigest: branch.RequestDigest}, true, nil
+		}
+	}
+	return releaseBranchOperationResult{}, false, ErrUnavailable
+}
+
+func confirmReleaseDeliveryBranch(ctx context.Context, database *mongo.Database, projectID string, request RoadmapChange, action string) error {
+	var project projectDocument
+	if err := database.Collection(projectsCollection).FindOne(ctx, bson.D{{Key: "id", Value: projectID}}).Decode(&project); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return todoTeach("project_id", "name a registered Project", ErrNotFound)
+		}
+		return ErrUnavailable
+	}
+	confirmed := false
+	for _, repositoryID := range project.ImplementationRepositories {
+		if repositoryID == request.RepositoryID {
+			confirmed = true
+			break
+		}
+	}
+	if !confirmed {
+		return todoTeach("repository_id", "confirm this exact repository in the Project implementation repository set before assigning its Release branch", ErrConflict)
+	}
+	releases := database.Collection(releasesCollection)
+	filter := bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: request.ID}}
+	var release roadmapRelease
+	if err := releases.FindOne(ctx, filter).Decode(&release); err != nil {
+		return missingRoadmapRecord(err, "release_id")
+	}
+	for _, existing := range release.DeliveryBranches {
+		if existing.RepositoryID == request.RepositoryID {
+			return todoTeach("branch", "use the immutable branch already confirmed for this Release repository; a different branch requires a new Release", ErrConflict)
+		}
+	}
+	digest, err := todoRequestDigest(struct {
+		Action string
+		RoadmapChange
+	}{action, request})
+	if err != nil {
+		return ErrInvalid
+	}
+	entry := releaseDeliveryBranch{
+		RepositoryID: request.RepositoryID, Branch: request.Branch,
+		OwnerReference: request.OwnerReference, OperationID: request.OperationID,
+		RequestDigest: digest, ConfirmedAt: time.Now().UTC(),
+	}
+	result, err := releases.UpdateOne(ctx, filter, bson.D{{Key: "$push", Value: bson.D{{Key: "delivery_branches", Value: entry}}}})
+	if err != nil {
+		return normalizeMongoError(err)
+	}
+	if result.MatchedCount != 1 {
+		return todoTeach("release_id", "reload the same-Project Release before confirming its branch", ErrConflict)
+	}
+	return nil
+}
+
 func validRoadmapChange(action string, request RoadmapChange) bool {
 	if !validID(request.ProjectID) || request.ExpectedRoadmapRevision == nil || *request.ExpectedRoadmapRevision < 0 || *request.ExpectedRoadmapRevision == math.MaxInt64 || !todoOperationIDPattern.MatchString(request.OperationID) {
 		return false
@@ -51,6 +130,8 @@ func validRoadmapChange(action string, request RoadmapChange) bool {
 		return validID(request.ID) && validName(request.Name) && utf8.ValidString(request.Description) && len(request.Description) <= 1024 && (action != "create-release" || validID(request.EpicID)) && (action != "edit-release" || request.EpicID == "" || validID(request.EpicID))
 	case "delete-epic", "delete-release":
 		return validID(request.ID)
+	case "confirm-release-branch":
+		return validID(request.ID) && validGitRepositoryID(request.RepositoryID) && validDeliveryBranch(request.Branch) && validSummaryField(request.OwnerReference, 512) && request.EpicID == "" && request.Name == "" && request.Description == "" && request.OrderedIDs == nil && request.Investigation == nil
 	case "order-epics":
 		return request.OrderedIDs != nil && len(request.OrderedIDs) <= 500
 	case "order-releases":
@@ -102,6 +183,17 @@ func (m *MongoStore) ChangeRoadmap(ctx context.Context, companyID, action string
 		if project.ObjectID.IsZero() || project.CompanyID != companyID || project.RoadmapRevision < 0 {
 			return nil, ErrUnavailable
 		}
+		priorBranchResult, hasPriorBranchOperation, lookupErr := findReleaseBranchOperation(txCtx, database, request.ProjectID, request.OperationID)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		if hasPriorBranchOperation {
+			if action != "confirm-release-branch" || priorBranchResult.ID != request.ID || priorBranchResult.RequestDigest != digest {
+				return nil, todoTeach("operation_id", "reuse this Release branch confirmation ID only for the identical branch confirmation; operation IDs cannot be reused by other Roadmap actions", ErrConflict)
+			}
+			outcome = RoadmapChangeResult{CompanyID: companyID, ProjectID: request.ProjectID, Action: action, ID: request.ID, RepositoryID: request.RepositoryID, Branch: request.Branch, RoadmapRevision: project.RoadmapRevision, NoOp: true}
+			return nil, nil
+		}
 		if prior := project.RoadmapLastOperation; prior != nil && prior.ID == request.OperationID {
 			if prior.Action != action || prior.RequestDigest != digest {
 				return nil, todoTeach("operation_id", "not be reused for different Roadmap content", ErrConflict)
@@ -130,7 +222,7 @@ func (m *MongoStore) ChangeRoadmap(ctx context.Context, companyID, action string
 		if err := changeRoadmapCollections(txCtx, database, request.ProjectID, action, request); err != nil {
 			return nil, err
 		}
-		outcome = RoadmapChangeResult{CompanyID: companyID, ProjectID: request.ProjectID, Action: action, ID: request.ID, RoadmapRevision: next}
+		outcome = RoadmapChangeResult{CompanyID: companyID, ProjectID: request.ProjectID, Action: action, ID: request.ID, RepositoryID: request.RepositoryID, Branch: request.Branch, RoadmapRevision: next}
 		return nil, nil
 	})
 	if err != nil {
@@ -197,12 +289,21 @@ func changeRoadmapCollections(ctx context.Context, db *mongo.Database, projectID
 		}
 		return updateRoadmapFields(ctx, releases, identity(req.ID), fields, "release_id")
 	case "delete-release":
+		var current roadmapRelease
+		if err := releases.FindOne(ctx, identity(req.ID)).Decode(&current); err != nil {
+			return missingRoadmapRecord(err, "release_id")
+		}
+		if len(current.DeliveryBranches) > 0 {
+			return todoTeach("release_id", "retain this Release because confirmed repository branches are immutable and cannot be reset by deleting/recreating it", ErrConflict)
+		}
 		if count, err := todos.CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "release_id", Value: req.ID}, {Key: "removed", Value: bson.D{{Key: "$ne", Value: true}}}}); err != nil {
 			return ErrUnavailable
 		} else if count != 0 {
 			return todoTeach("release_id", "detach or move member TODOs before deleting a Release", ErrConflict)
 		}
 		return deleteRoadmapRecord(ctx, releases, identity(req.ID), "release_id")
+	case "confirm-release-branch":
+		return confirmReleaseDeliveryBranch(ctx, db, projectID, req, action)
 	case "set-investigation":
 		return updateRoadmapFields(ctx, releases, identity(req.ID), bson.D{{Key: "investigation", Value: req.Investigation}}, "release_id")
 	case "clear-investigation":

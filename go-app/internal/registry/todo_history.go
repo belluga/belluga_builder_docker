@@ -1394,8 +1394,8 @@ func validateAuthoredEnvelope(content TODOAuthoredContent) error {
 		if !validName(scope.Repository) || strings.TrimSpace(scope.Baseline) == "" || scope.ExpectedPaths == nil || scope.NotExpectedPaths == nil {
 			return todoTeach("content.diff_expectation", "contain valid repository scopes and explicit path arrays", ErrInvalid)
 		}
-		if (scope.RepositoryID == "") != (scope.DeliveryBranch == "") || scope.RepositoryID != "" && (!validGitRepositoryID(scope.RepositoryID) || !validDeliveryBranch(scope.DeliveryBranch)) {
-			return todoTeach("content.diff_expectation.repository_id/delivery_branch", "provide both an exact owner/repository and safe destination branch, or omit both before proof", ErrInvalid)
+		if scope.RepositoryID != "" && !validGitRepositoryID(scope.RepositoryID) || scope.DeliveryBranch != "" && !validDeliveryBranch(scope.DeliveryBranch) {
+			return todoTeach("content.diff_expectation.repository_id/delivery_branch", "provide a valid repository identity and retain any historical branch text only as non-authoritative content", ErrInvalid)
 		}
 		for _, p := range append(append([]string{}, scope.ExpectedPaths...), scope.NotExpectedPaths...) {
 			if !validRepositoryPattern(p) {

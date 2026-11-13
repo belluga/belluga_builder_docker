@@ -22,14 +22,18 @@ func TestCommitAttributionUsesOnlyApprovedRepositoryPaths(t *testing.T) {
 			t.Fatalf("outside path admitted: %s", path)
 		}
 	}
-	if branch, ok := implementationBranch("builder", "r-08", "belluga_builder_docker"); !ok || branch != "r-08-rc" {
-		t.Fatal("Builder release branch was not selected")
-	}
-	if branch, ok := implementationBranch("builder", "r-08", "delphi-ai"); !ok || branch != "builder" {
-		t.Fatal("PACED branch was not selected")
-	}
-	if _, ok := implementationBranch("boora", "v0.7.1", "laravel-app"); ok {
-		t.Fatal("unknown Project branch was invented")
+}
+
+func TestTODOBranchReadbackKeepsLegacyOrUnconfirmedScopesReadable(t *testing.T) {
+	for _, record := range []TODORecord{
+		{ProjectID: "builder", Stage: "Local-Implemented", StageVerification: "verified", DiffExpectation: []TODORepositoryScope{{Repository: "Builder", DeliveryBranch: "r-12-rc"}}},
+		{ProjectID: "builder", Stage: "Planning", DiffExpectation: []TODORepositoryScope{{Repository: "Builder"}}},
+		{ProjectID: "builder", Stage: "Planning", Content: &TODOContent{SchemaVersion: todoContentSchemaVersion, Delivery: &TODODeliveryContract{Kind: "knowledge-only"}}},
+	} {
+		branches, err := selectedTODOReleaseBranches(context.Background(), nil, record)
+		if err != nil || len(branches) != 0 {
+			t.Fatalf("readback blocked a legacy, branchless, or knowledge-only TODO: %+v, %v", branches, err)
+		}
 	}
 }
 
@@ -73,26 +77,27 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
 	digest := sourceHash([]byte("approved content"))
 	todo := TODORecord{ID: "test", ProjectID: "builder", ReleaseID: "r-08", DiffExpectation: []TODORepositoryScope{
-		{Repository: "belluga_builder_docker", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}},
-		{Repository: "delphi-ai", ExpectedPaths: []string{"local-api/**"}, NotExpectedPaths: []string{}},
+		{Repository: "belluga_builder_docker", RepositoryID: "belluga/belluga_builder_docker", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}},
+		{Repository: "delphi-ai", RepositoryID: "belluga/delphi-ai", ExpectedPaths: []string{"local-api/**"}, NotExpectedPaths: []string{}},
 	}}
+	branches := map[string]string{"belluga/belluga_builder_docker": "r-08-rc", "belluga/delphi-ai": "builder"}
 	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
 	todo.ImplementationCommits = []TODOCommitReference{{Repository: "belluga_builder_docker", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
+	if _, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local, branches); err == nil {
 		t.Fatal("missing PACED implementation was accepted")
 	}
 	todo.ImplementationCommits = append(todo.ImplementationCommits, TODOCommitReference{Repository: "delphi-ai", Commit: sha, SourceDigest: digest, VerificationState: "unverified"})
-	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+	if proof, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local, branches); err != nil || proof.Kind != "remote-local-delivery" {
 		t.Fatalf("complete remote proof=%+v err=%v", proof, err)
 	}
 	badPACEDPath = true
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err == nil {
+	if _, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local, branches); err == nil {
 		t.Fatal("PACED commit changing a Builder path was accepted")
 	}
 	badPACEDPath = false
 	todo.DiffExpectation[0].Repository, todo.DiffExpectation[1].Repository = "Builder", "PACED"
 	todo.ImplementationCommits[0].Repository, todo.ImplementationCommits[1].Repository = "Builder", "PACED"
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local); err != nil {
+	if _, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "belluga/belluga_builder_foundation_documentation", todo, digest, local, branches); err != nil {
 		t.Fatalf("legacy Builder/PACED repository labels were rejected: %v", err)
 	}
 }
@@ -109,9 +114,9 @@ func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
 	digest := sourceHash([]byte("approved Mongo content"))
-	todo := TODORecord{ID: "mongo-only", ProjectID: "builder", ReleaseID: "r-10", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "r-10-rc", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
+	todo := TODORecord{ID: "mongo-only", ProjectID: "builder", ReleaseID: "r-10", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "wrong-legacy-branch", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
 	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
-	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+	if proof, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "", todo, digest, local, map[string]string{"belluga/belluga_builder_docker": "r-10-rc"}); err != nil || proof.Kind != "remote-local-delivery" {
 		t.Fatalf("Foundation-free proof = %+v, %v", proof, err)
 	}
 }
@@ -135,9 +140,9 @@ func TestRemoteLocalDeliveryAcceptsCompleteLargeCommitPathList(t *testing.T) {
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
 	digest := sourceHash([]byte("approved large commit"))
-	todo := TODORecord{ID: "large-commit", ProjectID: "builder", ReleaseID: "r-12", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "r-12-rc", ExpectedPaths: []string{"go-app/internal/registry/**"}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
+	todo := TODORecord{ID: "large-commit", ProjectID: "builder", ReleaseID: "r-12", Source: TODOSource{Kind: "mongo-content-revision"}, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "wrong-legacy-branch", ExpectedPaths: []string{"go-app/internal/registry/**"}}}, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: sha, SourceDigest: digest, VerificationState: "unverified"}}}
 	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
-	if proof, err := store.verifyRemoteLocalDelivery(context.Background(), "belluga-solutions", "", todo, digest, local); err != nil || proof.Kind != "remote-local-delivery" {
+	if proof, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "belluga-solutions", "", todo, digest, local, map[string]string{"belluga/belluga_builder_docker": "r-12-rc"}); err != nil || proof.Kind != "remote-local-delivery" {
 		t.Fatalf("large complete commit proof rejected: proof=%+v err=%v", proof, err)
 	}
 }

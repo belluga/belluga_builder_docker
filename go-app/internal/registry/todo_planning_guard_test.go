@@ -207,6 +207,14 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	if err := validateMongoPlanningContract(record, content); err != nil {
 		t.Fatalf("valid typed planning contract rejected: %v", err)
 	}
+	withoutLegacyBranch := content
+	withoutLegacyBranch.DiffExpectation = append([]TODORepositoryScope{}, content.DiffExpectation...)
+	withoutLegacyBranch.DiffExpectation[0].DeliveryBranch = ""
+	record.DiffExpectation = withoutLegacyBranch.DiffExpectation
+	if err := validateMongoPlanningContract(record, withoutLegacyBranch); err != nil {
+		t.Fatalf("code scope without legacy TODO branch rejected: %v", err)
+	}
+	record.DiffExpectation = content.DiffExpectation
 	archived := content
 	archived.LegacyContext = []TODOLegacyContext{{Body: "archived only"}}
 	if err := validateMongoPlanningContract(record, archived); err != nil {
@@ -217,7 +225,7 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	withoutOrigin.DiffExpectation[0].RepositoryID = ""
 	withoutOrigin.DiffExpectation[0].DeliveryBranch = ""
 	record.DiffExpectation = withoutOrigin.DiffExpectation
-	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "repository_id/delivery_branch") {
+	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "diff_expectation[0].repository_id") {
 		t.Fatalf("missing code origin accepted or wrong TEACH: %v", err)
 	}
 	record.DiffExpectation = content.DiffExpectation

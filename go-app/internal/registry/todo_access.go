@@ -25,14 +25,15 @@ func validTODOOperationKind(value string) bool {
 }
 
 type TODOReadResponse struct {
-	CompanyID       string              `json:"company_id"`
-	ProjectID       string              `json:"project_id"`
-	TODO            TODORecord          `json:"todo"`
-	Removal         *TODORemovalDetails `json:"removal,omitempty"`
-	TODORevision    int64               `json:"todo_revision"`
-	ContentRevision *int64              `json:"content_revision,omitempty"`
-	ContentDigest   string              `json:"content_digest,omitempty"`
-	AuditFloors     map[string]string   `json:"audit_floors,omitempty"`
+	CompanyID               string                  `json:"company_id"`
+	ProjectID               string                  `json:"project_id"`
+	TODO                    TODORecord              `json:"todo"`
+	ReleaseDeliveryBranches []releaseDeliveryBranch `json:"release_delivery_branches"`
+	Removal                 *TODORemovalDetails     `json:"removal,omitempty"`
+	TODORevision            int64                   `json:"todo_revision"`
+	ContentRevision         *int64                  `json:"content_revision,omitempty"`
+	ContentDigest           string                  `json:"content_digest,omitempty"`
+	AuditFloors             map[string]string       `json:"audit_floors,omitempty"`
 }
 
 type TODOActionRequest struct {
@@ -149,6 +150,10 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 			response.AuditFloors, _ = deriveTODOAuditFloors(projected.Planning)
 		}
 		response.TODO.Sections = recordRecordSections(response.TODO)
+	}
+	response.ReleaseDeliveryBranches, err = selectedTODOReleaseBranches(ctx, database, response.TODO)
+	if err != nil {
+		return TODOReadResponse{}, err
 	}
 	if response.TODO.AdministrativeAcceptance != nil && response.TODO.Disposition == nil && (!validSourceDigest(response.ContentDigest) || response.TODO.AdministrativeAcceptance.ContentDigest != response.ContentDigest) {
 		return TODOReadResponse{}, todoTeach("administrative_acceptance.content_digest", "match the current immutable typed content revision before treating the accepted stage as effective", ErrConflict)

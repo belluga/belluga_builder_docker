@@ -43,8 +43,8 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 		if !validGitCommit(scope.Baseline) {
 			return todoTeach(field+".baseline", "identify the exact approved Git baseline commit", ErrConflict)
 		}
-		if !validGitRepositoryID(scope.RepositoryID) || !validDeliveryBranch(scope.DeliveryBranch) {
-			return todoTeach(field+".repository_id/delivery_branch", "identify the exact implementing owner/repository and remote delivery branch before approval", ErrConflict)
+		if !validGitRepositoryID(scope.RepositoryID) {
+			return todoTeach(field+".repository_id", "identify the exact implementing repository from the Project's confirmed implementation repository set; Release branch selection is separate", ErrConflict)
 		}
 		if len(scope.ExpectedPaths) == 0 {
 			return todoTeach(field+".expected_paths", "identify at least one approved attributable path for this repository", ErrConflict)

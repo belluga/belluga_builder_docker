@@ -222,6 +222,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}", h.roadmapChange("delete-epic"))
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases", h.roadmapChange("create-release"))
 	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("edit-release"))
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/delivery-branches", h.roadmapChange("confirm-release-branch"))
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order", h.roadmapChange("order-releases"))
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("delete-release"))
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template", h.releaseInvestigationTemplate)
@@ -370,6 +371,19 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 				return
 			}
 			input.ID = releaseID
+		}
+		if action == "confirm-release-branch" {
+			switch {
+			case !validGitRepositoryID(input.RepositoryID):
+				h.writeError(w, todoTeach("repository_id", "select the exact repository from this Project's confirmed implementation repository set", ErrInvalid))
+				return
+			case !validDeliveryBranch(input.Branch):
+				h.writeError(w, todoTeach("branch", "provide the dedicated Release branch; historical TODO delivery_branch is not authoritative", ErrInvalid))
+				return
+			case !validSummaryField(input.OwnerReference, 512):
+				h.writeError(w, todoTeach("owner_reference", "provide the owner confirmation reference for this Release branch", ErrInvalid))
+				return
+			}
 		}
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
 		h.respond(w, value, err)
@@ -1513,6 +1527,9 @@ func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target a
 		if todo && h.writeTODOUnknownField(w, err, target) {
 			return false
 		}
+		if _, ok := target.(*RoadmapChange); ok && h.writeRoadmapUnknownField(w, err) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
@@ -1524,6 +1541,24 @@ func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target a
 		h.writeError(w, ErrInvalid)
 		return false
 	}
+	return true
+}
+
+func (h *Handler) writeRoadmapUnknownField(w http.ResponseWriter, err error) bool {
+	const prefix = "json: unknown field "
+	quoted, ok := strings.CutPrefix(err.Error(), prefix)
+	if !ok {
+		return false
+	}
+	field, unquoteErr := strconv.Unquote(quoted)
+	if unquoteErr != nil || field == "" {
+		return false
+	}
+	resolution := "remove this field and use only the typed fields for the selected Roadmap action"
+	if field == "delivery_branch" {
+		resolution = "use the dedicated branch field only in explicit Release confirmation; TODO delivery_branch text is historical and non-authoritative"
+	}
+	h.writeError(w, todoTeach("request."+field, resolution, ErrInvalid))
 	return true
 }
 

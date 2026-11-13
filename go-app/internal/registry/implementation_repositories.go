@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -152,22 +153,90 @@ func implementationRepositorySetFromDocument(document projectDocument, companyID
 	return ImplementationRepositorySet{CompanyID: companyID, ProjectID: projectID, Revision: document.ImplementationRepositoriesRevision, Items: items, Confirmations: append([]ImplementationRepositoryConfirmation{}, document.ImplementationRepositoryConfirmations...)}
 }
 
-func requireTODOImplementationRepositories(ctx context.Context, store *MongoStore, companyID string, record TODORecord) error {
+func selectedTODOReleaseBranches(ctx context.Context, database *mongo.Database, record TODORecord) ([]releaseDeliveryBranch, error) {
+	if record.Content != nil && record.Content.Delivery != nil && record.Content.Delivery.Kind == "knowledge-only" || len(record.DiffExpectation) == 0 || record.ReleaseID == "" {
+		return []releaseDeliveryBranch{}, nil
+	}
+	selected := make(map[string]bool, len(record.DiffExpectation))
+	for _, scope := range record.DiffExpectation {
+		if validGitRepositoryID(scope.RepositoryID) {
+			selected[scope.RepositoryID] = true
+		}
+	}
+	if len(selected) == 0 {
+		return []releaseDeliveryBranch{}, nil
+	}
+	var release roadmapRelease
+	if err := database.Collection(releasesCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ReleaseID}}).Decode(&release); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return []releaseDeliveryBranch{}, nil
+		}
+		return nil, ErrUnavailable
+	}
+	branches := make([]releaseDeliveryBranch, 0, len(selected))
+	for _, branch := range release.DeliveryBranches {
+		if selected[branch.RepositoryID] {
+			if validDeliveryBranch(branch.Branch) && validGitRepositoryID(branch.RepositoryID) {
+				branches = append(branches, branch)
+			}
+		}
+	}
+	sort.Slice(branches, func(i, j int) bool { return branches[i].RepositoryID < branches[j].RepositoryID })
+	return branches, nil
+}
+
+func confirmedTODOReleaseBranches(ctx context.Context, store *MongoStore, companyID string, record TODORecord) (map[string]string, error) {
 	if record.Content != nil && record.Content.Delivery != nil && record.Content.Delivery.Kind == "knowledge-only" {
-		return nil
+		return map[string]string{}, nil
+	}
+	if len(record.DiffExpectation) == 0 {
+		return nil, todoTeach("diff_expectation.repository_id", "identify each implementation repository for code-backed delivery; only explicit Knowledge-only delivery is repository-free", ErrConflict)
 	}
 	set, err := store.ReadImplementationRepositories(ctx, companyID, record.ProjectID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	confirmed := make(map[string]bool, len(set.Items))
 	for _, repositoryID := range set.Items {
 		confirmed[repositoryID] = true
 	}
+	selected := make(map[string]bool, len(record.DiffExpectation))
 	for index, scope := range record.DiffExpectation {
+		if !validGitRepositoryID(scope.RepositoryID) {
+			return nil, todoTeach(fmt.Sprintf("diff_expectation[%d].repository_id", index), "select an exact repository from this Project's confirmed implementation repository set", ErrConflict)
+		}
+		if selected[scope.RepositoryID] {
+			return nil, todoTeach(fmt.Sprintf("diff_expectation[%d].repository_id", index), "list each implementing repository only once", ErrConflict)
+		}
+		selected[scope.RepositoryID] = true
 		if !confirmed[scope.RepositoryID] {
-			return todoTeach(fmt.Sprintf("diff_expectation[%d].repository_id", index), "confirm this Git-backed delivery repository for the exact Project before leaving Planning; repository-free Planning remains available", ErrConflict)
+			return nil, todoTeach(fmt.Sprintf("diff_expectation[%d].repository_id", index), "confirm this Git-backed delivery repository for the exact Project before leaving Planning; repository-free Planning remains available", ErrConflict)
 		}
 	}
-	return nil
+	database, err := store.todoTenantDatabase(ctx, companyID)
+	if err != nil {
+		return nil, err
+	}
+	var release roadmapRelease
+	if err := database.Collection(releasesCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ReleaseID}}).Decode(&release); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return nil, todoTeach("release_id", "assign this TODO to an existing same-Project Release before requesting implementation approval", ErrNotFound)
+		}
+		return nil, ErrUnavailable
+	}
+	branches := make(map[string]string, len(release.DeliveryBranches))
+	for _, branch := range release.DeliveryBranches {
+		branches[branch.RepositoryID] = branch.Branch
+	}
+	for _, scope := range record.DiffExpectation {
+		if branches[scope.RepositoryID] == "" {
+			return nil, todoTeach("release_id.delivery_branches."+scope.RepositoryID, "confirm this repository's immutable branch through `builder-project roadmap-change --action confirm-release-branch` using the current Roadmap revision and owner reference", ErrConflict)
+		}
+	}
+	return branches, nil
+}
+
+func requireTODOImplementationRepositories(ctx context.Context, store *MongoStore, companyID string, record TODORecord) error {
+	_, err := confirmedTODOReleaseBranches(ctx, store, companyID, record)
+	return err
 }

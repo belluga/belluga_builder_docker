@@ -316,6 +316,25 @@ const maxRemoteCommitProofBytes = 12 << 20
 
 // The approved scope, not the current checkout diff, decides attribution.
 func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
+	branchPlan := map[string]string{}
+	foundationOnly := len(todo.DiffExpectation) > 0
+	for _, scope := range todo.DiffExpectation {
+		if !foundationScope(scope.Repository) {
+			foundationOnly = false
+			break
+		}
+	}
+	if !foundationOnly {
+		var err error
+		branchPlan, err = confirmedTODOReleaseBranches(ctx, m, companyID, todo)
+		if err != nil {
+			return TODOProofReference{}, err
+		}
+	}
+	return m.verifyRemoteLocalDeliveryWithBranchPlan(ctx, companyID, foundationRepositoryID, todo, contentDigest, local, branchPlan)
+}
+
+func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference, branchPlan map[string]string) (TODOProofReference, error) {
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
 	}
@@ -338,20 +357,16 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 		if foundationScope(scope.Repository) && !foundationOnly {
 			continue
 		}
-		branch, repository := scope.DeliveryBranch, scope.RepositoryID
-		if todo.Source.Kind == "mongo-content-revision" {
-			if !validGitRepositoryID(repository) || !validDeliveryBranch(branch) {
-				return TODOProofReference{}, todoTeach("diff_expectation.repository_id/delivery_branch", "publish an exact approved owner/repository and destination branch for each implementing repository", ErrConflict)
-			}
+		branch, repository := "", scope.RepositoryID
+		if foundationScope(scope.Repository) {
+			branch, repository = "main", foundationRepositoryID
 		} else {
-			var ok bool
-			branch, ok = implementationBranch(todo.ProjectID, todo.ReleaseID, scope.Repository)
-			if !ok {
-				return TODOProofReference{}, todoTeach("diff_expectation.repository", "configure the remote release branch for this implementing repository", ErrConflict)
+			if !validGitRepositoryID(repository) {
+				return TODOProofReference{}, todoTeach("diff_expectation.repository_id", "select the exact confirmed implementation repository for this Project", ErrConflict)
 			}
-			repository = parts[0] + "/" + canonicalImplementationLabel(scope.Repository)
-			if foundationScope(scope.Repository) {
-				repository = foundationRepositoryID
+			branch = branchPlan[repository]
+			if !validDeliveryBranch(branch) {
+				return TODOProofReference{}, todoTeach("release_id.delivery_branches."+repository, "confirm this repository's branch on the exact Release before local proof", ErrConflict)
 			}
 		}
 		claims := 0
@@ -421,32 +436,6 @@ func validDeliveryBranch(value string) bool {
 
 func foundationScope(repository string) bool {
 	return repository == "Foundation" || strings.HasSuffix(repository, "_foundation_documentation")
-}
-
-func canonicalImplementationLabel(repository string) string {
-	switch repository {
-	case "Builder":
-		return "belluga_builder_docker"
-	case "PACED":
-		return "delphi-ai"
-	default:
-		return repository
-	}
-}
-
-func implementationBranch(projectID, releaseID, repository string) (string, bool) {
-	if foundationScope(repository) {
-		return "main", true
-	}
-	if projectID == "builder" {
-		if repository == "delphi-ai" || repository == "PACED" {
-			return "builder", true
-		}
-		if (repository == "belluga_builder_docker" || repository == "Builder") && strings.HasPrefix(releaseID, "r-") {
-			return releaseID + "-rc", true
-		}
-	}
-	return "", false
 }
 
 func approvedCommitPath(changed string, scope TODORepositoryScope) bool {

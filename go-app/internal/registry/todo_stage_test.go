@@ -40,23 +40,27 @@ func TestMVPClaimsAllowPACEDOnlyWithoutInventingBuilderCommit(t *testing.T) {
 func TestMVPUsesVerifiedLocalPACEDIdentityForOlderScope(t *testing.T) {
 	first, second := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", VerificationState: "verified", Reference: "run=approved;belluga/delphi-ai@builder:" + first + "/parent=" + strings.Repeat("c", 40) + "/head=" + second + ";belluga/delphi-ai@builder:" + second + "/parent=" + first + "/head=" + second}
-	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: first}, {Repository: "PACED", Commit: second}}}
-	repo, branch, err := mvpPACEDRepository(todo, []string{first, second})
+	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED", RepositoryID: "belluga/delphi-ai"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: first}, {Repository: "PACED", Commit: second}}}
+	branches := map[string]string{"belluga/delphi-ai": "builder"}
+	repo, branch, err := mvpPACEDRepository(todo, []string{first, second}, branches)
 	if err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
 		t.Fatalf("verified older PACED identity = %q @ %q, %v", repo, branch, err)
 	}
 	todo.VerifiedTransitionRef.VerificationState = "unverified"
-	if _, _, err := mvpPACEDRepository(todo, []string{first, second}); err == nil {
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}, branches); err == nil {
 		t.Fatal("unverified historical identity accepted")
 	}
 	todo.VerifiedTransitionRef.VerificationState = "verified"
-	if _, _, err := mvpPACEDRepository(todo, []string{first, strings.Repeat("d", 40)}); err == nil {
+	if _, _, err := mvpPACEDRepository(todo, []string{first, strings.Repeat("d", 40)}, branches); err == nil {
 		t.Fatal("unmatched implementation commit accepted")
 	}
 	todo.DiffExpectation[0].RepositoryID = "belluga/delphi-ai"
-	todo.DiffExpectation[0].DeliveryBranch = "builder"
-	if repo, branch, err := mvpPACEDRepository(todo, []string{first, second}); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
-		t.Fatalf("current explicit identity changed: %q @ %q, %v", repo, branch, err)
+	todo.DiffExpectation[0].DeliveryBranch = "wrong-legacy-branch"
+	if repo, branch, err := mvpPACEDRepository(todo, []string{first, second}, branches); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
+		t.Fatalf("Release-owned identity changed: %q @ %q, %v", repo, branch, err)
+	}
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}, map[string]string{"belluga/delphi-ai": "wrong-legacy-branch"}); err == nil {
+		t.Fatal("verified proof overrode Release-owned branch with TODO branch")
 	}
 }
 
