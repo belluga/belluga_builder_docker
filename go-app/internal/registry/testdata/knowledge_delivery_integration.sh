@@ -41,4 +41,4 @@ docker run --rm --network "$network" \
   --volume "$(realpath "$repo_root/delphi-ai/local-api"):/src/delphi-ai/local-api:ro" \
   --workdir /src/go-app \
   golang:1.23-bookworm \
-  go test ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning)$' -count=1
+  go test ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoConversationRoadmapMutationStaysWithinBoundProject|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning)$' -count=1

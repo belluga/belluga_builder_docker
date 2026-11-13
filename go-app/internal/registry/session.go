@@ -72,9 +72,6 @@ func (m *MongoStore) BindSession(ctx context.Context, request SessionBindingRequ
 	if err := validateSessionBindingRequest(request); err != nil {
 		return Session{}, err
 	}
-	if _, err := m.Project(ctx, request.CompanyID, request.ProjectID); err != nil {
-		return Session{}, err
-	}
 	digest := sourceHash([]byte(request.Type + "\x00" + request.ExternalID + "\x00" + request.CompanyID + "\x00" + request.ProjectID + "\x00" + request.OwnerReference))
 	collection := m.control.Collection(sessionsCollection)
 	filter := bson.M{"type": request.Type, "external_id": request.ExternalID}
@@ -88,6 +85,9 @@ func (m *MongoStore) BindSession(ctx context.Context, request SessionBindingRequ
 	}
 	if err != mongo.ErrNoDocuments {
 		return Session{}, ErrUnavailable
+	}
+	if _, err := m.Project(ctx, request.CompanyID, request.ProjectID); err != nil {
+		return Session{}, err
 	}
 	session := Session{ID: bson.NewObjectID(), Type: request.Type, ExternalID: request.ExternalID, Binding: SessionProjectBinding{CompanyID: request.CompanyID, ProjectID: request.ProjectID}, Revision: 1, OwnerReference: request.OwnerReference, Operation: request.OperationID, Digest: digest, CreatedAt: time.Now().UTC()}
 	if _, err := collection.InsertOne(ctx, session); err != nil {

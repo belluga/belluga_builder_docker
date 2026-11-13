@@ -251,6 +251,11 @@ func TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed(t *testing.T) {
 	if _, err := store.BindSession(ctx, crossCompany); !errors.Is(err, ErrConflict) {
 		t.Fatalf("cross-Company provider identity reuse error = %v", err)
 	}
+	unknownTarget := request
+	unknownTarget.ProjectID, unknownTarget.OperationID = "not-registered", "unknown-target-rebind"
+	if _, err := store.BindSession(ctx, unknownTarget); !errors.Is(err, ErrConflict) {
+		t.Fatalf("immutable identity leaked target Project existence: %v", err)
+	}
 	listed, err := store.ListProjectSessions(ctx, "company-a", "project-a", bson.NilObjectID, 1)
 	if err != nil || len(listed.Items) != 1 || listed.Items[0].ID != first.ID || listed.Items[0].Binding.ProjectID != "project-a" {
 		t.Fatalf("Project session list = %+v, %v", listed, err)
@@ -286,6 +291,83 @@ func TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed(t *testing.T) {
 	}
 	if successes != 1 || conflicts != 1 {
 		t.Fatalf("concurrent first binding must have one winner and one conflict: successes=%d conflicts=%d", successes, conflicts)
+	}
+}
+
+func TestMongoConversationRoadmapMutationStaysWithinBoundProject(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := fmt.Sprintf("session_roadmap_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	for _, project := range []string{"project-a", "project-b"} {
+		if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: project, ProjectName: project}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.BindSession(ctx, SessionBindingRequest{Type: "codex", ExternalID: "session-a", CompanyID: "company-a", ProjectID: "project-a", OperationID: "bind-a", OwnerReference: "owner-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.BindSession(ctx, SessionBindingRequest{Type: "codex", ExternalID: "session-b", CompanyID: "company-a", ProjectID: "project-b", OperationID: "bind-b", OwnerReference: "owner-b"}); err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHandler(store)
+	createEpic := func(sessionID, projectID, operationID string, revision int64) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(`{"project_id":%q,"expected_roadmap_revision":%d,"operation_id":%q,"id":"e-session-test","name":"Session test","description":"Bound Project"}`, projectID, revision, operationID)
+		request := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/company-a/projects/"+projectID+"/roadmap/epics", strings.NewReader(body))
+		request.Header.Set(sessionLaneHeader, "conversation")
+		request.Header.Set(sessionTypeHeader, "codex")
+		request.Header.Set(sessionExternalIDHeader, sessionID)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	roadmapRevision := func(projectID string) int64 {
+		t.Helper()
+		data, err := store.Roadmap(ctx, projectID, "company-a")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var view struct {
+			RoadmapRevision int64 `json:"roadmap_revision"`
+		}
+		if err := json.Unmarshal(data, &view); err != nil {
+			t.Fatal(err)
+		}
+		return view.RoadmapRevision
+	}
+	if response := createEpic("session-a", "project-b", "foreign-write", 0); response.Code != http.StatusForbidden {
+		t.Fatalf("foreign mutation status=%d body=%s", response.Code, response.Body)
+	}
+	if revision := roadmapRevision("project-b"); revision != 0 {
+		t.Fatalf("foreign Project changed after denied mutation: revision=%d", revision)
+	}
+	if response := createEpic("session-a", "project-a", "own-write", 0); response.Code != http.StatusOK {
+		t.Fatalf("own mutation status=%d body=%s", response.Code, response.Body)
+	}
+	if revision := roadmapRevision("project-a"); revision != 1 {
+		t.Fatalf("own Project revision=%d, want 1", revision)
+	}
+	if revision := roadmapRevision("project-b"); revision != 0 {
+		t.Fatalf("other Project changed after own mutation: revision=%d", revision)
+	}
+	if response := createEpic("session-b", "project-b", "second-own-write", 0); response.Code != http.StatusOK {
+		t.Fatalf("second bound Project mutation status=%d body=%s", response.Code, response.Body)
+	}
+	if revision := roadmapRevision("project-b"); revision != 1 {
+		t.Fatalf("second bound Project revision=%d, want 1", revision)
 	}
 }
 
