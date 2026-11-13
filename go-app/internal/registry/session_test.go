@@ -216,6 +216,35 @@ func TestConversationLaneRejectsForeignProjectAcrossRoutes(t *testing.T) {
 	}
 }
 
+func TestSessionListRequiresBoundIdentityAndExposesPreIAMSubstitutionLimit(t *testing.T) {
+	projectA := &sessionHTTPService{session: Session{Type: "codex", ExternalID: "session-a", Binding: SessionProjectBinding{CompanyID: "company-a", ProjectID: "project-a"}, Revision: 1}}
+	projectB := &sessionHTTPService{session: Session{Type: "codex", ExternalID: "session-b", Binding: SessionProjectBinding{CompanyID: "company-a", ProjectID: "project-b"}, Revision: 1}}
+	path := "/internal/v1/companies/company-a/projects/project-b/sessions"
+	requestList := func(service *sessionHTTPService, provider, externalID string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		request.Header.Set(sessionLaneHeader, "conversation")
+		request.Header.Set(sessionTypeHeader, provider)
+		request.Header.Set(sessionExternalIDHeader, externalID)
+		response := httptest.NewRecorder()
+		NewHandler(service).ServeHTTP(response, request)
+		return response
+	}
+	if response := requestList(projectA, "codex", "session-a"); response.Code != http.StatusForbidden || projectA.listProject != "" {
+		t.Fatalf("foreign session list status=%d listed=%q body=%s", response.Code, projectA.listProject, response.Body)
+	}
+	for _, identity := range [][2]string{{"", ""}, {"codex", "unknown"}, {"codex", " session-b"}, {"other", "session-b"}} {
+		if response := requestList(projectB, identity[0], identity[1]); response.Code != http.StatusUnauthorized || projectB.listProject != "" {
+			t.Fatalf("unknown/malformed identity %q/%q status=%d listed=%q body=%s", identity[0], identity[1], response.Code, projectB.listProject, response.Body)
+		}
+	}
+	// A caller who substitutes B's valid ID can list B before IAM authenticates
+	// header ownership. This is the documented trust limitation, not isolation.
+	if response := requestList(projectB, "codex", "session-b"); response.Code != http.StatusOK || projectB.listProject != "project-b" {
+		t.Fatalf("valid B identity status=%d listed=%q body=%s", response.Code, projectB.listProject, response.Body)
+	}
+}
+
 func TestConversationLaneRejectsEncodedOrNoncanonicalProjectIdentity(t *testing.T) {
 	service := &sessionHTTPService{
 		testService: testService{project: Project{ID: "project-b", CompanyID: "company-a", Name: "Other Project"}},
@@ -366,6 +395,16 @@ func TestMongoConversationRoadmapMutationStaysWithinBoundProject(t *testing.T) {
 	if _, err := store.BindSession(ctx, SessionBindingRequest{Type: "codex", ExternalID: "session-b", CompanyID: "company-a", ProjectID: "project-b", OperationID: "bind-b", OwnerReference: "owner-b"}); err != nil {
 		t.Fatal(err)
 	}
+	// Authorization-allow fixture: one actor is entitled to both Projects.
+	// The private API does not implement IAM, so this assumption cannot bind
+	// a second Project to the same session or bypass the session guard.
+	actorAuthorizedProjects := []string{"project-a", "project-b"}
+	if _, err := store.BindSession(ctx, SessionBindingRequest{Type: "codex", ExternalID: "session-a", CompanyID: "company-a", ProjectID: "project-b", OperationID: "rebind-a-to-b", OwnerReference: "same-actor"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("multi-Project actor rebound session A: %v", err)
+	}
+	if bound, err := store.ReadSession(ctx, "codex", "session-a"); err != nil || bound.Binding.ProjectID != "project-a" {
+		t.Fatalf("session A binding changed after rejected rebind: %+v, %v", bound.Binding, err)
+	}
 	handler := NewHandler(store)
 	createEpic := func(sessionID, projectID, operationID string, revision int64) *httptest.ResponseRecorder {
 		t.Helper()
@@ -375,7 +414,7 @@ func TestMongoConversationRoadmapMutationStaysWithinBoundProject(t *testing.T) {
 		request.Header.Set(sessionTypeHeader, "codex")
 		request.Header.Set(sessionExternalIDHeader, sessionID)
 		// Actor membership in both Projects cannot override the bound session.
-		request.Header.Set("X-Actor-Authorized-Projects", "project-a,project-b")
+		request.Header.Set("X-Actor-Authorized-Projects", strings.Join(actorAuthorizedProjects, ","))
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		return response
