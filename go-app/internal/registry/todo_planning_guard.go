@@ -35,6 +35,25 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 	if content.Delivery != nil && len(content.DiffExpectation) != 0 {
 		return todoTeach("content.delivery.kind", "use knowledge-only only for a TODO without implementation repository scopes; keep code/Git-artifact delivery on its ordinary proof path", ErrConflict)
 	}
+	if content.Delivery == nil && len(content.DiffExpectation) > 0 {
+		checksByRepository := make(map[string]bool, len(content.LocalChecks))
+		for i, check := range content.LocalChecks {
+			field := fmt.Sprintf("content.local_checks[%d].repository_id", i)
+			checksByRepository[check.RepositoryID] = true
+			inScope := false
+			for _, scope := range content.DiffExpectation {
+				inScope = inScope || check.RepositoryID == scope.RepositoryID
+			}
+			if !inScope {
+				return todoTeach(field, "select a repository present in this exact TODO diff scope", ErrConflict)
+			}
+		}
+		for i, scope := range content.DiffExpectation {
+			if !checksByRepository[scope.RepositoryID] {
+				return todoTeach(fmt.Sprintf("content.local_checks[%d]", i), "provide one explicit local check for each repository in the code TODO scope", ErrConflict)
+			}
+		}
+	}
 	for i, scope := range content.DiffExpectation {
 		field := fmt.Sprintf("content.diff_expectation[%d]", i)
 		if foundationScope(scope.Repository) {

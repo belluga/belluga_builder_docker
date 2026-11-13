@@ -5,6 +5,20 @@ import (
 	"testing"
 )
 
+func TestSelectTODOReleaseBranchesIgnoresUnselectedReleaseEntries(t *testing.T) {
+	record := TODORecord{DiffExpectation: []TODORepositoryScope{{RepositoryID: "belluga/selected"}}}
+	branches := map[string]string{"belluga/selected": "builder", "belluga/other": "other-branch"}
+	selected := selectTODOReleaseBranchMap(record, branches)
+	if len(selected) != 1 || selected["belluga/selected"] != "builder" {
+		t.Fatalf("selected branch map = %#v; unrelated Release entry must not enter TODO proof", selected)
+	}
+	branches["belluga/new"] = "new-branch"
+	selected = selectTODOReleaseBranchMap(record, branches)
+	if len(selected) != 1 || selected["belluga/selected"] != "builder" {
+		t.Fatalf("adding an unrelated Release branch invalidated the TODO subset: %#v", selected)
+	}
+}
+
 func TestImplementationRepositoryChangeRequiresOwnerConfirmation(t *testing.T) {
 	store := &MongoStore{}
 	request := ImplementationRepositoryChange{

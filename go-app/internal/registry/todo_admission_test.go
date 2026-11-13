@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -398,6 +397,11 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		TODOValidationScenario{ID: "scenario-image", CriterionIDs: []string{"criterion-one"}, Method: "Build the registry runtime image.", Expected: "The image builds."},
 	)
 	typed.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", RepositoryID: "owner/repo", DeliveryBranch: "r-08-rc", Baseline: strings.Repeat("a", 40), ExpectedPaths: []string{"go-app/**"}, NotExpectedPaths: []string{"flutter-app/**"}}}
+	typed.LocalChecks = []TODOLocalCheck{
+		{ID: "G-TEST", RepositoryID: "owner/repo", Argv: []string{"go", "test", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-VET", RepositoryID: "owner/repo", Argv: []string{"go", "vet", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-IMAGE", RepositoryID: "owner/repo", Argv: []string{"docker", "build", "--target", "runtime", "."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**", "go-app/Dockerfile"}},
+	}
 	typed.Planning = &TODOPlanning{Complexity: "small", AuditTriggers: testAuditTriggers(), Assumptions: []TODOPlanningAssumption{}, Reviews: []TODOPlanningReview{{Kind: "critique", Reference: "review/critique"}}}
 	typedDigest, err := todoContentRevisionDigest("builder", imported.TODO.ID, 1, typed)
 	if err != nil {
@@ -429,6 +433,18 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
 	}); err != nil {
 		t.Fatalf("confirm the code-backed fixture repository before Planning exit: %v", err)
+	}
+	projectBeforeBranch, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchRevision := projectBeforeBranch.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{
+		ProjectID: "builder", ExpectedRoadmapRevision: &branchRevision,
+		OperationID: "typed-planning-release-branch", ID: "r-08", RepositoryID: "owner/repo",
+		Branch: "r-08-rc", OwnerReference: "fixture-owner-confirmed-release-branch",
+	}); err != nil {
+		t.Fatalf("confirm the code-backed fixture Release branch before Planning exit: %v", err)
 	}
 	// Two independent agents may submit the same approved predecessor at once.
 	// Exactly one stage event must win the aggregate revision CAS.
@@ -580,6 +596,11 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		t.Fatalf("rejected transition mutated stage: %+v %v", planningRead, err)
 	}
 	newPlanning := contentFromTODO(planningRead.TODO)
+	newPlanning.LocalChecks = []TODOLocalCheck{
+		{ID: "G-TEST", RepositoryID: "owner/repo", Argv: []string{"go", "test", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-VET", RepositoryID: "owner/repo", Argv: []string{"go", "vet", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-IMAGE", RepositoryID: "owner/repo", Argv: []string{"docker", "build", "--target", "runtime", "."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**", "go-app/Dockerfile"}},
+	}
 	newPlanning.Planning.Reviews[0].Reference = "review/critique-after-planning-move"
 	newPlanning.Planning.Assumptions = []TODOPlanningAssumption{{ID: "live-code", Status: "live", Statement: "The approved code exists.", CodeRefs: []TODOPlanningCodeRef{{RepositoryID: "owner/repo", Path: "go-app/main.go"}}}}
 	newPlanning.Planning.Reviews = append(newPlanning.Planning.Reviews, TODOPlanningReview{Kind: "coherence", Reference: "review/coherence-after-move"})
@@ -593,6 +614,18 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
 	}); err != nil {
 		t.Fatalf("confirm the code-anchor fixture repository before Planning exit: %v", err)
+	}
+	projectBeforeAnchorBranch, err := store.Project(ctx, "company-a", "no-foundation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchorBranchRevision := projectBeforeAnchorBranch.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{
+		ProjectID: "no-foundation", ExpectedRoadmapRevision: &anchorBranchRevision,
+		OperationID: "anchor-fixture-release-branch", ID: "r-01", RepositoryID: "owner/repo",
+		Branch: "builder", OwnerReference: "fixture-owner-confirmed-anchor-release-branch",
+	}); err != nil {
+		t.Fatalf("confirm the code-anchor fixture Release branch before Planning exit: %v", err)
 	}
 	anchorExists := false
 	anchorReader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -653,12 +686,12 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	if err != nil || noFoundation.Binding != nil {
 		t.Fatalf("unexpected Foundation binding: %+v, %v", noFoundation, err)
 	}
-	assertTypedDelivery(t, ctx, store, "builder", migration.TODO.ID, 4, migrated.ContentDigest)
+	assertTypedDelivery(t, ctx, store, "builder", migration.TODO.ID, 4, "r-08-rc", migrated.ContentDigest)
 	noFoundationTODO, err := store.ReadTODO(ctx, "company-a", "no-foundation", builderBorn.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTypedDelivery(t, ctx, store, "no-foundation", builderBorn.ID, currentRevision, noFoundationTODO.ContentDigest)
+	assertTypedDelivery(t, ctx, store, "no-foundation", builderBorn.ID, currentRevision, "builder", noFoundationTODO.ContentDigest)
 }
 
 func recordPlanningReviewSubjects(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID, operation string) int64 {
@@ -683,7 +716,7 @@ func recordPlanningReviewSubjects(t *testing.T, ctx context.Context, store *Mong
 	return result.Revision
 }
 
-func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, digest string) {
+func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, branch, digest string) {
 	t.Helper()
 	commit := strings.Repeat("a", 40)
 	root := strings.Repeat("d", 40)
@@ -697,10 +730,13 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 			t.Errorf("typed proof omitted current Mongo authority: %s", r.URL.String())
 		}
 		if strings.HasSuffix(r.URL.Path, "/commit") {
-			if q.Get("repository") != "owner/repo" || q.Get("branch") != "r-08-rc" {
+			if q.Get("repository") != "owner/repo" || q.Get("branch") != branch {
 				t.Errorf("wrong approved repository: %s", r.URL.String())
 			}
-			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: "r-08-rc", CommitSHA: commit, RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+			if testedHead := q.Get("tested_head_sha"); testedHead != "" && testedHead != commit {
+				t.Errorf("implementation commit was compared against wrong tested head: %s", testedHead)
+			}
+			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: branch, CommitSHA: commit, TestedHeadSHA: q.Get("tested_head_sha"), RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
 			return
 		}
 		if q.Get("docker_repository_id") != "owner/repo" {
@@ -729,19 +765,22 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 		t.Fatalf("evidence: %v", err)
 	}
 	revision++
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
-		t.Fatal(err)
-	}
 	now := time.Now().UTC()
 	preflight, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	proofRevision := revision
-	result := &LocalProofResult{SchemaVersion: "builder-local-proof-result-v2", CompanyID: "company-a", ProjectID: projectID, TODOID: todoID, TODORevision: &proofRevision, ContentDigest: digest, ReleaseID: preflight.TODO.ReleaseID, Position: preflight.TODO.Position, RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest, StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano), Before: localProofSnapshot{BuilderHead: commit, PACEDHead: commit, BuilderInputsDigest: digest, PACEDInputsDigest: digest}, OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}}, OutsideUntrackedAfter: map[string]map[string]string{"builder": {}, "paced": {}}}
-	result.After = result.Before
-	for _, id := range store.localMatrix.DefaultRequired {
-		result.Commands = append(result.Commands, localProofCommand{ID: id})
+	result := &LocalProofResult{SchemaVersion: "builder-local-proof-result-v3", CompanyID: "company-a", ProjectID: projectID, TODOID: todoID, TODORevision: &proofRevision, ContentDigest: digest, ReleaseID: preflight.TODO.ReleaseID, Position: preflight.TODO.Position, RunID: "11111111-2222-4333-8444-555555555555", StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano)}
+	branchPlan := map[string]string{}
+	for _, branch := range preflight.ReleaseDeliveryBranches {
+		branchPlan[branch.RepositoryID] = branch.Branch
+	}
+	for repositoryID, branch := range branchPlan {
+		result.Repositories = append(result.Repositories, localProofRepository{RepositoryID: repositoryID, Branch: branch, HeadBefore: commit, HeadAfter: commit, InputsDigestBefore: digest, InputsDigestAfter: digest})
+	}
+	for _, check := range preflight.TODO.Content.LocalChecks {
+		result.Checks = append(result.Checks, localProofCheck{ID: check.ID, RepositoryID: check.RepositoryID, ExitCode: 0})
 	}
 	seal := func() {
 		bytes, _ := json.Marshal(result)
@@ -912,6 +951,7 @@ func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *M
 	close(start)
 	var winningOperation string
 	successes, conflicts := 0, 0
+	var conflictErrors []string
 	for range 2 {
 		result := <-results
 		switch {
@@ -920,13 +960,14 @@ func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *M
 			winningOperation = result.operationID
 		case errors.Is(result.err, ErrConflict):
 			conflicts++
+			conflictErrors = append(conflictErrors, result.operationID+": "+result.err.Error())
 		default:
 			t.Fatalf("concurrent %s transition: %v", first.RequestedStage, result.err)
 		}
 	}
 	if first.OperationID == second.OperationID {
 		if successes < 1 || successes+conflicts != 2 {
-			t.Fatalf("same-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
+			t.Fatalf("same-key %s outcomes: successes=%d conflicts=%d errors=%v", first.RequestedStage, successes, conflicts, conflictErrors)
 		}
 	} else if successes != 1 || conflicts != 1 {
 		t.Fatalf("competing-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
@@ -1833,21 +1874,11 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || finalVersionCount != 4 {
 		t.Fatalf("section normalization content version count=%d err=%v; want 4", finalVersionCount, err)
 	}
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
-		t.Fatalf("load local proof matrix: %v", err)
-	}
 	proofResult := &LocalProofResult{
-		SchemaVersion: "builder-local-proof-result-v1", TODOID: request.TODO.ID,
-		RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest,
-		StartedAt:              time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
-		FinishedAt:             time.Now().UTC().Format(time.RFC3339Nano),
-		Before:                 localProofSnapshot{BuilderHead: strings.Repeat("a", 40), PACEDHead: strings.Repeat("b", 40), BuilderInputsDigest: "sha256:" + strings.Repeat("a", 64), PACEDInputsDigest: "sha256:" + strings.Repeat("b", 64)},
-		OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}},
-	}
-	proofResult.After = proofResult.Before
-	proofResult.OutsideUntrackedAfter = proofResult.OutsideUntrackedBefore
-	for _, command := range store.localMatrix.DefaultRequired {
-		proofResult.Commands = append(proofResult.Commands, localProofCommand{ID: command, ExitCode: 0})
+		SchemaVersion: "builder-local-proof-result-v3", TODOID: request.TODO.ID,
+		RunID:      "11111111-2222-4333-8444-555555555555",
+		StartedAt:  time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		FinishedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	proofBytes, err := json.Marshal(proofResult)
 	if err != nil {

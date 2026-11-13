@@ -121,6 +121,105 @@ func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T
 	}
 }
 
+func TestRemoteLocalDeliveryClaimsMustBeAtOrBeforeTheTestedHead(t *testing.T) {
+	older, testedHead, later := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	digest := sourceHash([]byte("approved content"))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("tested_head_sha") != testedHead {
+			t.Errorf("missing/wrong tested head in commit proof request: %s", r.URL)
+			http.Error(w, `{"teach":"tested head missing"}`, http.StatusConflict)
+			return
+		}
+		if q.Get("commit_sha") == later {
+			http.Error(w, `{"teach":"implementation commit is later than or unrelated to the tested checkout head"}`, http.StatusConflict)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{
+			CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"),
+			Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), TestedHeadSHA: q.Get("tested_head_sha"),
+			RemoteHead: later, ParentSHA: strings.Repeat("d", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified",
+		})
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	todo := TODORecord{
+		ID: "tested-head-binding", ProjectID: "builder", ReleaseID: "r-08",
+		Source:          TODOSource{Kind: "mongo-content-revision"},
+		Content:         &TODOContent{SchemaVersion: todoContentSchemaVersion},
+		DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/belluga_builder_docker", ExpectedPaths: []string{"go-app/internal/registry/**"}}},
+	}
+	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: digest, VerificationState: "verified"}
+	branches := map[string]string{"belluga/belluga_builder_docker": "r-08-rc"}
+	testedHeads := map[string]string{"belluga/belluga_builder_docker": testedHead}
+	for _, claim := range []string{older, testedHead} {
+		todo.ImplementationCommits = []TODOCommitReference{{Repository: "Builder", Commit: claim, SourceDigest: digest, VerificationState: "unverified"}}
+		if proof, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", "", todo, digest, local, branches, testedHeads); err != nil || proof.Kind != "remote-local-delivery" {
+			t.Fatalf("ancestor-or-equal claim %s rejected: %+v %v", claim, proof, err)
+		}
+	}
+	todo.ImplementationCommits = []TODOCommitReference{{Repository: "Builder", Commit: later, SourceDigest: digest, VerificationState: "unverified"}}
+	if _, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", "", todo, digest, local, branches, testedHeads); err == nil || !strings.Contains(err.Error(), "later than or unrelated") {
+		t.Fatalf("later untested claim accepted or wrong TEACH: %v", err)
+	}
+}
+
+func TestRemoteCommitProofRequiresRepositorySpecificTestedHeadEcho(t *testing.T) {
+	firstHead, secondHead := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	firstRepo, secondRepo := "belluga/first", "belluga/second"
+	serve := func(t *testing.T, responseFor func(string, string) remoteCommitResult) *MongoStore {
+		t.Helper()
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			q := r.URL.Query()
+			_ = json.NewEncoder(w).Encode(responseFor(q.Get("repository"), q.Get("tested_head_sha")))
+		}))
+		t.Cleanup(server.Close)
+		return &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	}
+	resultFor := func(repository, testedHead string) remoteCommitResult {
+		return remoteCommitResult{CompanyID: "company-a", ProjectID: "project-a", Repository: repository,
+			Branch: "release", CommitSHA: strings.Repeat("c", 40), TestedHeadSHA: testedHead,
+			RemoteHead: strings.Repeat("d", 40), ParentSHA: strings.Repeat("e", 40),
+			Paths: []string{"src/file.go"}, Outcome: "verified"}
+	}
+
+	validStore := serve(t, func(repository, testedHead string) remoteCommitResult {
+		return resultFor(repository, testedHead)
+	})
+	for repository, head := range map[string]string{firstRepo: firstHead, secondRepo: secondHead} {
+		if _, err := validStore.readRemoteCommit(context.Background(), "company-a", "project-a", repository,
+			"release", strings.Repeat("c", 40), true, head); err != nil {
+			t.Fatalf("repository-specific tested head for %s rejected: %v", repository, err)
+		}
+	}
+
+	tests := []struct {
+		name       string
+		repository string
+		requested  string
+		response   func(string, string) remoteCommitResult
+	}{
+		{name: "omitted echo", repository: firstRepo, requested: firstHead, response: func(repository, _ string) remoteCommitResult {
+			return resultFor(repository, "")
+		}},
+		{name: "wrong head for requested repository", repository: secondRepo, requested: secondHead, response: func(repository, _ string) remoteCommitResult {
+			return resultFor(repository, firstHead)
+		}},
+		{name: "head from another repository", repository: secondRepo, requested: secondHead, response: func(_, _ string) remoteCommitResult {
+			return resultFor(firstRepo, firstHead)
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := serve(t, test.response)
+			if _, err := store.readRemoteCommit(context.Background(), "company-a", "project-a", test.repository,
+				"release", strings.Repeat("c", 40), true, test.requested); err == nil {
+				t.Fatal("proof accepted an omitted or cross-repository tested-head echo")
+			}
+		})
+	}
+}
+
 func TestRemoteLocalDeliveryAcceptsCompleteLargeCommitPathList(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	paths := make([]string, 450)

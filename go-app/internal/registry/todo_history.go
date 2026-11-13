@@ -62,6 +62,9 @@ func (content TODOAuthoredContent) MarshalBSON() ([]byte, error) {
 		if content.References != nil && len(content.References) == 0 {
 			document = append(document, bson.E{Key: "references", Value: []TODOContentReference{}})
 		}
+		if content.LocalChecks != nil && len(content.LocalChecks) == 0 {
+			document = append(document, bson.E{Key: "local_checks", Value: []TODOLocalCheck{}})
+		}
 	}
 	document = append(document,
 		bson.E{Key: "title", Value: content.Title},
@@ -1854,6 +1857,14 @@ func TODOContentSchemaValidator() bson.D {
 	codeRef := object(bson.A{"repository_id", "path"}, bson.D{{Key: "repository_id", Value: text(2048)}, {Key: "path", Value: text(2048)}})
 	assumption := object(bson.A{"id", "status", "statement", "code_refs"}, bson.D{{Key: "id", Value: id}, {Key: "status", Value: text(16)}, {Key: "statement", Value: text(2048)}, {Key: "code_refs", Value: array(32, codeRef)}})
 	review := object(bson.A{"kind", "reference"}, bson.D{{Key: "kind", Value: text(32)}, {Key: "reference", Value: text(2048)}})
+	localCheckID := bson.D{{Key: "bsonType", Value: "string"}, {Key: "minLength", Value: 1}, {Key: "maxLength", Value: 64}, {Key: "pattern", Value: `^[A-Za-z][A-Za-z0-9_-]{0,63}$`}}
+	localCheck := object(bson.A{"id", "repository_id", "argv", "working_directory", "input_paths"}, bson.D{
+		{Key: "id", Value: localCheckID},
+		{Key: "repository_id", Value: text(256)},
+		{Key: "argv", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "maxItems", Value: 32}, {Key: "items", Value: text(2048)}}},
+		{Key: "working_directory", Value: text(2048)},
+		{Key: "input_paths", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "maxItems", Value: 64}, {Key: "items", Value: text(2048)}}},
+	})
 	auditProperties := bson.D{{Key: "blast_radius", Value: text(16)}, {Key: "architecture_applicability", Value: text(16)}}
 	for _, name := range []string{"behavioral_change_or_bugfix", "changes_public_contract", "touches_auth_or_tenant", "touches_runtime_or_infra", "touches_tests", "critical_user_journey", "release_or_promotion_critical", "high_severity_plan_review_issue", "explicit_three_lane_request"} {
 		auditProperties = append(auditProperties, bson.E{Key: name, Value: boolean})
@@ -1876,6 +1887,7 @@ func TODOContentSchemaValidator() bson.D {
 			{Key: "legacy_context", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 128}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"source_revision", "section_position", "ownership", "title", "body", "digest"}}, {Key: "properties", Value: bson.D{{Key: "source_revision", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "section_position", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "minimum", Value: 0}}}, {Key: "ownership", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"contract"}}}}, {Key: "title", Value: text(2048)}, {Key: "body", Value: text(64 << 10)}, {Key: "digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}}}}}}}},
 			{Key: "architecture", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"decision", "rationale", "protection"}}, {Key: "properties", Value: bson.D{{Key: "decision", Value: text(2048)}, {Key: "rationale", Value: text(2048)}, {Key: "protection", Value: text(2048)}}}}},
 			{Key: "planning", Value: planning},
+			{Key: "local_checks", Value: array(32, localCheck)},
 		}},
 	}
 }

@@ -4,10 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path"
+	"regexp"
+	"strings"
 	"unicode/utf8"
 )
 
 const todoContentSchemaVersion = 2
+
+var localCheckIDPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`)
 
 // TODOContent is the bounded, typed authored contract for schema-v2 TODOs.
 // Operational state and historical verification remain on their existing APIs.
@@ -25,6 +30,17 @@ type TODOContent struct {
 	LegacyContext       []TODOLegacyContext       `json:"legacy_context,omitempty" bson:"legacy_context,omitempty"`
 	Architecture        *TODOArchitectureDecision `json:"architecture,omitempty" bson:"architecture,omitempty"`
 	Planning            *TODOPlanning             `json:"planning,omitempty" bson:"planning,omitempty"`
+	LocalChecks         []TODOLocalCheck          `json:"local_checks,omitempty" bson:"local_checks,omitempty"`
+}
+
+// TODOLocalCheck is a Project-authored, repository-scoped command contract.
+// The registry validates its shape but never executes the command.
+type TODOLocalCheck struct {
+	ID               string   `json:"id" bson:"id"`
+	RepositoryID     string   `json:"repository_id" bson:"repository_id"`
+	Argv             []string `json:"argv" bson:"argv"`
+	WorkingDirectory string   `json:"working_directory" bson:"working_directory"`
+	InputPaths       []string `json:"input_paths" bson:"input_paths"`
 }
 
 // TODODeliveryContract identifies documentary work explicitly. An empty code
@@ -154,6 +170,9 @@ func validateTODOContent(content TODOContent, allowLegacyContext, requireComplet
 	if err := validateTODODeliveryContract(content.Delivery); err != nil {
 		return err
 	}
+	if err := validateTODOLocalChecks(content.LocalChecks); err != nil {
+		return err
+	}
 	if (requireComplete && !validSummaryField(content.Context, 16<<10)) || (!requireComplete && content.Context != "" && !validSummaryField(content.Context, 16<<10)) {
 		return todoTeach("content.context", "contain nonblank valid UTF-8 text up to 16384 bytes", ErrInvalid)
 	}
@@ -259,7 +278,46 @@ func validateTODOContent(content TODOContent, allowLegacyContext, requireComplet
 			}
 		}
 	}
-	if err := validateKnowledgeClaimCapacity(content); err != nil { return err }
+	if err := validateKnowledgeClaimCapacity(content); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTODOLocalChecks(checks []TODOLocalCheck) error {
+	if len(checks) > 32 {
+		return todoTeach("content.local_checks", "contain at most 32 repository-scoped checks", ErrInvalid)
+	}
+	seen := make(map[string]bool, len(checks))
+	for i, check := range checks {
+		field := fmt.Sprintf("content.local_checks[%d]", i)
+		if !localCheckIDPattern.MatchString(check.ID) || seen[check.ID] {
+			return todoTeach(field+".id", "be a unique bounded check ID using letters, digits, hyphens or underscores", ErrInvalid)
+		}
+		seen[check.ID] = true
+		if !validGitRepositoryID(check.RepositoryID) {
+			return todoTeach(field+".repository_id", "identify an exact owner/repository", ErrInvalid)
+		}
+		if len(check.Argv) == 0 || len(check.Argv) > 32 {
+			return todoTeach(field+".argv", "contain 1..32 explicit argument strings", ErrInvalid)
+		}
+		for j, arg := range check.Argv {
+			if !validSummaryField(arg, 2048) {
+				return todoTeach(fmt.Sprintf("%s.argv[%d]", field, j), "contain nonblank valid UTF-8 arguments up to 2048 bytes", ErrInvalid)
+			}
+		}
+		if !validRepositoryPattern(check.WorkingDirectory) || strings.ContainsAny(check.WorkingDirectory, "*?[]") || path.Clean(check.WorkingDirectory) != check.WorkingDirectory {
+			return todoTeach(field+".working_directory", "be a canonical repository-relative working directory", ErrInvalid)
+		}
+		if len(check.InputPaths) == 0 || len(check.InputPaths) > 64 {
+			return todoTeach(field+".input_paths", "contain 1..64 normalized repository-relative file paths or globs", ErrInvalid)
+		}
+		for j, input := range check.InputPaths {
+			if !validRepositoryPattern(input) || path.Clean(input) != input {
+				return todoTeach(fmt.Sprintf("%s.input_paths[%d]", field, j), "be a normalized repository-relative file path or glob", ErrInvalid)
+			}
+		}
+	}
 	return nil
 }
 

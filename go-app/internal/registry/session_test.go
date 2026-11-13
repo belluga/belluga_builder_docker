@@ -507,11 +507,26 @@ func TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning(t *testi
 	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "project-b", ImplementationRepositoryChange{Action: "confirm", ProjectID: "project-b", ExpectedRevision: 0, OperationID: "confirm-shared-b", Actor: "owner", OwnerReference: "owner-confirmation-b", RepositoryID: "belluga/shared"}); err != nil {
 		t.Fatalf("shared repository could not be confirmed for another Project: %v", err)
 	}
-	record := TODORecord{ProjectID: "project-a", DiffExpectation: []TODORepositoryScope{{RepositoryID: "belluga/unconfirmed"}}}
+	record := TODORecord{ProjectID: "project-a", ReleaseID: "release-a", DiffExpectation: []TODORepositoryScope{{RepositoryID: "belluga/unconfirmed"}}}
 	if err := requireTODOImplementationRepositories(ctx, store, "company-a", record); err == nil || !errors.Is(err, ErrConflict) {
 		t.Fatalf("unconfirmed Git delivery repository passed Planning gate: %v", err)
 	}
 	record.DiffExpectation[0].RepositoryID = "belluga/shared"
+	if err := requireTODOImplementationRepositories(ctx, store, "company-a", record); err == nil || !errors.Is(err, ErrNotFound) {
+		t.Fatalf("confirmed Project membership without a same-Project Release branch passed Planning gate: %v", err)
+	}
+	revision := int64(0)
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "create-epic", RoadmapChange{ProjectID: "project-a", ExpectedRoadmapRevision: &revision, OperationID: "repo-set-epic", ID: "epic-a", Name: "Epic"}); err != nil {
+		t.Fatal(err)
+	}
+	revision = 1
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "create-release", RoadmapChange{ProjectID: "project-a", ExpectedRoadmapRevision: &revision, OperationID: "repo-set-release", ID: "release-a", EpicID: "epic-a", Name: "Release"}); err != nil {
+		t.Fatal(err)
+	}
+	revision = 2
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{ProjectID: "project-a", ExpectedRoadmapRevision: &revision, OperationID: "repo-set-branch", ID: "release-a", RepositoryID: "belluga/shared", Branch: "release", OwnerReference: "owner/release-branch"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := requireTODOImplementationRepositories(ctx, store, "company-a", record); err != nil {
 		t.Fatalf("confirmed repository failed Planning gate: %v", err)
 	}

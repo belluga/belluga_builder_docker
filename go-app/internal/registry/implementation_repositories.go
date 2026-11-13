@@ -233,7 +233,17 @@ func confirmedTODOReleaseBranches(ctx context.Context, store *MongoStore, compan
 			return nil, todoTeach("release_id.delivery_branches."+scope.RepositoryID, "confirm this repository's immutable branch through `builder-project roadmap-change --action confirm-release-branch` using the current Roadmap revision and owner reference", ErrConflict)
 		}
 	}
-	return branches, nil
+	return selectTODOReleaseBranchMap(record, branches), nil
+}
+
+func selectTODOReleaseBranchMap(record TODORecord, releaseBranches map[string]string) map[string]string {
+	selected := make(map[string]string, len(record.DiffExpectation))
+	for _, scope := range record.DiffExpectation {
+		if branch := releaseBranches[scope.RepositoryID]; branch != "" {
+			selected[scope.RepositoryID] = branch
+		}
+	}
+	return selected
 }
 
 func requireTODOImplementationRepositories(ctx context.Context, store *MongoStore, companyID string, record TODORecord) error {

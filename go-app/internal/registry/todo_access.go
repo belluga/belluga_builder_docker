@@ -318,6 +318,9 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 }
 
 func requiresLocalProofForTODO(record TODORecord) bool {
+	if record.Source.Kind == "mongo-content-revision" {
+		return true
+	}
 	foundationOnly := len(record.DiffExpectation) > 0
 	for _, scope := range record.DiffExpectation {
 		if !foundationScope(scope.Repository) {
@@ -388,29 +391,27 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 		if len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {
 			return TODOProofReference{}, todoTeach("proof_refs/waiver_refs", "use the PACED local run and remotely verified implementation commits", ErrConflict)
 		}
-		foundationOnly := len(record.DiffExpectation) > 0
-		for _, scope := range record.DiffExpectation {
-			if !foundationScope(scope.Repository) {
-				foundationOnly = false
-				break
-			}
-		}
-		if foundationOnly {
-			if request.LocalProof != nil {
-				return TODOProofReference{}, todoTeach("local_proof", "Foundation-only delivery uses its published revision, not a code run", ErrConflict)
-			}
-			return m.verifyRemoteLocalDelivery(ctx, companyID, "", record, contentDigest, TODOProofReference{})
+		branchPlan, err := confirmedTODOReleaseBranches(ctx, m, companyID, record)
+		if err != nil {
+			return TODOProofReference{}, err
 		}
 		if content.SchemaVersion == todoContentSchemaVersion {
 			if err := validateLocalProofSubject(ctx, m.client.Database(company.DatabaseName), companyID, record, contentDigest, request.LocalProof); err != nil {
 				return TODOProofReference{}, err
 			}
 		}
-		local, err := m.validateLocalProof(record.ID, request.LocalProof)
+		local, err := m.validateLocalProof(content, branchPlan, request.LocalProof)
 		if err != nil {
 			return TODOProofReference{}, err
 		}
-		return m.verifyRemoteLocalDelivery(ctx, companyID, "", record, contentDigest, local)
+		if err := m.verifyLocalProofHeads(ctx, companyID, record, branchPlan, request.LocalProof); err != nil {
+			return TODOProofReference{}, err
+		}
+		testedHeads := make(map[string]string, len(request.LocalProof.Repositories))
+		for _, repository := range request.LocalProof.Repositories {
+			testedHeads[repository.RepositoryID] = repository.HeadBefore
+		}
+		return m.verifyRemoteLocalDeliveryWithBranchPlan(ctx, companyID, "", record, contentDigest, local, branchPlan, testedHeads)
 	}
 	return mongoBornStageProof(record, request, contentDigest, contentRef)
 }

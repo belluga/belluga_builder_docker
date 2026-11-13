@@ -70,9 +70,6 @@ func main() {
 	if err := store.ConfigureProofReader(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_TOKEN"))); err != nil {
 		log.Fatal("private proof Reader is unavailable")
 	}
-	if err := store.ConfigureLocalMatrix(strings.TrimSpace(os.Getenv("LOCAL_PROOF_MATRIX"))); err != nil {
-		log.Fatal("local proof matrix is unavailable")
-	}
 	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_STATE_ROOT")); stateRoot != "" {
 		if err := store.ConfigureDesignSystemSourceMapRoot(stateRoot); err != nil {
 			log.Fatal("private Design System source-map state is unavailable")

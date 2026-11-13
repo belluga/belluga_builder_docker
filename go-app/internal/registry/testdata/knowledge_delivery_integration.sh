@@ -11,7 +11,7 @@ suffix="$(date +%s)-$$"
 network="builder-knowledge-it-$suffix"
 mongo_container="builder-knowledge-mongo-$suffix"
 cleanup() {
-  docker container rm --force "$mongo_container" >/dev/null 2>&1 || true
+  docker container rm --force --volumes "$mongo_container" >/dev/null 2>&1 || true
   docker network rm "$network" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -41,4 +41,4 @@ docker run --rm --network "$network" \
   --volume "$(realpath "$repo_root/delphi-ai/local-api"):/src/delphi-ai/local-api:ro" \
   --workdir /src/go-app \
   golang:1.23-bookworm \
-  go test ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoConversationRoadmapMutationStaysWithinBoundProject|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning)$' -count=1
+  go test ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoConversationRoadmapMutationStaysWithinBoundProject|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning|TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites|TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit|TestMongoImportedEditedTODOStageFlow|TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies|TestLocalProofHeadMustBePublishedOnReleaseBranchButNeedNotBeBranchTip|TestLocalProofMustMatchExactTypedChecksAndReleaseBranches|TestTODOContentMongoSchemaIncludesStrictLocalCheckShape)$' -count=1

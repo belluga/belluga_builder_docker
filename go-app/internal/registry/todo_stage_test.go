@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -40,27 +39,36 @@ func TestMVPClaimsAllowPACEDOnlyWithoutInventingBuilderCommit(t *testing.T) {
 func TestMVPUsesVerifiedLocalPACEDIdentityForOlderScope(t *testing.T) {
 	first, second := strings.Repeat("a", 40), strings.Repeat("b", 40)
 	proof := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", VerificationState: "verified", Reference: "run=approved;belluga/delphi-ai@builder:" + first + "/parent=" + strings.Repeat("c", 40) + "/head=" + second + ";belluga/delphi-ai@builder:" + second + "/parent=" + first + "/head=" + second}
-	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED", RepositoryID: "belluga/delphi-ai"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: first}, {Repository: "PACED", Commit: second}}}
-	branches := map[string]string{"belluga/delphi-ai": "builder"}
-	repo, branch, err := mvpPACEDRepository(todo, []string{first, second}, branches)
+	todo := TODORecord{DiffExpectation: []TODORepositoryScope{{Repository: "PACED"}}, VerifiedTransitionRef: &proof, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: first}, {Repository: "PACED", Commit: second}}}
+	repo, branch, err := mvpPACEDRepository(todo, []string{first, second})
 	if err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
 		t.Fatalf("verified older PACED identity = %q @ %q, %v", repo, branch, err)
 	}
 	todo.VerifiedTransitionRef.VerificationState = "unverified"
-	if _, _, err := mvpPACEDRepository(todo, []string{first, second}, branches); err == nil {
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}); err == nil {
 		t.Fatal("unverified historical identity accepted")
 	}
 	todo.VerifiedTransitionRef.VerificationState = "verified"
-	if _, _, err := mvpPACEDRepository(todo, []string{first, strings.Repeat("d", 40)}, branches); err == nil {
+	if _, _, err := mvpPACEDRepository(todo, []string{first, strings.Repeat("d", 40)}); err == nil {
 		t.Fatal("unmatched implementation commit accepted")
+	}
+	if _, _, err := mvpPACEDRepository(todo, nil); err == nil {
+		t.Fatal("missing implementation commits accepted")
+	}
+	todo.DiffExpectation[0].RepositoryID = "another-owner/delphi-ai"
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}); err == nil {
+		t.Fatal("scope identity mismatch with previously verified proof accepted")
 	}
 	todo.DiffExpectation[0].RepositoryID = "belluga/delphi-ai"
 	todo.DiffExpectation[0].DeliveryBranch = "wrong-legacy-branch"
-	if repo, branch, err := mvpPACEDRepository(todo, []string{first, second}, branches); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
-		t.Fatalf("Release-owned identity changed: %q @ %q, %v", repo, branch, err)
+	if repo, branch, err := mvpPACEDRepository(todo, []string{first, second}); err != nil || repo != "belluga/delphi-ai" || branch != "builder" {
+		t.Fatalf("verified historical identity changed by stale TODO metadata: %q @ %q, %v", repo, branch, err)
 	}
-	if _, _, err := mvpPACEDRepository(todo, []string{first, second}, map[string]string{"belluga/delphi-ai": "wrong-legacy-branch"}); err == nil {
-		t.Fatal("verified proof overrode Release-owned branch with TODO branch")
+	ambiguous := *todo.VerifiedTransitionRef
+	ambiguous.Reference += ";another-owner/delphi-ai@another-branch:" + first + "/parent=" + strings.Repeat("c", 40) + "/head=" + second
+	todo.VerifiedTransitionRef = &ambiguous
+	if _, _, err := mvpPACEDRepository(todo, []string{first, second}); err == nil {
+		t.Fatal("ambiguous verified repository identity accepted")
 	}
 }
 
@@ -77,7 +85,7 @@ func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
 
 func TestMVPProductionRequiresReaderToConfirmPACEDClaims(t *testing.T) {
 	commit, root, digest := strings.Repeat("a", 40), strings.Repeat("d", 40), sourceHash([]byte("contract"))
-	local := TODOProofReference{Kind: "remote-local-delivery", VerificationState: "verified", SourceDigest: digest}
+	local := TODOProofReference{Kind: "remote-local-delivery", Source: "private-reader-and-paced-runner", Reference: "run=approved;belluga/delphi-ai@builder:" + commit + "/parent=" + strings.Repeat("b", 40) + "/head=" + strings.Repeat("c", 40), VerificationState: "verified", SourceDigest: digest}
 	todo := TODORecord{ID: "todo-a", ProjectID: "builder", ReleaseID: "r-08", Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &local, Source: TODOSource{Digest: digest}, ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
 	confirmed := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -324,15 +332,17 @@ func TestEditedImportedLocalDeliveryUsesCurrentContentDigest(t *testing.T) {
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
-	record.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}
+	record.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", RepositoryID: "owner/repo", ExpectedPaths: []string{"go-app/internal/registry/todo_access.go"}, NotExpectedPaths: []string{}}}
 	record.ImplementationCommits = []TODOCommitReference{{Repository: "Builder", Commit: commitSHA, SourceDigest: currentDigest, VerificationState: "unverified"}}
 	local := TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: "run", SourceDigest: currentDigest, VerificationState: "verified"}
-	remote, err := store.verifyRemoteLocalDelivery(context.Background(), "company-a", "belluga/belluga_builder_foundation_documentation", record, currentDigest, local)
+	branches := map[string]string{"owner/repo": "r-08"}
+	foundationRepository := "belluga/belluga_builder_foundation_documentation"
+	remote, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", foundationRepository, record, currentDigest, local, branches)
 	if err != nil || remote.Kind != "remote-local-delivery" {
 		t.Fatalf("remote delivery proof bound to current imported content = %+v, %v", remote, err)
 	}
 	record.ImplementationCommits[0].SourceDigest = foundationDigest
-	if _, err := store.verifyRemoteLocalDelivery(context.Background(), "company-a", "belluga/belluga_builder_foundation_documentation", record, currentDigest, local); err == nil {
+	if _, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", foundationRepository, record, currentDigest, local, branches); err == nil {
 		t.Fatal("remote delivery accepted a commit bound to stale Foundation provenance")
 	}
 	record.VerifiedTransitionRef.SourceDigest = foundationDigest
@@ -502,26 +512,11 @@ func TestSelectedImportedTODOKeepsSelectedProofContract(t *testing.T) {
 	}
 }
 
-func TestSelectedLocalProofRequiresExactMatrixRun(t *testing.T) {
+func TestLocalProofMustMatchExactTypedChecksAndReleaseBranches(t *testing.T) {
 	store := &MongoStore{}
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
-		t.Fatal(err)
-	}
-	id := "builder-company-tenant-mongo-registry"
-	digest := "sha256:" + strings.Repeat("a", 64)
-	now := time.Now().UTC()
-	result := &LocalProofResult{
-		SchemaVersion: "builder-local-proof-result-v1", TODOID: id,
-		RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest,
-		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano),
-		Before: localProofSnapshot{BuilderHead: strings.Repeat("a", 40), PACEDHead: strings.Repeat("b", 40), BuilderInputsDigest: digest, PACEDInputsDigest: digest},
-	}
-	result.After = result.Before
-	result.OutsideUntrackedBefore = map[string]map[string]string{"builder": {}, "paced": {}}
-	result.OutsideUntrackedAfter = map[string]map[string]string{"builder": {}, "paced": {}}
-	for _, command := range store.localMatrix.RequiredBy[id] {
-		result.Commands = append(result.Commands, localProofCommand{ID: command, ExitCode: 0})
-	}
+	content := TODOAuthoredContent{TODOContent: TODOContent{LocalChecks: []TODOLocalCheck{{ID: "G-TEST", RepositoryID: "belluga/repo", Argv: []string{"go", "test", "./..."}, WorkingDirectory: ".", InputPaths: []string{"**"}}}}}
+	branches := map[string]string{"belluga/repo": "builder"}
+	result := &LocalProofResult{SchemaVersion: "builder-local-proof-result-v3", RunID: "11111111-2222-4333-8444-555555555555", StartedAt: time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: time.Now().UTC().Format(time.RFC3339Nano), Repositories: []localProofRepository{{RepositoryID: "belluga/repo", Branch: "builder", HeadBefore: strings.Repeat("a", 40), HeadAfter: strings.Repeat("a", 40), InputsDigestBefore: "sha256:" + strings.Repeat("b", 64), InputsDigestAfter: "sha256:" + strings.Repeat("b", 64)}}, Checks: []localProofCheck{{ID: "G-TEST", RepositoryID: "belluga/repo", ExitCode: 0}}}
 	seal := func() {
 		data, _ := json.Marshal(result)
 		var value map[string]any
@@ -531,81 +526,94 @@ func TestSelectedLocalProofRequiresExactMatrixRun(t *testing.T) {
 		result.ResultDigest = sourceHash(canonical)
 	}
 	seal()
-	if proof, err := store.validateLocalProof(id, result); err != nil || proof.Kind != "local-run-verified" {
-		t.Fatalf("valid proof = %+v, %v", proof, err)
+	if proof, err := store.validateLocalProof(content, branches, result); err != nil || proof.Kind != "local-run-verified" {
+		t.Fatalf("valid repository-scoped proof = %+v, %v", proof, err)
 	}
-	result.TODOID = "builder-mongo-todo-history-storage-implementation"
-	result.Commands = result.Commands[:len(store.localMatrix.DefaultRequired)]
-	seal()
-	if proof, err := store.validateLocalProof(result.TODOID, result); err != nil || proof.Kind != "local-run-verified" {
-		t.Fatalf("individually admitted TODO proof = %+v, %v", proof, err)
+	wrongBranch := *result
+	wrongBranch.Repositories = append([]localProofRepository(nil), result.Repositories...)
+	wrongBranch.Repositories[0].Branch = "main"
+	sealResult := func(candidate *LocalProofResult) {
+		data, _ := json.Marshal(candidate)
+		var value map[string]any
+		_ = json.Unmarshal(data, &value)
+		delete(value, "result_digest")
+		canonical, _ := json.Marshal(value)
+		candidate.ResultDigest = sourceHash(canonical)
 	}
-	result.TODOID = id
-	result.Commands = append(result.Commands, localProofCommand{ID: "P-TEST", ExitCode: 0})
-	seal()
-	if _, err := store.validateLocalProof(id, nil); err == nil {
+	sealResult(&wrongBranch)
+	if _, err := store.validateLocalProof(content, branches, &wrongBranch); err == nil {
+		t.Fatal("branch not owned by the Release was accepted")
+	}
+	failed := *result
+	failed.Checks = append([]localProofCheck(nil), result.Checks...)
+	failed.Checks[0].ExitCode = 1
+	sealResult(&failed)
+	if _, err := store.validateLocalProof(content, branches, &failed); err == nil {
+		t.Fatal("failed TODO-selected check was accepted")
+	}
+	if _, err := store.validateLocalProof(content, branches, nil); err == nil {
 		t.Fatal("missing local result was accepted")
 	}
-	result.ResultDigest = digest
-	if _, err := store.validateLocalProof(id, result); err == nil {
-		t.Fatal("wrong local result digest was accepted")
+	clone := func() *LocalProofResult {
+		candidate := *result
+		candidate.Repositories = append([]localProofRepository(nil), result.Repositories...)
+		candidate.Checks = append([]localProofCheck(nil), result.Checks...)
+		return &candidate
 	}
-	seal()
-	result.Commands[0].ExitCode = 1
-	seal()
-	if _, err := store.validateLocalProof(id, result); err == nil {
-		t.Fatal("failed fixed command was accepted")
-	}
-	result.Commands[0].ExitCode = 0
-	seal()
-	result.After.BuilderInputsDigest = "sha256:" + strings.Repeat("b", 64)
-	seal()
-	if _, err := store.validateLocalProof(id, result); err == nil {
-		t.Fatal("changed test input was accepted")
+	for name, mutate := range map[string]func(*LocalProofResult){
+		"tampered digest": func(candidate *LocalProofResult) { candidate.ResultDigest = "sha256:" + strings.Repeat("c", 64) },
+		"changed head":    func(candidate *LocalProofResult) { candidate.Repositories[0].HeadAfter = strings.Repeat("d", 40) },
+		"changed input digest": func(candidate *LocalProofResult) {
+			candidate.Repositories[0].InputsDigestAfter = "sha256:" + strings.Repeat("e", 64)
+		},
+		"missing check":            func(candidate *LocalProofResult) { candidate.Checks = nil },
+		"duplicate check":          func(candidate *LocalProofResult) { candidate.Checks = append(candidate.Checks, candidate.Checks[0]) },
+		"foreign check repository": func(candidate *LocalProofResult) { candidate.Checks[0].RepositoryID = "belluga/other" },
+		"missing repository":       func(candidate *LocalProofResult) { candidate.Repositories = nil },
+		"duplicate repository": func(candidate *LocalProofResult) {
+			candidate.Repositories = append(candidate.Repositories, candidate.Repositories[0])
+		},
+		"foreign repository": func(candidate *LocalProofResult) { candidate.Repositories[0].RepositoryID = "belluga/other" },
+	} {
+		candidate := clone()
+		mutate(candidate)
+		if name != "tampered digest" {
+			sealResult(candidate)
+		}
+		if _, err := store.validateLocalProof(content, branches, candidate); err == nil {
+			t.Errorf("%s local proof mutation was accepted", name)
+		}
 	}
 }
 
-func TestKnowledgeLocalProofRequiresCommittedInputDigests(t *testing.T) {
+func TestLocalProofHeadMustBePublishedOnReleaseBranchButNeedNotBeBranchTip(t *testing.T) {
+	const head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const advanced = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	published := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("repository") != "belluga/repo" || r.URL.Query().Get("branch") != "builder" || r.URL.Query().Get("commit_sha") != head {
+			t.Errorf("wrong tested-head verification request: %s", r.URL)
+		}
+		if !published {
+			http.Error(w, "not published", http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: "builder-project", Repository: "belluga/repo", Branch: "builder", CommitSHA: head, RemoteHead: advanced, ParentSHA: strings.Repeat("c", 40), Paths: []string{"go-app/main.go"}, Outcome: "verified"})
+	}))
+	defer server.Close()
 	store := &MongoStore{}
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
+	if err := store.ConfigureProofReader(server.URL, strings.Repeat("x", 32)); err != nil {
 		t.Fatal(err)
 	}
-	id := "builder-knowledge-only-todo-delivery"
-	digest := "sha256:" + strings.Repeat("a", 64)
-	now := time.Now().UTC()
-	result := &LocalProofResult{
-		SchemaVersion: "builder-local-proof-result-v2", TODOID: id,
-		RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest,
-		StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano),
-		Before:                 localProofSnapshot{BuilderHead: strings.Repeat("a", 40), PACEDHead: strings.Repeat("b", 40), BuilderInputsDigest: digest, PACEDInputsDigest: digest},
-		OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}},
-		OutsideUntrackedAfter:  map[string]map[string]string{"builder": {}, "paced": {}},
+	todo := TODORecord{ProjectID: "builder-project"}
+	result := &LocalProofResult{Repositories: []localProofRepository{{RepositoryID: "belluga/repo", Branch: "builder", HeadBefore: head}}}
+	branches := map[string]string{"belluga/repo": "builder"}
+	if err := store.verifyLocalProofHeads(context.Background(), "company-a", todo, branches, result); err == nil {
+		t.Fatal("unpublished local-only test head was accepted")
 	}
-	result.After = result.Before
-	for _, command := range store.localMatrix.RequiredBy[id] {
-		result.Commands = append(result.Commands, localProofCommand{ID: command})
-	}
-	seal := func() {
-		data, _ := json.Marshal(result)
-		var value map[string]any
-		_ = json.Unmarshal(data, &value)
-		delete(value, "result_digest")
-		canonical, _ := json.Marshal(value)
-		result.ResultDigest = sourceHash(canonical)
-	}
-	seal()
-	if _, err := store.validateLocalProof(id, result); err == nil || !strings.Contains(err.Error(), "knowledge_input_digests") {
-		t.Fatalf("missing committed inputs were accepted: %v", err)
-	}
-	result.KnowledgeInputDigests = map[string]string{"runner": digest, "script": digest, "matrix": store.localMatrix.digest}
-	seal()
-	if _, err := store.validateLocalProof(id, result); err != nil {
-		t.Fatalf("bound committed inputs were rejected: %v", err)
-	}
-	result.KnowledgeInputDigests["matrix"] = digest
-	seal()
-	if _, err := store.validateLocalProof(id, result); err == nil || !strings.Contains(err.Error(), "knowledge_input_digests") {
-		t.Fatalf("wrong matrix digest was accepted: %v", err)
+	published = true
+	if err := store.verifyLocalProofHeads(context.Background(), "company-a", todo, branches, result); err != nil {
+		t.Fatalf("published tested ancestor rejected after Release branch advanced: %v", err)
 	}
 }
 
@@ -613,12 +621,12 @@ func TestLocalProofSubjectRejectsStaleOrForeignPreflight(t *testing.T) {
 	position, revision := 2, int64(7)
 	digest := sourceHash([]byte("current content"))
 	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: revision, ReleaseID: "r-10", Position: &position}
-	valid := LocalProofResult{SchemaVersion: "builder-local-proof-result-v2", CompanyID: "company-a", ProjectID: "builder", TODOID: "todo-a", TODORevision: &revision, ContentDigest: digest, ReleaseID: "r-10", Position: &position}
+	valid := LocalProofResult{SchemaVersion: "builder-local-proof-result-v3", CompanyID: "company-a", ProjectID: "builder", TODOID: "todo-a", TODORevision: &revision, ContentDigest: digest, ReleaseID: "r-10", Position: &position}
 	if err := validateLocalProofSubject(context.Background(), nil, "company-a", record, digest, &valid); err != nil {
 		t.Fatalf("matching subject rejected: %v", err)
 	}
 	for name, mutate := range map[string]func(*LocalProofResult){
-		"old runner":      func(p *LocalProofResult) { p.SchemaVersion = "builder-local-proof-result-v1" },
+		"old runner":      func(p *LocalProofResult) { p.SchemaVersion = "builder-local-proof-result-v2" },
 		"company":         func(p *LocalProofResult) { p.CompanyID = "company-b" },
 		"project":         func(p *LocalProofResult) { p.ProjectID = "other" },
 		"digest":          func(p *LocalProofResult) { p.ContentDigest = sourceHash([]byte("old")) },

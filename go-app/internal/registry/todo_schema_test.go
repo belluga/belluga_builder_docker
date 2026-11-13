@@ -69,6 +69,45 @@ func TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies(t *testing.T) {
 			t.Fatalf("Company was not verified: %+v", item)
 		}
 	}
+	content := TODOAuthoredContent{TODOContent: validTODOContent(),
+		Title: "TODO: Strict local check schema", Objective: "Verify tenant-scoped content schema enforcement.",
+		DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	content.TODOContent.LocalChecks = []TODOLocalCheck{{
+		ID: "G-TEST", RepositoryID: "owner/repo", Argv: []string{"go", "test", "./..."},
+		WorkingDirectory: ".", InputPaths: []string{"go-app/**"},
+	}}
+	contentBytes, err := bson.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contentDocument bson.M
+	if err := bson.Unmarshal(contentBytes, &contentDocument); err != nil {
+		t.Fatal(err)
+	}
+	for _, companyID := range []string{"company-a", "company-b"} {
+		collection := store.client.Database(store.tenantDatabase(companyID)).Collection(todoContentVersionsCollection)
+		base := bson.D{{Key: "_id", Value: bson.NewObjectID()}, {Key: "project_id", Value: "builder"},
+			{Key: "todo_id", Value: "strict-local-check"}, {Key: "revision", Value: int64(1)},
+			{Key: "content", Value: contentDocument}}
+		if _, err := collection.InsertOne(ctx, base); err != nil {
+			t.Fatalf("Company %s rejected valid typed local check: %v", companyID, err)
+		}
+		invalidContent := bson.M{}
+		for key, value := range contentDocument {
+			invalidContent[key] = value
+		}
+		invalidContent["local_checks"] = bson.A{bson.M{
+			"id": "G-TEST", "repository_id": "owner/repo", "argv": bson.A{"go", "test"},
+			"working_directory": ".", "input_paths": bson.A{"go-app/**"}, "unexpected": true,
+		}}
+		invalid := append(bson.D(nil), base...)
+		invalid[0].Value = bson.NewObjectID()
+		invalid[2].Value = "strict-local-check-extra-field"
+		invalid[4].Value = invalidContent
+		if _, err := collection.InsertOne(ctx, invalid); err == nil {
+			t.Fatalf("Company %s accepted an unknown local check field", companyID)
+		}
+	}
 	database := store.client.Database(store.tenantDatabase("company-a"))
 	project := Project{ID: "builder", CompanyID: "company-a", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
 	projectRecord, err := projectToDocument(project, bson.NewObjectID())

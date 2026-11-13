@@ -46,7 +46,6 @@ type MongoStore struct {
 	proofReaderURL                   string
 	proofReaderToken                 string
 	proofHTTPClient                  *http.Client
-	localMatrix                      *localProofMatrix
 	designSystemVerifier             designSystemRemoteVerifier
 	prototypeGit                     prototypeGitReader
 	prototypeFileCache               *prototypeFileCache
