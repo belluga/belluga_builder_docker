@@ -159,6 +159,29 @@ func TestRestoredLocalProofRequiresExactDeliveredContract(t *testing.T) {
 	}
 }
 
+func TestRestoredRemoteCodeProofRequiresExactDeliveredContract(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("b", 64)
+	proof := TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", Reference: "belluga/delphi-ai@builder:" + strings.Repeat("a", 40), SourceDigest: digest, VerificationState: "verified"}
+	commits := []TODOCommitReference{{Repository: "delphi-ai", Commit: strings.Repeat("a", 40), SourceDigest: digest, VerificationState: "verified"}}
+	position := 4
+	content := TODOAuthoredContent{Title: "Delivered slice", Objective: "Create TODOs", Sections: []TODOSection{{Key: "intent", Title: "Intent", BodyMarkdown: "Approved", Position: 0, Ownership: "contract"}}}
+	record := TODORecord{ID: "todo-a", ProjectID: "builder", Revision: 53, Stage: "Local-Implemented", StageVerification: "unverified", ReleaseID: "r-08", Position: &position, ImplementationCommits: commits}
+	prior := TODOAsOfResponse{ProjectID: "builder", TODOID: record.ID, Revision: 39, Content: content, State: TODOAsOfState{Stage: "Local-Implemented", StageVerification: "verified", VerifiedTransitionRef: &proof, ReleaseID: record.ReleaseID, Position: position, PlacementAssigned: true, ImplementationCommits: commits}}
+	got, err := restoredLocalProof(record, content, prior)
+	if err != nil || got != proof {
+		t.Fatalf("exact remote code proof = %+v, %v", got, err)
+	}
+	prior.State.VerifiedTransitionRef = &TODOProofReference{Kind: "remote-code-delivery", Source: "paced-local-runner", Reference: proof.Reference, SourceDigest: digest, VerificationState: "verified"}
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("unrecognized proof source accepted")
+	}
+	prior.State.VerifiedTransitionRef = &proof
+	record.ImplementationCommits = nil
+	if _, err := restoredLocalProof(record, content, prior); err == nil {
+		t.Fatal("changed implementation commits reused remote code proof")
+	}
+}
+
 func TestMVPCompletionRequiresReaderVerifiedDeploymentAndCurrentContent(t *testing.T) {
 	root := strings.Repeat("a", 40)
 	digest := "sha256:" + strings.Repeat("b", 64)
