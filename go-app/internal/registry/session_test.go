@@ -172,6 +172,50 @@ func TestConversationLaneEnforcesImmutableProjectBinding(t *testing.T) {
 	}
 }
 
+func TestConversationLaneRejectsForeignProjectAcrossRoutes(t *testing.T) {
+	service := &sessionHTTPService{
+		testService: testService{roadmap: json.RawMessage(`{"epics":[]}`)},
+		session:     Session{Type: "codex", ExternalID: "session-a", Binding: SessionProjectBinding{CompanyID: "company-a", ProjectID: "project-a"}, Revision: 1},
+	}
+	handler := NewHandler(service)
+	foreignRoutes := []struct {
+		method string
+		path   string
+	}{
+		{http.MethodGet, "/internal/v1/companies/company-a/projects/project-b/knowledge/manifest"},
+		{http.MethodGet, "/internal/v1/companies/company-a/projects/project-b/todos/t-foreign"},
+		{http.MethodPost, "/internal/v1/companies/company-a/projects/project-b/todos/t-foreign/content"},
+		{http.MethodGet, "/internal/v1/companies/company-a/projects/project-b/design-system/state"},
+		{http.MethodGet, "/internal/v1/companies/company-a/projects/project-b/sessions"},
+		{http.MethodPost, "/internal/v1/companies/company-a/projects/project-b/roadmap/epics"},
+	}
+	for _, route := range foreignRoutes {
+		t.Run(route.method+route.path, func(t *testing.T) {
+			request := httptest.NewRequest(route.method, route.path, nil)
+			request.Header.Set(sessionLaneHeader, "conversation")
+			request.Header.Set(sessionTypeHeader, "codex")
+			request.Header.Set(sessionExternalIDHeader, "session-a")
+			request.Header.Set("X-Actor-Authorized-Projects", "project-a,project-b")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusForbidden || service.listProject != "" {
+				t.Fatalf("foreign route status=%d listProject=%q body=%s", response.Code, service.listProject, response.Body)
+			}
+		})
+	}
+	for _, identity := range [][2]string{{"", ""}, {"codex", "unknown"}, {"codex", " session-a"}, {"other", "session-a"}} {
+		request := httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-a/projects/project-a/roadmap", nil)
+		request.Header.Set(sessionLaneHeader, "conversation")
+		request.Header.Set(sessionTypeHeader, identity[0])
+		request.Header.Set(sessionExternalIDHeader, identity[1])
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("unbound identity %q/%q status=%d body=%s", identity[0], identity[1], response.Code, response.Body)
+		}
+	}
+}
+
 func TestConversationLaneRejectsEncodedOrNoncanonicalProjectIdentity(t *testing.T) {
 	service := &sessionHTTPService{
 		testService: testService{project: Project{ID: "project-b", CompanyID: "company-a", Name: "Other Project"}},
@@ -330,6 +374,8 @@ func TestMongoConversationRoadmapMutationStaysWithinBoundProject(t *testing.T) {
 		request.Header.Set(sessionLaneHeader, "conversation")
 		request.Header.Set(sessionTypeHeader, "codex")
 		request.Header.Set(sessionExternalIDHeader, sessionID)
+		// Actor membership in both Projects cannot override the bound session.
+		request.Header.Set("X-Actor-Authorized-Projects", "project-a,project-b")
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
 		return response
@@ -366,6 +412,8 @@ func TestMongoConversationRoadmapMutationStaysWithinBoundProject(t *testing.T) {
 	if response := createEpic("session-b", "project-b", "second-own-write", 0); response.Code != http.StatusOK {
 		t.Fatalf("second bound Project mutation status=%d body=%s", response.Code, response.Body)
 	}
+	// Before IAM, the caller-supplied session identity remains a trust boundary:
+	// substituting B's valid ID is equivalent to acting as B, not authentication.
 	if revision := roadmapRevision("project-b"); revision != 1 {
 		t.Fatalf("second bound Project revision=%d, want 1", revision)
 	}
