@@ -359,6 +359,7 @@ type testSelectedTODOLifecycle struct {
 	*testService
 	readCalls       int
 	transitionCalls int
+	transitionErr   error
 	verifyCalls     int
 	verifyRequest   *VerifyCurrentTODOStageRequest
 	readRevision    *int64
@@ -376,6 +377,9 @@ func (s *testSelectedTODOLifecycle) ReadTODO(_ context.Context, companyID, proje
 
 func (s *testSelectedTODOLifecycle) TransitionTODO(_ context.Context, _ string, _ TODOActionRequest) (TODOActionResponse, error) {
 	s.transitionCalls++
+	if s.transitionErr != nil {
+		return TODOActionResponse{}, s.transitionErr
+	}
 	return TODOActionResponse{}, todoTeach("requested_stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
 }
 
@@ -458,5 +462,18 @@ func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	handler.ServeHTTP(reapproval, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/verify-current-stage", strings.NewReader(body)))
 	if reapproval.Code != http.StatusConflict || service.verifyCalls != 2 || service.verifyRequest == nil || len(service.verifyRequest.ProofReferences) != 1 || service.verifyRequest.ProofReferences[0].Reference != "builder/todo-a/content/7" {
 		t.Fatalf("current-content verification request was not passed through to the deterministic verifier: %d %s request=%+v calls=%d", reapproval.Code, reapproval.Body.String(), service.verifyRequest, service.verifyCalls)
+	}
+}
+
+func TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP(t *testing.T) {
+	service := &testSelectedTODOLifecycle{
+		testService:   &testService{},
+		transitionErr: todoTeach("proof_refs.criterion:criterion-build.source", "be exactly paced-local-runner for PACED command evidence", ErrConflict),
+	}
+	body := `{"project_id":"builder","todo_id":"todo-a","expected_revision":7,"operation_id":"local-run-7","requested_stage":"Local-Implemented","proof_refs":[],"waiver_refs":[],"local_proof":{"schema_version":"builder-local-proof-result-v3"}}`
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/transition", strings.NewReader(body)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || service.transitionCalls != 1 {
+		t.Fatalf("field-specific local proof TEACH was not surfaced by HTTP: %d %s calls=%d", response.Code, response.Body.String(), service.transitionCalls)
 	}
 }

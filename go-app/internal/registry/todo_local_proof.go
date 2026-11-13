@@ -150,23 +150,29 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 		if ref.SourceDigest != contentDigest {
 			continue
 		}
+		field := "proof_refs." + ref.Kind
+		if ref.Source != "paced-local-runner" {
+			return nil, todoTeach(field+".source", "be exactly paced-local-runner for PACED command evidence", ErrConflict)
+		}
+		if ref.Reference == "" {
+			return nil, todoTeach(field+".ref", "be the exact ID of a successful check in this local result, not a run UUID or argv", ErrConflict)
+		}
+		if ref.VerificationState != "unverified" && ref.VerificationState != "verified" {
+			return nil, todoTeach(field+".verification_state", "be unverified for new evidence; preserve any existing verified reference exactly", ErrConflict)
+		}
 		scenario := strings.HasPrefix(ref.Kind, "scenario:")
 		if required[ref.Kind] && !scenario {
-			return nil, todoTeach("proof_refs."+ref.Kind, "provide exactly one command reference for each criterion", ErrConflict)
+			return nil, todoTeach(field, "provide exactly one command reference for each criterion", ErrConflict)
 		}
 		if scenario && seenScenarioReference[ref.Kind+"\x00"+ref.Reference] {
-			return nil, todoTeach("proof_refs."+ref.Kind, "do not repeat the same command reference for a validation scenario", ErrConflict)
-		}
-		if ref.Source != "paced-local-runner" || ref.Reference == "" ||
-			(ref.VerificationState != "unverified" && ref.VerificationState != "verified") {
-			return nil, todoTeach("proof_refs."+ref.Kind, "bind the PACED command reference to the current exact content digest", ErrConflict)
+			return nil, todoTeach(field+".ref", "do not repeat the same check ID for a validation scenario", ErrConflict)
 		}
 		exitOK, present := commands[ref.Reference]
 		if !present {
-			return nil, todoTeach("proof_refs."+ref.Kind+".ref", "name a check present in this exact local result", ErrConflict)
+			return nil, todoTeach(field+".ref", "use the exact check ID of a successful command in this local result, not the run UUID or argv", ErrConflict)
 		}
 		if !exitOK {
-			return nil, todoTeach("proof_refs."+ref.Kind+".ref", "name a check that exited zero in this exact local result", ErrConflict)
+			return nil, todoTeach(field+".ref", "use the exact check ID of a command that exited zero in this local result", ErrConflict)
 		}
 		required[ref.Kind] = true
 		if scenario {
@@ -177,12 +183,12 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 	}
 	for kind, found := range required {
 		if !found {
-			return nil, todoTeach("proof_refs."+kind, "add a digest-bound PACED command reference for every criterion and validation scenario", ErrConflict)
+			return nil, todoTeach("proof_refs."+kind+".source_digest", "add a new proof reference for the exact current TODO content digest "+contentDigest+" with source paced-local-runner, ref equal to a successful check ID and verification_state unverified; retain historical references unchanged", ErrConflict)
 		}
 	}
 	for _, command := range result.Checks {
 		if !scenarioCommands[command.ID] {
-			return nil, todoTeach("proof_refs.scenario", "bind every required PACED command to at least one current validation scenario", ErrConflict)
+			return nil, todoTeach("proof_refs.scenario.ref", "add a current-digest scenario reference using the exact successful check ID " + command.ID, ErrConflict)
 		}
 	}
 	return verified, nil

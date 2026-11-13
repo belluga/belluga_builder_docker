@@ -77,6 +77,15 @@ func TestMultiRevisionEvidenceCapacityPreservesVerifiedReferences(t *testing.T) 
 	if err := preserveVerifiedEvidence(verified, verified, "proof_refs"); err != nil {
 		t.Fatalf("preserved verified history rejected: %v", err)
 	}
+	forged := append([]TODOProofReference(nil), verified...)
+	forged[0].Reference = "forged-new-reference"
+	if err := preserveVerifiedEvidence(nil, forged, "proof_refs"); err == nil || !strings.Contains(err.Error(), "not assert verification") {
+		t.Fatalf("new caller-asserted verified reference accepted: %v", err)
+	}
+	removed := append([]TODOProofReference(nil), verified[1:]...)
+	if err := preserveVerifiedEvidence(verified, removed, "proof_refs"); err == nil || !strings.Contains(err.Error(), "preserve every previously verified") {
+		t.Fatalf("removed verified reference accepted: %v", err)
+	}
 	record.ProofReferences = append(record.ProofReferences, make([]TODOProofReference, maxTODOProofs-len(record.ProofReferences)+1)...)
 	if err := validateGenericTODOAdmission(record); err == nil {
 		t.Fatal("evidence above the shared bound was accepted")
@@ -126,6 +135,9 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 	}
 	if !containsTODOString(template.Optional, "todo.content.delivery") || !containsTODOString(template.ContentEditRequired, "content") || !containsTODOString(template.ContentEditRequired, "content.title") || !containsTODOString(template.ContentEditRequired, "content.diff_expectation") || !strings.Contains(template.ContentEditGuide, "read-todo") {
 		t.Fatalf("template does not teach a governed content edit: %+v", template)
+	}
+	if !strings.Contains(template.ContentShape["proof_refs"], "paced-local-runner") || !strings.Contains(template.ContentShape["proof_refs"], "exact TODO content_digest") || !strings.Contains(template.ContentEditGuide, "BEFORE running a fresh local runner") || !strings.Contains(template.ContentEditGuide, "<successful-check-id>") || len(template.Example.TODO.Content.Criteria) != 1 || len(template.Example.TODO.Content.ValidationScenarios) != 1 {
+		t.Fatalf("template does not teach copyable current-digest local proof references: %+v", template)
 	}
 	for name, mutate := range map[string]func(*TODORecord){
 		"later initial stage":          func(value *TODORecord) { value.Stage = "In-Progress" },
@@ -256,7 +268,7 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &publicTemplate); err != nil {
 		t.Fatal(err)
 	}
-	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") {
+	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") || !strings.Contains(publicTemplate.ContentEditGuide, "paced-local-runner") || !strings.Contains(publicTemplate.ContentEditGuide, "<successful-check-id>") || !strings.Contains(response.Body.String(), "example-criterion") {
 		t.Fatalf("served template does not teach the update-todo envelope: %+v", publicTemplate)
 	}
 }
@@ -790,6 +802,38 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 		bytes, _ = json.Marshal(fields)
 		result.ResultDigest = sourceHash(bytes)
 	}
+	seal()
+	badCriterionProof := criterionProof
+	badCriterionProof.Source = "local-run"
+	badProofRefs := []TODOProofReference{review, badCriterionProof, scenarioProof, vetProof, imageProof}
+	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "bad-local-proof-source", ProofReferences: badProofRefs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{claim}, RecordSections: []TODOSection{}, Reason: "Exercise local proof source guidance"}); err != nil {
+		t.Fatalf("store bad-source evidence fixture: %v", err)
+	}
+	revision++
+	proofRevision = revision
+	result.TODORevision = &proofRevision
+	result.RunID = "22222222-3333-4444-8555-666666666666"
+	result.StartedAt = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	seal()
+	_, err = store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-local-proof-source", RequestedStage: "Local-Implemented", LocalProof: result})
+	var sourceTeach *TODOValidationError
+	if !errors.As(err, &sourceTeach) || sourceTeach.Field != "proof_refs.criterion:criterion-one.source" || !strings.Contains(sourceTeach.Expected, "paced-local-runner") {
+		t.Fatalf("Mongo local transition source guidance = %#v (%v)", sourceTeach, err)
+	}
+	unchanged, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+	if err != nil || unchanged.TODO.Stage != "In-Progress" || unchanged.TODORevision != revision || unchanged.TODO.ProofReferences[1] != badCriterionProof {
+		t.Fatalf("failed source check mutated Mongo transition state: %+v, %v", unchanged, err)
+	}
+	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "restore-local-proof-source", ProofReferences: []TODOProofReference{review, criterionProof, scenarioProof, vetProof, imageProof}, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{claim}, RecordSections: []TODOSection{}, Reason: "Restore exact PACED source reference"}); err != nil {
+		t.Fatalf("restore valid evidence fixture: %v", err)
+	}
+	revision++
+	proofRevision = revision
+	result.TODORevision = &proofRevision
+	result.RunID = "33333333-4444-4555-8666-777777777777"
+	result.StartedAt = time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)
+	result.FinishedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	seal()
 	if _, err := store.EditTODONextStep(ctx, "company-a", TODONextStepEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "next-step-during-proof", NextExactStep: "Request the verified local transition.", Reason: "Update the operational next step"}); err != nil {
 		t.Fatalf("next-step edit: %v", err)

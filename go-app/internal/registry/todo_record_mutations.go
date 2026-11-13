@@ -197,8 +197,20 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	}
 	proofs := append([]TODOProofReference{}, request.ProofReferences...)
 	for _, proof := range proofs {
-		if !validProofReference(proof) || (proof.VerificationState != "unverified" && proof.VerificationState != "verified") {
-			return TODOContentEditResponse{}, todoTeach("proof_refs", "contain valid source-bound references; verified entries must be preserved from current state", ErrInvalid)
+		field := "proof_refs." + proof.Kind
+		switch {
+		case strings.TrimSpace(proof.Kind) == "":
+			return TODOContentEditResponse{}, todoTeach("proof_refs.kind", "provide the exact evidence kind", ErrInvalid)
+		case strings.TrimSpace(proof.Source) == "":
+			return TODOContentEditResponse{}, todoTeach(field+".source", "provide the reference source; PACED command evidence uses exactly paced-local-runner", ErrInvalid)
+		case strings.TrimSpace(proof.Reference) == "":
+			return TODOContentEditResponse{}, todoTeach(field+".ref", "provide a non-empty reference; PACED command evidence uses the exact successful check ID, not a run UUID or argv", ErrInvalid)
+		case !validSourceDigest(proof.SourceDigest):
+			return TODOContentEditResponse{}, todoTeach(field+".source_digest", "provide the exact current TODO content digest for new command evidence", ErrInvalid)
+		case !validReviewOutcome(proof.Outcome):
+			return TODOContentEditResponse{}, todoTeach(field+".outcome", "provide a valid review outcome when required", ErrInvalid)
+		case proof.VerificationState != "unverified" && proof.VerificationState != "verified":
+			return TODOContentEditResponse{}, todoTeach(field+".verification_state", "submit new evidence as unverified; preserve existing verified references byte-for-byte", ErrInvalid)
 		}
 	}
 	waivers := append([]TODOProofReference{}, request.WaiverReferences...)
