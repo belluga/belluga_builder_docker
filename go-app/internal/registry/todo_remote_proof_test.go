@@ -140,6 +140,26 @@ func TestRemoteCodeDeliveryMintsOnlyReaderVerifiedCodeFacts(t *testing.T) {
 	}
 }
 
+func TestRemoteCodeDeliveryBoundsReaderRequestsBeforeDispatch(t *testing.T) {
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "unexpected Reader call", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
+	digest := sourceHash([]byte("approved code only"))
+	commits := make([]TODOCommitReference, maxLocalDeliveryCommits+1)
+	for i := range commits {
+		commits[i] = TODOCommitReference{Repository: "Builder", Commit: strings.Repeat("a", 40), SourceDigest: digest, VerificationState: "unverified"}
+	}
+	todo := TODORecord{ID: "code-only", ProjectID: "builder", Source: TODOSource{Kind: "mongo-content-revision"}, Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ImplementationCommits: commits}
+	_, err := store.verifyRemoteLocalDeliveryWithBranchPlan(context.Background(), "company-a", "", todo, digest, TODOProofReference{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "implementation_commits") || calls != 0 {
+		t.Fatalf("oversized delivery reached Reader: calls=%d err=%v", calls, err)
+	}
+}
+
 func TestRemoteLocalDeliveryClaimsMustBeAtOrBeforeTheTestedHead(t *testing.T) {
 	older, testedHead, later := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
 	digest := sourceHash([]byte("approved content"))

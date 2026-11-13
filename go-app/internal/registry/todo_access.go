@@ -283,10 +283,6 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 		// an imported Foundation record. Keep the stored provenance unchanged.
 		current := record
 		current.Source.Kind = "mongo-content-revision"
-		proof, err = m.mongoBornTransitionProof(ctx, companyID, project, current, request)
-		if err != nil {
-			return TODOActionResponse{}, err
-		}
 		if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" && requiresLocalProofForTODO(record) {
 			company, companyErr := m.company(ctx, companyID)
 			if companyErr != nil {
@@ -303,6 +299,10 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 			if err != nil {
 				return TODOActionResponse{}, err
 			}
+		}
+		proof, err = m.mongoBornTransitionProof(ctx, companyID, project, current, request)
+		if err != nil {
+			return TODOActionResponse{}, err
 		}
 	} else {
 		return TODOActionResponse{}, todoTeach("source/content_revision", "this transition requires the exact current typed Mongo v2 content revision; Foundation-imported and v1 stage proofs are not authority", ErrConflict)

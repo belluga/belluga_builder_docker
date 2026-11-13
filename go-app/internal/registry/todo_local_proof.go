@@ -23,6 +23,8 @@ import (
 
 var localRunIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+const maxLocalDeliveryCommits = 32
+
 type localProofRepository struct {
 	RepositoryID       string `json:"repository_id"`
 	Branch             string `json:"branch"`
@@ -337,6 +339,9 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 }
 
 func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference, branchPlan map[string]string, testedHeadPlans ...map[string]string) (TODOProofReference, error) {
+	if len(todo.ImplementationCommits) > maxLocalDeliveryCommits {
+		return TODOProofReference{}, todoTeach("implementation_commits", "limit one local delivery to 32 attributable commits before remote verification", ErrInvalid)
+	}
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
 	}
