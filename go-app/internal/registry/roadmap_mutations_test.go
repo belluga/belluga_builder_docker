@@ -136,6 +136,10 @@ func TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites(t *t
 		t.Fatal(err)
 	}
 	revision = 2
+	branchless, err := store.Roadmap(ctx, "builder", "company-a")
+	if err != nil || !strings.Contains(string(branchless), `"id":"r-10"`) || strings.Contains(string(branchless), `"delivery_branches":[{`) {
+		t.Fatalf("new Release was not readable without a confirmed branch: %s, %v", branchless, err)
+	}
 	branchRequest := RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &revision, OperationID: "confirm-release-branch-001", ID: "r-10", RepositoryID: "belluga/delphi-ai", Branch: "builder", OwnerReference: "owner/release-branch"}
 	unknownRepository := branchRequest
 	unknownRepository.RepositoryID = "belluga/not-confirmed"
@@ -146,6 +150,13 @@ func TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites(t *t
 	confirmed, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", branchRequest)
 	if err != nil || confirmed.RoadmapRevision != 3 || confirmed.Branch != "builder" {
 		t.Fatalf("first immutable branch confirmation = %+v, %v", confirmed, err)
+	}
+	stale := branchRequest
+	stale.OperationID = "stale-new-branch-operation"
+	stale.RepositoryID = "belluga/belluga_builder_docker"
+	stale.Branch = "r-10-rc"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("new branch assignment accepted stale Roadmap revision: %v", err)
 	}
 	productRevision := int64(3)
 	productBranch, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &productRevision, OperationID: "confirm-product-release-branch", ID: "r-10", RepositoryID: "belluga/belluga_builder_docker", Branch: "r-10-rc", OwnerReference: "owner/product-release-branch"})
@@ -167,6 +178,16 @@ func TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites(t *t
 	changed.Branch = "different"
 	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
 		t.Fatalf("reused operation ID with changed branch was accepted: %v", err)
+	}
+	changed = branchRequest
+	changed.OwnerReference = "another-owner"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused operation ID with changed owner was accepted: %v", err)
+	}
+	changed = branchRequest
+	changed.RepositoryID = "belluga/belluga_builder_docker"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused operation ID with changed repository was accepted: %v", err)
 	}
 	secondConfirmation := branchRequest
 	currentRevision := int64(5)

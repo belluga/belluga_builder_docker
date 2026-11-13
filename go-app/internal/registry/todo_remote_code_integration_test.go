@@ -81,11 +81,17 @@ func TestMongoRemoteCodeDeliveryTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	readerCalls := 0
+	reachableOnRelease := false
 	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readerCalls++
 		q := r.URL.Query()
 		if q.Get("company_id") != companyID || q.Get("project_id") != projectID || q.Get("repository") != repository || q.Get("branch") != branch || q.Get("commit_sha") != commit || q.Get("baseline_sha") != baseline || q.Get("todo_authority") != "mongo-v2" {
 			t.Errorf("Reader received wrong scoped proof query: %s", r.URL)
+		}
+		if !reachableOnRelease {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"teach":"commit is reachable only on dev, not the confirmed Release branch"}`))
+			return
 		}
 		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: companyID, ProjectID: projectID, Repository: repository, Branch: branch, CommitSHA: commit, BaselineSHA: baseline, ParentSHA: baseline, RemoteHead: head, Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
 	}))
@@ -119,12 +125,21 @@ func TestMongoRemoteCodeDeliveryTransition(t *testing.T) {
 	if _, err := store.TransitionTODO(ctx, companyID, request); err == nil || !strings.Contains(err.Error(), "local_proof/proof_refs/waiver_refs") || readerCalls != 0 {
 		t.Fatalf("inline local proof reached Reader or stage: calls=%d err=%v", readerCalls, err)
 	}
-	request.LocalProof, request.OperationID = nil, "remote-code-delivery"
+	request.LocalProof, request.OperationID = nil, "reject-dev-only-commit"
+	if _, err := store.TransitionTODO(ctx, companyID, request); err == nil || !strings.Contains(err.Error(), "remote_proof") || readerCalls != 1 {
+		t.Fatalf("commit reachable only on dev advanced the Release delivery: calls=%d err=%v", readerCalls, err)
+	}
+	stillInProgress, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+	if err != nil || stillInProgress.TODO.Stage != "In-Progress" || stillInProgress.TODORevision != revision {
+		t.Fatalf("dev-only proof changed the TODO stage: %+v %v", stillInProgress, err)
+	}
+	reachableOnRelease = true
+	request.OperationID = "remote-code-delivery"
 	if _, err := store.TransitionTODO(ctx, companyID, request); err != nil {
 		t.Fatal(err)
 	}
 	actual, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
-	if err != nil || actual.TODO.Stage != "Local-Implemented" || actual.TODO.StageVerification != "verified" || actual.TODO.VerifiedTransitionRef == nil || actual.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || actual.TODO.VerifiedTransitionRef.Source != "private-reader" || actual.TODO.VerifiedTransitionRef.VerificationState != "verified" || actual.TODORevision != revision+1 || readerCalls != 1 {
+	if err != nil || actual.TODO.Stage != "Local-Implemented" || actual.TODO.StageVerification != "verified" || actual.TODO.VerifiedTransitionRef == nil || actual.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || actual.TODO.VerifiedTransitionRef.Source != "private-reader" || actual.TODO.VerifiedTransitionRef.VerificationState != "verified" || actual.TODORevision != revision+1 || readerCalls != 2 {
 		t.Fatalf("API-only transition/readback: %+v calls=%d err=%v", actual, readerCalls, err)
 	}
 	if actual.TODO.ProofReferences[0].VerificationState != "unverified" || actual.TODO.ProofReferences[1].VerificationState != "unverified" {
@@ -189,7 +204,7 @@ func TestMongoRemoteCodeDeliveryTransition(t *testing.T) {
 		t.Fatalf("fresh Reader verification after placement review: %v", err)
 	}
 	redelivered, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
-	if err != nil || redelivered.TODO.Stage != "Local-Implemented" || redelivered.TODO.VerifiedTransitionRef == nil || redelivered.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || redelivered.TODO.VerifiedTransitionRef.VerificationState != "verified" || redelivered.ContentDigest != newDigest || readerCalls != 2 {
+	if err != nil || redelivered.TODO.Stage != "Local-Implemented" || redelivered.TODO.VerifiedTransitionRef == nil || redelivered.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || redelivered.TODO.VerifiedTransitionRef.VerificationState != "verified" || redelivered.ContentDigest != newDigest || readerCalls != 3 {
 		t.Fatalf("fresh delivery after moved placement: stage=%s proof=%+v digest=%s calls=%d err=%v", redelivered.TODO.Stage, redelivered.TODO.VerifiedTransitionRef, newDigest, readerCalls, err)
 	}
 }

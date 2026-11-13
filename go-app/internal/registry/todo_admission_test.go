@@ -446,6 +446,12 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("confirm the code-backed fixture repository before Planning exit: %v", err)
 	}
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: imported.TODO.ID, ExpectedRevision: &reviewRevision,
+		OperationID: "reject-missing-release-branch", RequestedStage: "Implementation-Approval-Pending",
+	}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "release_id.delivery_branches") {
+		t.Fatalf("Planning exit accepted a confirmed repository without its Release branch: %v", err)
+	}
 	projectBeforeBranch, err := store.Project(ctx, "company-a", "builder")
 	if err != nil {
 		t.Fatal(err)
