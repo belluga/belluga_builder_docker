@@ -824,6 +824,49 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 	}
 	deployment := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
 	completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}
+	if projectID == "builder" {
+		constitution, readErr := store.ReadCanonical(ctx, "company-a", projectID, FamilyConstitution, projectID)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		constitution.Payload = json.RawMessage(`{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Updated Project API delivery"}]}`)
+		activeConstitution, editErr := store.EditCanonical(ctx, "company-a", CanonicalMutation{ProjectID: projectID, Family: FamilyConstitution, Record: constitution, ExpectedRevision: constitution.Revision, OperationID: "mvp-constitution-drift", Actor: "fixture-owner"})
+		if editErr != nil {
+			t.Fatalf("revise active Constitution: %v", editErr)
+		}
+		originalContent := contentFromTODO(after.TODO)
+		noOp, noOpErr := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-identical-content", Content: originalContent, Reason: "An identical edit cannot reopen Local-Implemented"})
+		if noOpErr != nil || !noOp.NoOp || noOp.Revision != revision {
+			t.Fatalf("Local identical edit changed the stage: %+v, %v", noOp, noOpErr)
+		}
+		database := store.client.Database(store.tenantDatabase("company-a"))
+		eventFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}}
+		eventsBefore, countErr := database.Collection(todoEventsCollection).CountDocuments(ctx, eventFilter)
+		if countErr != nil {
+			t.Fatal(countErr)
+		}
+		_, completionErr := store.TransitionTODO(ctx, "company-a", completed)
+		if !errors.Is(completionErr, ErrConflict) || !strings.Contains(completionErr.Error(), "local_proof.constitution") || !strings.Contains(completionErr.Error(), fmt.Sprintf("revision %d (%s)", activeConstitution.Revision, activeConstitution.ContentDigest)) {
+			t.Fatalf("MVP Constitution drift did not yield actionable conflict: %v", completionErr)
+		}
+		unchanged, readErr := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+		eventsAfter, countErr := database.Collection(todoEventsCollection).CountDocuments(ctx, eventFilter)
+		if readErr != nil || countErr != nil || unchanged.TODORevision != revision || unchanged.TODO.Stage != "Local-Implemented" || unchanged.TODO.VerifiedTransitionRef == nil || *unchanged.TODO.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef || eventsAfter != eventsBefore {
+			t.Fatalf("failed completion altered Local proof or history: %+v, events %d -> %d, read=%v count=%v", unchanged, eventsBefore, eventsAfter, readErr, countErr)
+		}
+		updatedContent := contentFromTODO(unchanged.TODO)
+		updatedContent.Context += " Constitution revision reviewed for compatibility."
+		reopened, reopenErr := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-compatibility-review", Content: updatedContent, Reason: "Record compatibility assessment and return to Planning"})
+		if reopenErr != nil || reopened.NoOp || reopened.Revision != revision+1 {
+			t.Fatalf("effective compatibility edit did not reopen: %+v, %v", reopened, reopenErr)
+		}
+		planning, readErr := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+		historical, historyErr := store.ReadTODOAsOf(ctx, "company-a", projectID, todoID, revision)
+		if readErr != nil || historyErr != nil || planning.TODO.Stage != "Planning" || planning.TODO.StageVerification != "verified" || historical.State.Stage != "Local-Implemented" || historical.State.VerifiedTransitionRef == nil || *historical.State.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef {
+			t.Fatalf("Planning reentry lost immutable Local proof: planning=%+v historical=%+v read=%v history=%v", planning, historical, readErr, historyErr)
+		}
+		return
+	}
 	competitor := completed
 	if projectID == "no-foundation" {
 		competitor.OperationID = "competing-production-delivery"
