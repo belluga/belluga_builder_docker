@@ -223,12 +223,20 @@ func TestTODOValidatorRecognizesPinnedMVPParentCombinationOnly(t *testing.T) {
 func TestTODOValidatorRecognizesImmediateAdministrativePredecessor(t *testing.T) {
 	previous := TODOCollectionValidatorBeforeAdministrativeAcceptance()
 	encoded, err := bson.Marshal(previous)
-	if err != nil { t.Fatal(err) }
-	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("deployed strict validator before administrative acceptance was not recognized") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("deployed strict validator before administrative acceptance was not recognized")
+	}
 	unknown := withoutBSONFieldsAtPath(previous, []string{"$jsonSchema", "properties"}, "source")
 	encoded, err = bson.Marshal(unknown)
-	if err != nil { t.Fatal(err) }
-	if recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("unrelated validator relaxation was accepted") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("unrelated validator relaxation was accepted")
+	}
 }
 
 func TestEvidenceCapacityUpgradeRecognizesOnlyPriorStrictValidator(t *testing.T) {

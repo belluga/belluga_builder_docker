@@ -740,7 +740,7 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 			if q.Get("company_id") != "company-a" || q.Get("project_id") != projectID || q.Get("repository") != "owner/repo" || q.Get("branch") != branch || q.Get("commit_sha") != commit || q.Get("todo_authority") != "mongo-v2" || q.Get("baseline_sha") != commit {
 				t.Errorf("wrong typed Reader request: %s", r.URL)
 			}
-			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: branch, CommitSHA: commit, BaselineSHA: q.Get("baseline_sha"), RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: branch, CommitSHA: commit, BaselineSHA: q.Get("baseline_sha"), RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 			return
 		}
 		if q.Get("docker_repository_id") != "owner/repo" {

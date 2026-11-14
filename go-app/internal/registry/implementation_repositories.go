@@ -9,6 +9,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type ImplementationRepositorySet struct {
@@ -17,6 +18,17 @@ type ImplementationRepositorySet struct {
 	Revision      int64                                  `json:"revision"`
 	Items         []string                               `json:"repository_ids"`
 	Confirmations []ImplementationRepositoryConfirmation `json:"confirmations"`
+	GitHubNodeIDs map[string]string                      `json:"github_node_ids,omitempty"`
+}
+
+const implementationRepositoryIdentityCollection = "project_implementation_repository_identities"
+
+type implementationRepositoryIdentity struct {
+	ProjectID    string    `bson:"project_id"`
+	RepositoryID string    `bson:"repository_id"`
+	GitHubNodeID string    `bson:"github_node_id"`
+	ProofDigest  string    `bson:"proof_digest"`
+	PinnedAt     time.Time `bson:"pinned_at"`
 }
 
 // Confirmation belongs to the current membership, so a second repository
@@ -70,7 +82,110 @@ func (m *MongoStore) ReadImplementationRepositories(ctx context.Context, company
 	}
 	items := append([]string{}, document.ImplementationRepositories...)
 	sort.Strings(items)
-	return ImplementationRepositorySet{CompanyID: companyID, ProjectID: projectID, Revision: document.ImplementationRepositoriesRevision, Items: items, Confirmations: append([]ImplementationRepositoryConfirmation{}, document.ImplementationRepositoryConfirmations...)}, nil
+	identities, err := readImplementationRepositoryNodeIDs(ctx, m.client.Database(company.DatabaseName), projectID)
+	if err != nil {
+		return ImplementationRepositorySet{}, err
+	}
+	return ImplementationRepositorySet{CompanyID: companyID, ProjectID: projectID, Revision: document.ImplementationRepositoriesRevision, Items: items, Confirmations: append([]ImplementationRepositoryConfirmation{}, document.ImplementationRepositoryConfirmations...), GitHubNodeIDs: identities}, nil
+}
+
+func ensureImplementationRepositoryIdentityIndex(ctx context.Context, database *mongo.Database) error {
+	_, err := database.Collection(implementationRepositoryIdentityCollection).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: bson.D{{Key: "project_id", Value: 1}, {Key: "repository_id", Value: 1}}, Options: options.Index().SetName("project_repository_identity_unique").SetUnique(true)})
+	if err != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// pinImplementationRepositoryNodeIDInTransaction applies the insert-only CAS
+// inside the TODO transition transaction so a later alias or revision conflict
+// cannot leave a partial identity pin behind.
+func pinImplementationRepositoryNodeIDInTransaction(ctx context.Context, database *mongo.Database, projectID, repositoryID, nodeID, proofDigest string) error {
+	if !validID(projectID) || !validGitRepositoryID(repositoryID) || nodeID == "" || len(nodeID) > 128 || !validSourceDigest(proofDigest) {
+		return todoTeach("repository_identity", "pin a valid alias, immutable GitHub node ID and verified proof digest", ErrInvalid)
+	}
+	collection := database.Collection(implementationRepositoryIdentityCollection)
+	filter := bson.D{{Key: "project_id", Value: projectID}, {Key: "repository_id", Value: repositoryID}}
+	var prior implementationRepositoryIdentity
+	err := collection.FindOne(ctx, filter).Decode(&prior)
+	if err == nil {
+		if prior.GitHubNodeID == nodeID {
+			return nil
+		}
+		return todoTeach("repository_identity.github_node_id", "match the immutable ID already pinned to this repository alias", ErrConflict)
+	}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return ErrUnavailable
+	}
+	_, err = collection.InsertOne(ctx, implementationRepositoryIdentity{ProjectID: projectID, RepositoryID: repositoryID, GitHubNodeID: nodeID, ProofDigest: proofDigest, PinnedAt: time.Now().UTC()})
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			return todoTeach("repository_identity.github_node_id", "remain unclaimed until the alias identity is resolved", ErrConflict)
+		}
+		return ErrUnavailable
+	}
+	return nil
+}
+
+// advanceImplementationRepositoryMembershipCASInTransaction writes the
+// Project document as part of the proof transaction. This makes a concurrent
+// owner removal contend on the same revisioned document, including aliases
+// whose immutable GitHub IDs were pinned by an earlier TODO transition.
+func advanceImplementationRepositoryMembershipCASInTransaction(ctx context.Context, database *mongo.Database, projectID string, repositoryIDs []string) error {
+	if !validID(projectID) || len(repositoryIDs) == 0 || len(repositoryIDs) > 32 {
+		return todoTeach("repository_identity", "guard a bounded non-empty set of owner-confirmed aliases", ErrInvalid)
+	}
+	var project projectDocument
+	if err := database.Collection(projectsCollection).FindOne(ctx, bson.M{"id": projectID}).Decode(&project); err != nil {
+		return ErrUnavailable
+	}
+	seen := make(map[string]bool, len(repositoryIDs))
+	for _, repositoryID := range repositoryIDs {
+		if !validGitRepositoryID(repositoryID) || seen[repositoryID] || !containsTODOString(project.ImplementationRepositories, repositoryID) {
+			return todoTeach("repository_identity.repository_id", "remain in the Project's owner-confirmed implementation repository set", ErrConflict)
+		}
+		seen[repositoryID] = true
+	}
+	filter := bson.M{"_id": project.ObjectID, "implementation_repositories": bson.M{"$all": repositoryIDs}}
+	if project.ImplementationRepositoriesRevision == 0 {
+		filter["$or"] = bson.A{bson.M{"implementation_repositories_revision": 0}, bson.M{"implementation_repositories_revision": bson.M{"$exists": false}}}
+	} else {
+		filter["implementation_repositories_revision"] = project.ImplementationRepositoriesRevision
+	}
+	result, err := database.Collection(projectsCollection).UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"implementation_repositories_revision": 1}})
+	if err != nil {
+		return normalizeMongoError(err)
+	}
+	if result.MatchedCount != 1 {
+		return todoTeach("repository_identity.repository_id", "remain owner-confirmed at the guarded Project revision", ErrConflict)
+	}
+	return nil
+}
+
+func readImplementationRepositoryNodeIDs(ctx context.Context, database *mongo.Database, projectID string) (map[string]string, error) {
+	result := map[string]string{}
+	cursor, err := database.Collection(implementationRepositoryIdentityCollection).Find(ctx, bson.D{{Key: "project_id", Value: projectID}}, options.Find().SetLimit(33))
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return result, nil
+	}
+	if err != nil {
+		return nil, ErrUnavailable
+	}
+	defer cursor.Close(ctx)
+	for cursor.Next(ctx) {
+		var item implementationRepositoryIdentity
+		if cursor.Decode(&item) != nil || !validGitRepositoryID(item.RepositoryID) || item.GitHubNodeID == "" || !validSourceDigest(item.ProofDigest) {
+			return nil, ErrUnavailable
+		}
+		result[item.RepositoryID] = item.GitHubNodeID
+	}
+	if cursor.Err() != nil {
+		return nil, ErrUnavailable
+	}
+	if len(result) > 32 {
+		return nil, ErrUnavailable
+	}
+	return result, nil
 }
 
 func (m *MongoStore) ChangeImplementationRepository(ctx context.Context, companyID, projectID string, request ImplementationRepositoryChange) (ImplementationRepositorySet, error) {

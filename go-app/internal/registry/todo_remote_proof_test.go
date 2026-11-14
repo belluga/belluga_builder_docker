@@ -71,7 +71,7 @@ func TestRemoteLocalDeliveryRequiresEveryImplementingRepository(t *testing.T) {
 		if q.Get("repository") == "belluga/delphi-ai" && !badPACEDPath {
 			changed = "local-api/internal/project_reader/http.go"
 		}
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{changed}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{changed}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
@@ -109,7 +109,7 @@ func TestRemoteLocalDeliveryUsesExplicitCodeOriginWithoutFoundation(t *testing.T
 		if q.Get("repository") != "belluga/belluga_builder_docker" || q.Get("branch") != "r-10-rc" {
 			t.Errorf("proof target = %s @ %s", q.Get("repository"), q.Get("branch"))
 		}
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
@@ -128,7 +128,7 @@ func TestRemoteCodeDeliveryMintsOnlyReaderVerifiedCodeFacts(t *testing.T) {
 		if q.Get("todo_authority") != "mongo-v2" || q.Get("tested_head_sha") != "" || q.Get("baseline_sha") != baseline {
 			t.Errorf("new proof passed wrong Reader bounds: %s", r.URL.String())
 		}
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), BaselineSHA: q.Get("baseline_sha"), RemoteHead: head, ParentSHA: baseline, Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), BaselineSHA: q.Get("baseline_sha"), RemoteHead: head, ParentSHA: baseline, Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
@@ -177,7 +177,7 @@ func TestRemoteLocalDeliveryClaimsMustBeAtOrBeforeTheTestedHead(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(remoteCommitResult{
 			CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"),
 			Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), TestedHeadSHA: q.Get("tested_head_sha"),
-			RemoteHead: later, ParentSHA: strings.Repeat("d", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified",
+			RemoteHead: later, ParentSHA: strings.Repeat("d", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified",
 		})
 	}))
 	defer server.Close()
@@ -219,7 +219,7 @@ func TestRemoteCommitProofRequiresRepositorySpecificTestedHeadEcho(t *testing.T)
 		return remoteCommitResult{CompanyID: "company-a", ProjectID: "project-a", Repository: repository,
 			Branch: "release", CommitSHA: strings.Repeat("c", 40), TestedHeadSHA: testedHead,
 			RemoteHead: strings.Repeat("d", 40), ParentSHA: strings.Repeat("e", 40),
-			Paths: []string{"src/file.go"}, Outcome: "verified"}
+			Paths: []string{"src/file.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"}
 	}
 
 	validStore := serve(t, func(repository, testedHead string) remoteCommitResult {
@@ -267,7 +267,7 @@ func TestRemoteLocalDeliveryAcceptsCompleteLargeCommitPathList(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		result := remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: paths, Outcome: "verified"}
+		result := remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: paths, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"}
 		encoded, err := json.Marshal(result)
 		if err != nil || len(encoded) <= 32<<10 {
 			t.Errorf("fixture must exceed former 32 KiB response limit: bytes=%d err=%v", len(encoded), err)
@@ -289,7 +289,7 @@ func TestFoundationOnlyDeliveryUsesPublishedMainCommit(t *testing.T) {
 	sha := strings.Repeat("a", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"modules/promotion_lane_module.md"}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: q.Get("company_id"), ProjectID: q.Get("project_id"), Repository: q.Get("repository"), Branch: q.Get("branch"), CommitSHA: q.Get("commit_sha"), RemoteHead: sha, ParentSHA: strings.Repeat("b", 40), Paths: []string{"modules/promotion_lane_module.md"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}

@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -24,6 +25,106 @@ func TestMVPRepositoryComesFromApprovedMongoDiffScope(t *testing.T) {
 	todo.DiffExpectation[0].RepositoryID = "belluga/belluga_builder_docker"
 	if got := mvpApprovedDockerRepository(todo); got != "" {
 		t.Fatalf("historical import fabricated approved Mongo repository %q", got)
+	}
+}
+
+func TestTODOCompletionRequiresActiveConstitutionMode(t *testing.T) {
+	for _, mode := range []string{"", "caller-selected", "complete"} {
+		if err := requireTODOCompletionMode(mode); err == nil {
+			t.Fatalf("mode %q allowed direct Local-Implemented to Completed", mode)
+		}
+	}
+	if err := requireTODOCompletionMode("mvp"); err != nil {
+		t.Fatalf("MVP completion behavior changed: %v", err)
+	}
+}
+
+func TestCompleteLocalPinRejectsModeAndConstitutionDrift(t *testing.T) {
+	digest := sourceHash([]byte("active constitution"))
+	pin := todoConstitutionPin{Mode: "complete", GenerationID: "g1", RecordID: "builder", Revision: 3, ContentDigest: digest}
+	proof, err := bindTODOConstitutionPin(TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", Reference: "repository_node_id=owner/repo:R_kgDOImmutable", SourceDigest: sourceHash([]byte("local proof")), VerificationState: "verified"}, pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireTODOConstitutionPin(&proof, pin); err != nil {
+		t.Fatalf("matching immutable Complete pin rejected: %v", err)
+	}
+	for name, drifted := range map[string]todoConstitutionPin{
+		"mode":       {Mode: "mvp", GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: pin.ContentDigest},
+		"generation": {Mode: pin.Mode, GenerationID: "g2", RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: pin.ContentDigest},
+		"revision":   {Mode: pin.Mode, GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision + 1, ContentDigest: pin.ContentDigest},
+		"digest":     {Mode: pin.Mode, GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: sourceHash([]byte("changed constitution"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := requireTODOConstitutionPin(&proof, drifted); err == nil {
+				t.Fatalf("%s drift accepted", name)
+			}
+		})
+	}
+}
+
+func TestCompleteArrivalRequiresOriginalsForEverySelectedRepository(t *testing.T) {
+	digest := sourceHash([]byte("current authored content"))
+	commit, secondaryCommit := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	record := TODORecord{
+		DiffExpectation: []TODORepositoryScope{
+			{Repository: "Builder", RepositoryID: "belluga/builder"},
+			{Repository: "PACED", RepositoryID: "belluga/paced"},
+		},
+		ImplementationCommits: []TODOCommitReference{
+			{Repository: "Builder", Commit: commit, SourceDigest: digest, VerificationState: "unverified"},
+			{Repository: "PACED", Commit: secondaryCommit, SourceDigest: digest, VerificationState: "unverified"},
+		},
+	}
+	set, err := todoOriginalCommits(record, digest)
+	if err != nil || len(set.Repositories) != 2 || set.Repositories["belluga/builder"][0] != commit || set.Repositories["belluga/paced"][0] != secondaryCommit {
+		t.Fatalf("original commit set=%+v err=%v", set, err)
+	}
+
+	record.ImplementationCommits[0].Repository = "Unknown"
+	if _, err := todoOriginalCommits(record, digest); err == nil {
+		t.Fatal("commit outside the declared repository set was accepted")
+	}
+	record.ImplementationCommits = nil
+	if _, err := todoOriginalCommits(record, digest); err == nil {
+		t.Fatal("arrival without any original implementation commits was accepted")
+	}
+	record.ImplementationCommits = []TODOCommitReference{{Repository: "Builder", Commit: commit, SourceDigest: digest, VerificationState: "unverified"}}
+	if _, err := todoOriginalCommits(record, digest); err == nil {
+		t.Fatal("arrival without an original commit for every selected repository was accepted")
+	}
+	tooMany := make([]TODOCommitReference, 33)
+	for i := range tooMany {
+		tooMany[i] = TODOCommitReference{Repository: "Builder", Commit: fmt.Sprintf("%040x", i+1), SourceDigest: digest, VerificationState: "unverified"}
+	}
+	record.ImplementationCommits = tooMany
+	if _, err := todoOriginalCommits(record, digest); err == nil {
+		t.Fatal("arrival with more than 32 original commits was accepted")
+	}
+}
+
+func TestCompletePromotionTargetsAllowDevAndStageForEachApprovedRepository(t *testing.T) {
+	scopes := []TODORepositoryScope{{Repository: "Builder", RepositoryID: "belluga/builder"}, {Repository: "PACED", RepositoryID: "belluga/paced"}}
+	for name, targets := range map[string]map[string]string{
+		"dev":   {"belluga/builder": "dev", "belluga/paced": "dev"},
+		"stage": {"belluga/builder": "stage", "belluga/paced": "stage"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateCompletePromotionTargets(scopes, targets); err != nil {
+				t.Fatalf("valid %s targets rejected: %v", name, err)
+			}
+		})
+	}
+	for name, targets := range map[string]map[string]string{
+		"missing alias":  {"belluga/builder": "stage"},
+		"unknown alias":  {"belluga/builder": "dev", "belluga/other": "stage"},
+		"release branch": {"belluga/builder": "release", "belluga/paced": "stage"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateCompletePromotionTargets(scopes, targets); err == nil {
+				t.Fatalf("invalid target map accepted: %+v", targets)
+			}
+		})
 	}
 }
 
@@ -378,7 +479,7 @@ func TestEditedImportedLocalDeliveryUsesCurrentContentDigest(t *testing.T) {
 	commitSHA := strings.Repeat("d", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		query := r.URL.Query()
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: query.Get("company_id"), ProjectID: query.Get("project_id"), Repository: query.Get("repository"), Branch: query.Get("branch"), CommitSHA: query.Get("commit_sha"), RemoteHead: commitSHA, ParentSHA: strings.Repeat("e", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: query.Get("company_id"), ProjectID: query.Get("project_id"), Repository: query.Get("repository"), Branch: query.Get("branch"), CommitSHA: query.Get("commit_sha"), RemoteHead: commitSHA, ParentSHA: strings.Repeat("e", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: strings.Repeat("x", 32), proofHTTPClient: server.Client()}
@@ -648,7 +749,7 @@ func TestLocalProofHeadMustBePublishedOnReleaseBranchButNeedNotBeBranchTip(t *te
 			http.Error(w, "not published", http.StatusNotFound)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: "builder-project", Repository: "belluga/repo", Branch: "builder", CommitSHA: head, RemoteHead: advanced, ParentSHA: strings.Repeat("c", 40), Paths: []string{"go-app/main.go"}, Outcome: "verified"})
+		_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: "builder-project", Repository: "belluga/repo", Branch: "builder", CommitSHA: head, RemoteHead: advanced, ParentSHA: strings.Repeat("c", 40), Paths: []string{"go-app/main.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 	}))
 	defer server.Close()
 	store := &MongoStore{}

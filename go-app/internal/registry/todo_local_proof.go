@@ -13,6 +13,7 @@ import (
 	"path"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -299,17 +300,18 @@ func (m *MongoStore) verifyLocalProofHeads(ctx context.Context, companyID string
 }
 
 type remoteCommitResult struct {
-	CompanyID     string   `json:"company_id"`
-	ProjectID     string   `json:"project_id"`
-	Repository    string   `json:"repository"`
-	Branch        string   `json:"branch"`
-	CommitSHA     string   `json:"commit_sha"`
-	TestedHeadSHA string   `json:"tested_head_sha,omitempty"`
-	BaselineSHA   string   `json:"baseline_sha,omitempty"`
-	RemoteHead    string   `json:"remote_head"`
-	ParentSHA     string   `json:"parent_sha"`
-	Paths         []string `json:"paths"`
-	Outcome       string   `json:"outcome"`
+	CompanyID        string   `json:"company_id"`
+	ProjectID        string   `json:"project_id"`
+	Repository       string   `json:"repository"`
+	RepositoryNodeID string   `json:"repository_node_id"`
+	Branch           string   `json:"branch"`
+	CommitSHA        string   `json:"commit_sha"`
+	TestedHeadSHA    string   `json:"tested_head_sha,omitempty"`
+	BaselineSHA      string   `json:"baseline_sha,omitempty"`
+	RemoteHead       string   `json:"remote_head"`
+	ParentSHA        string   `json:"parent_sha"`
+	Paths            []string `json:"paths"`
+	Outcome          string   `json:"outcome"`
 }
 
 // The private Reader admits up to eleven GitHub commit pages (100 files each).
@@ -367,6 +369,13 @@ func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context
 	}
 	typedMongoDelivery := todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion
 	var verified []remoteCommitResult
+	type repositoryIdentity struct {
+		RepositoryID string `json:"repository_id"`
+		NodeID       string `json:"repository_node_id"`
+		Branch       string `json:"branch"`
+		HeadSHA      string `json:"head_sha"`
+	}
+	identities := make(map[string]repositoryIdentity, len(todo.DiffExpectation))
 	for _, scope := range todo.DiffExpectation {
 		if legacyFoundation && foundationScope(scope.Repository) && !foundationOnly {
 			continue
@@ -410,6 +419,11 @@ func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context
 			if err != nil {
 				return TODOProofReference{}, err
 			}
+			identity := repositoryIdentity{RepositoryID: repository, NodeID: result.RepositoryNodeID, Branch: branch, HeadSHA: result.RemoteHead}
+			if prior, ok := identities[repository]; ok && prior.NodeID != identity.NodeID {
+				return TODOProofReference{}, todoTeach("repository_identity.github_node_id", "remain bound to one immutable GitHub ID across commit checks", ErrConflict)
+			}
+			identities[repository] = identity
 			for _, changed := range result.Paths {
 				if !approvedCommitPath(changed, scope) {
 					return TODOProofReference{}, todoTeach("implementation_commits.paths", "identify attributable commits whose changed paths fit this TODO's approved repository scope", ErrConflict)
@@ -418,7 +432,7 @@ func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context
 			verified = append(verified, result)
 		}
 		if claims == 0 {
-			return TODOProofReference{}, todoTeach("implementation_commits", "record at least one pushed attributable commit for each implementing repository", ErrConflict)
+			return TODOProofReference{}, todoTeach("implementation_commits."+repository, "record at least one attributable original commit for every selected repository", ErrConflict)
 		}
 	}
 	if len(verified) == 0 || len(verified) != len(todo.ImplementationCommits) {
@@ -426,19 +440,30 @@ func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context
 	}
 	var data []byte
 	var err error
+	allIdentities := make([]repositoryIdentity, 0, len(identities))
+	identityAliases := make([]string, 0, len(identities))
+	for alias := range identities {
+		identityAliases = append(identityAliases, alias)
+	}
+	sort.Strings(identityAliases)
+	for _, alias := range identityAliases {
+		allIdentities = append(allIdentities, identities[alias])
+	}
 	if codeOnly {
 		data, err = json.Marshal(struct {
 			CompanyID     string               `json:"company_id"`
 			ProjectID     string               `json:"project_id"`
 			TODOID        string               `json:"todo_id"`
 			ContentDigest string               `json:"content_digest"`
+			Repositories  []repositoryIdentity `json:"repositories"`
 			Remote        []remoteCommitResult `json:"remote"`
-		}{companyID, todo.ProjectID, todo.ID, contentDigest, verified})
+		}{companyID, todo.ProjectID, todo.ID, contentDigest, allIdentities, verified})
 	} else {
 		data, err = json.Marshal(struct {
-			Local  TODOProofReference   `json:"local"`
-			Remote []remoteCommitResult `json:"remote"`
-		}{local, verified})
+			Local        TODOProofReference   `json:"local"`
+			Repositories []repositoryIdentity `json:"repositories"`
+			Remote       []remoteCommitResult `json:"remote"`
+		}{local, allIdentities, verified})
 	}
 	if err != nil {
 		return TODOProofReference{}, ErrInvalid
@@ -449,6 +474,9 @@ func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context
 	}
 	for _, result := range verified {
 		claims = append(claims, result.Repository+"@"+result.Branch+":"+result.CommitSHA+"/parent="+result.ParentSHA+"/head="+result.RemoteHead)
+	}
+	for _, identity := range allIdentities {
+		claims = append(claims, "repository_node_id="+identity.RepositoryID+":"+identity.NodeID)
 	}
 	kind, source := "remote-local-delivery", "private-reader-and-paced-runner"
 	if foundationOnly {
@@ -578,7 +606,7 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 		return remoteCommitResult{}, todoTeach("remote_proof", "verify the commit on the remote release branch", ErrConflict)
 	}
 	var result remoteCommitResult
-	if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.Repository != repository || result.Branch != branch || result.CommitSHA != sha || len(proofBounds) == 1 && result.TestedHeadSHA != proofBounds[0] || len(proofBounds) == 2 && result.BaselineSHA != proofBounds[1] || !validGitCommit(result.RemoteHead) || !validGitCommit(result.ParentSHA) || len(result.Paths) == 0 || result.Outcome != "verified" {
+	if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.Repository != repository || result.Branch != branch || result.CommitSHA != sha || len(proofBounds) == 1 && result.TestedHeadSHA != proofBounds[0] || len(proofBounds) == 2 && result.BaselineSHA != proofBounds[1] || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || !validGitCommit(result.RemoteHead) || !validGitCommit(result.ParentSHA) || len(result.Paths) == 0 || result.Outcome != "verified" {
 		return remoteCommitResult{}, todoTeach("remote_proof", "match the exact repository, branch and attributable commit returned by the private Reader", ErrConflict)
 	}
 	return result, nil
