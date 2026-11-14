@@ -774,9 +774,21 @@ func (m *MongoStore) historicalTODOConstitutionPin(ctx context.Context, companyI
 	if err != nil || activationCollisions != 1 {
 		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve one unambiguous canonical generation activation before the Local event", ErrConflict)
 	}
-	filter := bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: projectID}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
+	constitutionHistoryFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
+	var constitutionIDs []any
+	if err := database.Collection(canonicalEvents).Distinct(ctx, "record_id", constitutionHistoryFilter).Decode(&constitutionIDs); err != nil {
+		return todoConstitutionPin{}, ErrUnavailable
+	}
+	if len(constitutionIDs) != 1 {
+		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve exactly one constitution record in the active historical generation", ErrConflict)
+	}
+	constitutionID, ok := constitutionIDs[0].(string)
+	if !ok || !validID(constitutionID) {
+		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve a valid historical constitution record identity", ErrConflict)
+	}
+	filter := bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
 	var collisions int64
-	collisions, err = database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: projectID}, {Key: "occurred_at", Value: localEventAt}})
+	collisions, err = database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: localEventAt}})
 	if err != nil {
 		return todoConstitutionPin{}, ErrUnavailable
 	}
@@ -791,7 +803,7 @@ func (m *MongoStore) historicalTODOConstitutionPin(ctx context.Context, companyI
 	if err != nil {
 		return todoConstitutionPin{}, ErrUnavailable
 	}
-	constitutionCollisions, err := database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: projectID}, {Key: "occurred_at", Value: event.OccurredAt}})
+	constitutionCollisions, err := database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: event.OccurredAt}})
 	if err != nil || constitutionCollisions != 1 {
 		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve one unambiguous constitution event at the historical timestamp", ErrConflict)
 	}
@@ -801,7 +813,7 @@ func (m *MongoStore) historicalTODOConstitutionPin(ctx context.Context, companyI
 	var version struct {
 		Record canonicalStored `bson:"record"`
 	}
-	err = database.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: event.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: projectID}, {Key: "revision", Value: event.Revision}}).Decode(&version)
+	err = database.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: event.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "revision", Value: event.Revision}}).Decode(&version)
 	if err != nil {
 		return todoConstitutionPin{}, ErrUnavailable
 	}

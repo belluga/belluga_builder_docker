@@ -438,7 +438,7 @@ func (m *MongoStore) activeTODOConstitutionPromotionMode(ctx context.Context, co
 		}
 		entry = &manifest.Documents[i]
 	}
-	if entry == nil || entry.ID != projectID || entry.Revision < 1 || !validSourceDigest(entry.ContentDigest) {
+	if entry == nil || !validID(entry.ID) || entry.Revision < 1 || !validSourceDigest(entry.ContentDigest) {
 		return todoConstitutionPin{}, todoTeach("constitution", "resolve the active Project constitution with its immutable revision and digest", ErrConflict)
 	}
 	record, err := m.ReadCanonical(ctx, companyID, projectID, FamilyConstitution, entry.ID)

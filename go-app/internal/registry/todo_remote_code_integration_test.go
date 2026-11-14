@@ -44,6 +44,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string) {
 	}
 	store.tenantPrefix = stamp
 	companyID, projectID, todoID := "company-a", "builder", "api-only-delivery"
+	const constitutionID = "builder-constitution"
 	database := store.client.Database(store.tenantDatabase(companyID))
 	t.Cleanup(func() {
 		_ = database.Drop(context.Background())
@@ -56,7 +57,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string) {
 	canonical := CanonicalImport{ProjectID: projectID, GenerationID: "g1", SourceRevision: strings.Repeat("a", 40), OperationID: "fixture-canonical-import", Actor: "fixture-owner", Records: []CanonicalImportRecord{
 		canonicalTestRecord(FamilyMandate, projectID, `{"purpose":"Build safely","scope":["project"]}`),
 		canonicalTestRecord(FamilyDomain, projectID, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
-		canonicalTestRecord(FamilyConstitution, projectID, `{"promotion_mode":"complete","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Project API records verified delivery"}]}`),
+		canonicalTestRecord(FamilyConstitution, constitutionID, `{"promotion_mode":"complete","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Project API records verified delivery"}]}`),
 		canonicalTestRecord(FamilyRoadmap, projectID, `{"stages":[{"id":"delivery","name":"Delivery","status":"planned"}]}`),
 		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-PROJECT-01","status":"current","statement":"Project owns TODO delivery"}],"schemas":[{"id":"todo","name":"todos","kind":"collection","fields":[{"name":"stage","type":"string"}]}]}`),
 		canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-PROJECT-01"}]}`),
