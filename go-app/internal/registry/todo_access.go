@@ -274,7 +274,7 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 			return TODOActionResponse{}, historyErr
 		}
 		if !sameTODOConstitutionPin(localPin, pin) || localPin.Mode != "mvp" {
-			return TODOActionResponse{}, todoTeach("local_proof.constitution", "match the active MVP mode and immutable constitution identity pinned at Local-Implemented", ErrConflict)
+			return TODOActionResponse{}, mvpConstitutionMismatchTeach(localPin, pin)
 		}
 		if err := requireTODOCompletionMode(localPin.Mode); err != nil {
 			return TODOActionResponse{}, err
@@ -558,6 +558,14 @@ func todoProofRepositoryNodeIDs(reference string) map[string]string {
 
 func sameTODOConstitutionPin(a, b todoConstitutionPin) bool {
 	return a.Mode == b.Mode && a.GenerationID == b.GenerationID && a.RecordID == b.RecordID && a.Revision == b.Revision && a.ContentDigest == b.ContentDigest
+}
+
+func mvpConstitutionMismatchTeach(local, active todoConstitutionPin) error {
+	return todoTeach("local_proof.constitution", fmt.Sprintf(
+		"recognize that its Local-Implemented proof is pinned to Constitution generation %s, record %s, revision %d (%s), mode %s, while the active Project Constitution is generation %s, record %s, revision %d (%s), mode %s. Preserve the historical proof. Read both exact Constitution identities and assess this TODO's scope, criteria and evidence. If compatible, record the compatibility assessment in an effective typed builder-project update-todo content edit; if incompatible, update the affected contract through that same operation. The edit reopens Planning and retains prior evidence. Complete the planning review, obtain owner APROVADO for the resulting content digest, then follow the standard stages to a new Local-Implemented proof before requesting Completed again. An identical content update is a no-op and does not reopen Planning",
+		local.GenerationID, local.RecordID, local.Revision, local.ContentDigest, local.Mode,
+		active.GenerationID, active.RecordID, active.Revision, active.ContentDigest, active.Mode,
+	), ErrConflict)
 }
 
 func requireTODOCompletionMode(mode string) error {
