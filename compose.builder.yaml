@@ -15,7 +15,7 @@ services:
       DELPHI_PROJECT_READER_URL: http://project-reader:8099
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       DELPHI_BUILDER_REGISTRY_CUTOVER: "true"
-      PUBLIC_PREVIEW_HOST: builder.belluga.online
+      PUBLIC_PREVIEW_HOST: builder.bellugademo.com.br
       WEB_ROOT: /web
     volumes:
       - type: bind
