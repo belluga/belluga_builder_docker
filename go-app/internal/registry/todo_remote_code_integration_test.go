@@ -22,13 +22,19 @@ import (
 // the evidence-edit, Reader-backed transition, persistence and readback edge.
 func TestMongoRemoteCodeDeliveryTransition(t *testing.T) {
 	for _, targetBranch := range []string{"dev", "stage"} {
-		t.Run(targetBranch+"-then-main", func(t *testing.T) {
-			testMongoRemoteCodeDeliveryTransition(t, targetBranch)
-		})
+		for _, legacyProof := range []bool{false, true} {
+			name := "current-proof-"
+			if legacyProof {
+				name = "legacy-proof-"
+			}
+			t.Run(name+targetBranch+"-then-main", func(t *testing.T) {
+				testMongoRemoteCodeDeliveryTransition(t, targetBranch, legacyProof)
+			})
+		}
 	}
 }
 
-func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string) {
+func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, legacyProof bool) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {
 		if os.Getenv("REGISTRY_REQUIRE_MONGO_INTEGRATION") == "1" {
@@ -323,6 +329,38 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string) {
 	redelivered, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 	if err != nil || redelivered.TODO.Stage != "Local-Implemented" || redelivered.TODO.VerifiedTransitionRef == nil || redelivered.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || redelivered.TODO.VerifiedTransitionRef.VerificationState != "verified" || redelivered.ContentDigest != newDigest || readerCalls.Load() != 7 {
 		t.Fatalf("fresh delivery after moved placement: stage=%s proof=%+v digest=%s calls=%d err=%v", redelivered.TODO.Stage, redelivered.TODO.VerifiedTransitionRef, newDigest, readerCalls.Load(), err)
+	}
+	if !legacyProof {
+		originalLocalProof := *redelivered.TODO.VerifiedTransitionRef
+		if !strings.Contains(originalLocalProof.Reference, "repository_node_id=") || !strings.Contains(originalLocalProof.Reference, todoConstitutionPinPrefix) {
+			t.Fatalf("new Local proof lacks repository identity or constitution pin: %+v", originalLocalProof)
+		}
+		promotion := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &redelivered.TODORevision, OperationID: "current-proof-" + targetBranch + "-promotion", RequestedStage: "Promotion-Lane", PromotionTargets: map[string]string{repository: targetBranch, secondaryRepository: targetBranch}}
+		if _, err := store.TransitionTODO(ctx, companyID, promotion); err != nil {
+			t.Fatalf("current Complete %s arrival: %v", targetBranch, err)
+		}
+		promoted, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+		if err != nil || promoted.TODO.Stage != "Promotion-Lane" || promoted.TODO.VerifiedTransitionRef == nil || promoted.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" {
+			t.Fatalf("current Complete %s promotion readback: %+v err=%v", targetBranch, promoted, err)
+		}
+		completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &promoted.TODORevision, OperationID: "current-proof-main-arrival", RequestedStage: "Completed"}
+		if _, err := store.TransitionTODO(ctx, companyID, completed); err != nil {
+			t.Fatalf("current Complete main arrival: %v", err)
+		}
+		final, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+		if err != nil || final.TODO.Stage != "Completed" || final.TODO.VerifiedTransitionRef == nil || final.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, `"arrival_stage":"main"`) || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, commit) || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, secondaryCommit) {
+			t.Fatalf("current Complete main readback lost original commits: %+v err=%v", final, err)
+		}
+		localEventFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "kind", Value: "state_changed"}, {Key: "revision", Value: redelivered.TODORevision}, {Key: "changes.stage", Value: "Local-Implemented"}}
+		var preservedLocalEvent TODOHistoryEvent
+		if err := database.Collection(todoEventsCollection).FindOne(ctx, localEventFilter).Decode(&preservedLocalEvent); err != nil || preservedLocalEvent.Changes.VerifiedTransitionRef == nil || *preservedLocalEvent.Changes.VerifiedTransitionRef != originalLocalProof {
+			t.Fatalf("promotion rewrote the current Local proof: %+v err=%v", preservedLocalEvent, err)
+		}
+		identities, err := readImplementationRepositoryNodeIDs(ctx, database, projectID)
+		if err != nil || identities[repository] != "R_kgDOImmutable" || identities[secondaryRepository] != "R_kgDOImmutable-secondary" {
+			t.Fatalf("current proof lost immutable repository identities: %+v err=%v", identities, err)
+		}
+		return
 	}
 	legacyLocalProof := *redelivered.TODO.VerifiedTransitionRef
 	legacyItems := make([]string, 0)
