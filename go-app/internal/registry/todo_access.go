@@ -1197,7 +1197,7 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 		}
 		result, err := collection.UpdateOne(txCtx, bson.D{{Key: "_id", Value: record.ObjectID}, {Key: "project_id", Value: record.ProjectID}, {Key: "id", Value: record.ID}, {Key: "revision", Value: record.Revision}}, update)
 		if err != nil {
-			return nil, normalizeMongoError(err)
+			return nil, normalizeMongoTransactionError(err)
 		}
 		if result.MatchedCount != 1 {
 			return nil, &todoRevisionConflict{Revision: nextRevision}
@@ -1221,7 +1221,7 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 			event.Reason = acceptance.Reason
 		}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {
-			return nil, normalizeMongoError(err)
+			return nil, normalizeMongoTransactionError(err)
 		}
 		updated = true
 		return nil, nil

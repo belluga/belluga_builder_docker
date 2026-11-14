@@ -1591,6 +1591,9 @@ func requireTODOHistoryBaseline(ctx context.Context, database *mongo.Database, r
 		return todoTeach("history.baseline", "be provisioned for this admitted TODO before enabling mutations", ErrUnavailable)
 	}
 	if err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return ErrUnavailable
 	}
 	if event.Revision > record.Revision || event.ContentRevision == nil {
@@ -1600,6 +1603,9 @@ func requireTODOHistoryBaseline(ctx context.Context, database *mongo.Database, r
 	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{
 		{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "revision", Value: *event.ContentRevision},
 	}).Decode(&version); err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return todoTeach("history.baseline.content_revision", "resolve to the immutable observed content version", ErrConflict)
 	}
 	return nil

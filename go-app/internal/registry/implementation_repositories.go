@@ -115,10 +115,16 @@ func pinImplementationRepositoryNodeIDInTransaction(ctx context.Context, databas
 		return todoTeach("repository_identity.github_node_id", "match the immutable ID already pinned to this repository alias", ErrConflict)
 	}
 	if !errors.Is(err, mongo.ErrNoDocuments) {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return ErrUnavailable
 	}
 	_, err = collection.InsertOne(ctx, implementationRepositoryIdentity{ProjectID: projectID, RepositoryID: repositoryID, GitHubNodeID: nodeID, ProofDigest: proofDigest, PinnedAt: time.Now().UTC()})
 	if err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		if mongo.IsDuplicateKeyError(err) {
 			return todoTeach("repository_identity.github_node_id", "remain unclaimed until the alias identity is resolved", ErrConflict)
 		}
@@ -137,6 +143,9 @@ func advanceImplementationRepositoryMembershipCASInTransaction(ctx context.Conte
 	}
 	var project projectDocument
 	if err := database.Collection(projectsCollection).FindOne(ctx, bson.M{"id": projectID}).Decode(&project); err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return ErrUnavailable
 	}
 	seen := make(map[string]bool, len(repositoryIDs))
@@ -154,12 +163,27 @@ func advanceImplementationRepositoryMembershipCASInTransaction(ctx context.Conte
 	}
 	result, err := database.Collection(projectsCollection).UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"implementation_repositories_revision": 1}})
 	if err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return normalizeMongoError(err)
 	}
 	if result.MatchedCount != 1 {
 		return todoTeach("repository_identity.repository_id", "remain owner-confirmed at the guarded Project revision", ErrConflict)
 	}
 	return nil
+}
+
+func mongoTransactionShouldRetry(err error) bool {
+	var labeled mongo.LabeledError
+	return errors.As(err, &labeled) && labeled.HasErrorLabel("TransientTransactionError")
+}
+
+func normalizeMongoTransactionError(err error) error {
+	if mongoTransactionShouldRetry(err) {
+		return err
+	}
+	return normalizeMongoError(err)
 }
 
 func readImplementationRepositoryNodeIDs(ctx context.Context, database *mongo.Database, projectID string) (map[string]string, error) {
