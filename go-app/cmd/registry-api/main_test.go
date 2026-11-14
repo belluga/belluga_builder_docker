@@ -1,13 +1,56 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"belluga-builder-go/internal/registry"
 )
+
+func TestRegistryServerReturnsResponseAfterOldWriteDeadline(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		timer := time.NewTimer(21 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			_, _ = io.WriteString(w, "complete-arrival-ok")
+		case <-r.Context().Done():
+		}
+	})
+	server := newRegistryServer("", handler)
+	if server.ReadTimeout != 10*time.Second || server.WriteTimeout != 110*time.Second {
+		t.Fatalf("Registry HTTP budget = read %s, write %s", server.ReadTimeout, server.WriteTimeout)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- server.Serve(listener) }()
+	defer func() {
+		_ = server.Close()
+		if err := <-served; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Registry HTTP server: %v", err)
+		}
+	}()
+	client := &http.Client{Timeout: 30 * time.Second}
+	response, err := client.Get("http://" + listener.Addr().String())
+	if err != nil {
+		t.Fatalf("delayed Registry response: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || string(body) != "complete-arrival-ok" {
+		t.Fatalf("delayed Registry response = status %d body %q error %v", response.StatusCode, body, err)
+	}
+}
 
 func TestBoundRoadmapPathUsesRegisteredFoundation(t *testing.T) {
 	workspace := t.TempDir()

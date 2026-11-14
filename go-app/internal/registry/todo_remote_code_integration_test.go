@@ -484,6 +484,22 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string) {
 	if err != nil || final.TODO.Stage != "Completed" || final.TODO.VerifiedTransitionRef == nil || final.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, `"arrival_stage":"main"`) {
 		t.Fatalf("main arrival was not recorded as Git-only Completed: %+v err=%v", final, err)
 	}
+	eventsBeforeRetry, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := store.TransitionTODO(ctx, companyID, completed)
+	if err != nil || !retry.NoOp || retry.TODORevision != final.TODORevision || retry.Stage != "Completed" {
+		t.Fatalf("exact main-arrival retry did not return the original result: %+v err=%v", retry, err)
+	}
+	eventsAfterRetry, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}})
+	if err != nil || eventsAfterRetry != eventsBeforeRetry {
+		t.Fatalf("exact main-arrival retry added a TODO event: before=%d after=%d err=%v", eventsBeforeRetry, eventsAfterRetry, err)
+	}
+	retried, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+	if err != nil || retried.TODORevision != final.TODORevision || retried.TODO.VerifiedTransitionRef == nil || *retried.TODO.VerifiedTransitionRef != *final.TODO.VerifiedTransitionRef {
+		t.Fatalf("exact main-arrival retry changed original proof: before=%+v after=%+v err=%v", final.TODO.VerifiedTransitionRef, retried.TODO.VerifiedTransitionRef, err)
+	}
 	var preservedLocalEvent TODOHistoryEvent
 	if err := database.Collection(todoEventsCollection).FindOne(ctx, localEventFilter).Decode(&preservedLocalEvent); err != nil || preservedLocalEvent.Changes.VerifiedTransitionRef == nil || *preservedLocalEvent.Changes.VerifiedTransitionRef != legacyLocalProof {
 		t.Fatalf("promotion rewrote the historical legacy Local proof: %+v err=%v", preservedLocalEvent, err)
