@@ -6,15 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,48 +24,38 @@ import (
 
 var localRunIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-type localProofMatrix struct {
-	SchemaVersion   string   `json:"schema_version"`
-	DefaultRequired []string `json:"default_required"`
-	Commands        []struct {
-		ID   string   `json:"id"`
-		Argv []string `json:"argv"`
-	} `json:"commands"`
-	RequiredBy map[string][]string `json:"required_by"`
-	digest     string
+const maxLocalDeliveryCommits = 32
+
+type localProofRepository struct {
+	RepositoryID       string `json:"repository_id"`
+	Branch             string `json:"branch"`
+	HeadBefore         string `json:"head_before"`
+	HeadAfter          string `json:"head_after"`
+	InputsDigestBefore string `json:"inputs_digest_before"`
+	InputsDigestAfter  string `json:"inputs_digest_after"`
 }
 
-type localProofSnapshot struct {
-	BuilderHead         string `json:"builder_head"`
-	PACEDHead           string `json:"paced_head"`
-	BuilderInputsDigest string `json:"builder_inputs_digest"`
-	PACEDInputsDigest   string `json:"paced_inputs_digest"`
-}
-
-type localProofCommand struct {
-	ID       string `json:"id"`
-	ExitCode int    `json:"exit_code"`
+type localProofCheck struct {
+	ID           string `json:"id"`
+	RepositoryID string `json:"repository_id"`
+	ExitCode     int    `json:"exit_code"`
 }
 
 type LocalProofResult struct {
-	SchemaVersion          string                       `json:"schema_version"`
-	TODOID                 string                       `json:"todo_id"`
-	CompanyID              string                       `json:"company_id,omitempty"`
-	ProjectID              string                       `json:"project_id,omitempty"`
-	TODORevision           *int64                       `json:"todo_revision,omitempty"`
-	ContentDigest          string                       `json:"content_digest,omitempty"`
-	ReleaseID              string                       `json:"release_id,omitempty"`
-	Position               *int                         `json:"position,omitempty"`
-	RunID                  string                       `json:"run_id"`
-	MatrixDigest           string                       `json:"matrix_digest"`
-	StartedAt              string                       `json:"started_at"`
-	FinishedAt             string                       `json:"finished_at"`
-	Before                 localProofSnapshot           `json:"before"`
-	After                  localProofSnapshot           `json:"after"`
-	OutsideUntrackedBefore map[string]map[string]string `json:"outside_untracked_before"`
-	OutsideUntrackedAfter  map[string]map[string]string `json:"outside_untracked_after"`
-	Commands               []localProofCommand          `json:"commands"`
-	ResultDigest           string                       `json:"result_digest"`
+	SchemaVersion string                 `json:"schema_version"`
+	TODOID        string                 `json:"todo_id"`
+	CompanyID     string                 `json:"company_id,omitempty"`
+	ProjectID     string                 `json:"project_id,omitempty"`
+	TODORevision  *int64                 `json:"todo_revision,omitempty"`
+	ContentDigest string                 `json:"content_digest,omitempty"`
+	ReleaseID     string                 `json:"release_id,omitempty"`
+	Position      *int                   `json:"position,omitempty"`
+	RunID         string                 `json:"run_id"`
+	StartedAt     string                 `json:"started_at"`
+	FinishedAt    string                 `json:"finished_at"`
+	Repositories  []localProofRepository `json:"repositories"`
+	Checks        []localProofCheck      `json:"checks"`
+	ResultDigest  string                 `json:"result_digest"`
 }
 
 func sourceHash(data []byte) string {
@@ -74,73 +63,30 @@ func sourceHash(data []byte) string {
 	return "sha256:" + hex.EncodeToString(hash[:])
 }
 
-func (m *MongoStore) ConfigureLocalMatrix(path string) error {
-	if path == "" {
-		return errors.New("missing matrix path")
+func (m *MongoStore) validateLocalProof(content TODOAuthoredContent, branchPlan map[string]string, result *LocalProofResult) (TODOProofReference, error) {
+	if result == nil || result.SchemaVersion != "builder-local-proof-result-v3" || !localRunIDPattern.MatchString(result.RunID) {
+		return TODOProofReference{}, todoTeach("local_proof", "provide the current Project-scoped PACED result", ErrConflict)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 || len(data) > 32<<10 {
-		return errors.New("local proof matrix unavailable")
+	if len(result.Checks) != len(content.LocalChecks) || len(content.LocalChecks) == 0 {
+		return TODOProofReference{}, todoTeach("local_proof.checks", "include every typed check selected by the exact TODO content", ErrConflict)
 	}
-	var matrix localProofMatrix
-	if json.Unmarshal(data, &matrix) != nil || matrix.SchemaVersion != "builder-local-proof-v1" || len(matrix.Commands) == 0 || len(matrix.DefaultRequired) == 0 {
-		return errors.New("local proof matrix invalid")
-	}
-	commandsByID := make(map[string]bool, len(matrix.Commands))
-	for _, command := range matrix.Commands {
-		if command.ID == "" || len(command.Argv) == 0 || commandsByID[command.ID] {
-			return errors.New("local proof matrix has invalid command")
-		}
-		commandsByID[command.ID] = true
-	}
-	defaultRequired := make(map[string]bool, len(matrix.DefaultRequired))
-	for _, id := range matrix.DefaultRequired {
-		if !commandsByID[id] || defaultRequired[id] {
-			return errors.New("local proof matrix has unknown default command")
-		}
-		defaultRequired[id] = true
-	}
-	for id, commands := range matrix.RequiredBy {
-		if !validID(id) {
-			return errors.New("local proof matrix has invalid TODO ID")
-		}
-		if len(commands) == 0 {
-			return errors.New("local proof matrix has empty requirement")
-		}
-		required := make(map[string]bool, len(commands))
-		for _, command := range commands {
-			if !commandsByID[command] || required[command] {
-				return errors.New("local proof matrix has unknown required command")
-			}
-			required[command] = true
+	for i, check := range content.LocalChecks {
+		actual := result.Checks[i]
+		if actual.ID != check.ID || actual.RepositoryID != check.RepositoryID || actual.ExitCode != 0 {
+			return TODOProofReference{}, todoTeach(fmt.Sprintf("local_proof.checks[%d]", i), "pass each exact TODO-selected repository check in content order", ErrConflict)
 		}
 	}
-	matrix.digest = sourceHash(data)
-	m.localMatrix = &matrix
-	return nil
-}
-
-func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult) (TODOProofReference, error) {
-	if m.localMatrix == nil || result == nil {
-		return TODOProofReference{}, todoTeach("local_proof", "provide the fixed PACED local result for this TODO", ErrConflict)
+	if len(result.Repositories) != len(branchPlan) {
+		return TODOProofReference{}, todoTeach("local_proof.repositories", "include only the exact repositories selected by this TODO and its Release plan", ErrConflict)
 	}
-	required := m.localMatrix.RequiredBy[todoID]
-	if len(required) == 0 {
-		required = m.localMatrix.DefaultRequired
-	}
-	if (result.SchemaVersion != "builder-local-proof-result-v1" && result.SchemaVersion != "builder-local-proof-result-v2") || result.TODOID != todoID || !localRunIDPattern.MatchString(result.RunID) || result.MatrixDigest != m.localMatrix.digest || len(result.Commands) != len(required) {
-		return TODOProofReference{}, todoTeach("local_proof", "match this TODO and the current fixed command matrix", ErrConflict)
-	}
-	for i, id := range required {
-		if result.Commands[i].ID != id || result.Commands[i].ExitCode != 0 {
-			return TODOProofReference{}, todoTeach("local_proof.commands", "pass every fixed command for this TODO in matrix order", ErrConflict)
+	seenRepositories := make(map[string]bool, len(result.Repositories))
+	for i, repository := range result.Repositories {
+		field := fmt.Sprintf("local_proof.repositories[%d]", i)
+		requiredBranch, selected := branchPlan[repository.RepositoryID]
+		if !selected || seenRepositories[repository.RepositoryID] || repository.Branch != requiredBranch || repository.HeadBefore != repository.HeadAfter || !validGitCommit(repository.HeadBefore) || !validSourceDigest(repository.InputsDigestBefore) || repository.InputsDigestBefore != repository.InputsDigestAfter {
+			return TODOProofReference{}, todoTeach(field, "match one selected immutable Release branch with unchanged checkout head and committed input digest", ErrConflict)
 		}
-	}
-	if result.Before != result.After || !validSourceDigest(result.Before.BuilderInputsDigest) || !validSourceDigest(result.Before.PACEDInputsDigest) || len(result.Before.BuilderHead) != 40 || len(result.Before.PACEDHead) != 40 {
-		return TODOProofReference{}, todoTeach("local_proof.inputs", "show unchanged Builder/PACED heads and approved-path content during the run", ErrConflict)
-	}
-	if len(result.OutsideUntrackedBefore) != 2 || result.OutsideUntrackedBefore["builder"] == nil || result.OutsideUntrackedBefore["paced"] == nil || !reflect.DeepEqual(result.OutsideUntrackedBefore, result.OutsideUntrackedAfter) {
-		return TODOProofReference{}, todoTeach("local_proof.outside_untracked", "leave outside-scope untracked files unchanged during the run", ErrConflict)
+		seenRepositories[repository.RepositoryID] = true
 	}
 	started, startErr := time.Parse(time.RFC3339Nano, result.StartedAt)
 	finished, finishErr := time.Parse(time.RFC3339Nano, result.FinishedAt)
@@ -164,7 +110,7 @@ func (m *MongoStore) validateLocalProof(todoID string, result *LocalProofResult)
 	}
 	canonical := bytes.TrimSpace(encoded.Bytes())
 	if result.ResultDigest != sourceHash(canonical) {
-		return TODOProofReference{}, todoTeach("local_proof.result_digest", "match the exact fixed PACED local result digest", ErrConflict)
+		return TODOProofReference{}, todoTeach("local_proof.result_digest", "match the exact PACED local result digest", ErrConflict)
 	}
 	return TODOProofReference{Kind: "local-run-verified", Source: "paced-local-runner", Reference: result.RunID, SourceDigest: result.ResultDigest, VerificationState: "verified"}, nil
 }
@@ -177,15 +123,18 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 	if content == nil || content.SchemaVersion != todoContentSchemaVersion || result == nil {
 		return nil, todoTeach("proof_refs", "provide typed content and the exact current PACED local result", ErrConflict)
 	}
-	commands := make(map[string]bool, len(result.Commands))
-	for _, command := range result.Commands {
-		if command.ID == "" || commands[command.ID] {
-			return nil, todoTeach("local_proof.commands", "contain unique command IDs from the fixed matrix", ErrConflict)
+	if len(content.LocalChecks) == 0 || len(content.LocalChecks) != len(result.Checks) {
+		return nil, todoTeach("local_proof.checks", "match every check selected by the exact TODO content", ErrConflict)
+	}
+	commands := make(map[string]bool, len(result.Checks))
+	for i, command := range result.Checks {
+		if command.ID != content.LocalChecks[i].ID || command.RepositoryID != content.LocalChecks[i].RepositoryID || commands[command.ID] {
+			return nil, todoTeach("local_proof.checks", "contain unique check IDs selected by the exact TODO content", ErrConflict)
 		}
 		commands[command.ID] = command.ExitCode == 0
 	}
 	required := make(map[string]bool, len(content.Criteria)+len(content.ValidationScenarios))
-	scenarioCommands := make(map[string]bool, len(result.Commands))
+	scenarioCommands := make(map[string]bool, len(result.Checks))
 	for _, criterion := range content.Criteria {
 		required["criterion:"+criterion.ID] = false
 	}
@@ -204,23 +153,29 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 		if ref.SourceDigest != contentDigest {
 			continue
 		}
+		field := "proof_refs." + ref.Kind
+		if ref.Source != "paced-local-runner" {
+			return nil, todoTeach(field+".source", "be exactly paced-local-runner for PACED command evidence", ErrConflict)
+		}
+		if ref.Reference == "" {
+			return nil, todoTeach(field+".ref", "be the exact ID of a successful check in this local result, not a run UUID or argv", ErrConflict)
+		}
+		if ref.VerificationState != "unverified" && ref.VerificationState != "verified" {
+			return nil, todoTeach(field+".verification_state", "be unverified for new evidence; preserve any existing verified reference exactly", ErrConflict)
+		}
 		scenario := strings.HasPrefix(ref.Kind, "scenario:")
 		if required[ref.Kind] && !scenario {
-			return nil, todoTeach("proof_refs."+ref.Kind, "provide exactly one command reference for each criterion", ErrConflict)
+			return nil, todoTeach(field, "provide exactly one command reference for each criterion", ErrConflict)
 		}
 		if scenario && seenScenarioReference[ref.Kind+"\x00"+ref.Reference] {
-			return nil, todoTeach("proof_refs."+ref.Kind, "do not repeat the same command reference for a validation scenario", ErrConflict)
-		}
-		if ref.Source != "paced-local-runner" || ref.Reference == "" ||
-			(ref.VerificationState != "unverified" && ref.VerificationState != "verified") {
-			return nil, todoTeach("proof_refs."+ref.Kind, "bind the PACED command reference to the current exact content digest", ErrConflict)
+			return nil, todoTeach(field+".ref", "do not repeat the same check ID for a validation scenario", ErrConflict)
 		}
 		exitOK, present := commands[ref.Reference]
 		if !present {
-			return nil, todoTeach("proof_refs."+ref.Kind+".ref", "name a fixed matrix command present in this exact local result", ErrConflict)
+			return nil, todoTeach(field+".ref", "use the exact check ID of a successful command in this local result, not the run UUID or argv", ErrConflict)
 		}
 		if !exitOK {
-			return nil, todoTeach("proof_refs."+ref.Kind+".ref", "name a fixed matrix command that exited zero in this exact local result", ErrConflict)
+			return nil, todoTeach(field+".ref", "use the exact check ID of a command that exited zero in this local result", ErrConflict)
 		}
 		required[ref.Kind] = true
 		if scenario {
@@ -231,21 +186,64 @@ func verifyLocalRequirementReferences(content *TODOContent, references []TODOPro
 	}
 	for kind, found := range required {
 		if !found {
-			return nil, todoTeach("proof_refs."+kind, "add a digest-bound PACED command reference for every criterion and validation scenario", ErrConflict)
+			return nil, todoTeach("proof_refs."+kind+".source_digest", "add a new proof reference for the exact current TODO content digest "+contentDigest+" with source paced-local-runner, ref equal to a successful check ID and verification_state unverified; retain historical references unchanged", ErrConflict)
 		}
 	}
-	for _, command := range result.Commands {
+	for _, command := range result.Checks {
 		if !scenarioCommands[command.ID] {
-			return nil, todoTeach("proof_refs.scenario", "bind every required PACED command to at least one current validation scenario", ErrConflict)
+			return nil, todoTeach("proof_refs.scenario.ref", "add a current-digest scenario reference using the exact successful check ID "+command.ID, ErrConflict)
 		}
 	}
 	return verified, nil
 }
 
+// External citations are coverage claims, not attestations that a test ran.
+// Only the Reader-backed commit proof can make the new stage verified.
+func validateExternalRequirementReferences(content *TODOContent, references []TODOProofReference, contentDigest string) error {
+	if content == nil || content.SchemaVersion != todoContentSchemaVersion {
+		return todoTeach("proof_refs", "use the current typed TODO content for external evidence", ErrConflict)
+	}
+	required := make(map[string]bool, len(content.Criteria)+len(content.ValidationScenarios))
+	for _, criterion := range content.Criteria {
+		required["criterion:"+criterion.ID] = false
+	}
+	for _, scenario := range content.ValidationScenarios {
+		required["scenario:"+scenario.ID] = false
+	}
+	for _, ref := range references {
+		if ref.SourceDigest != contentDigest {
+			continue // Immutable historical citations cannot satisfy this revision.
+		}
+		_, needed := required[ref.Kind]
+		if !needed && !strings.HasPrefix(ref.Kind, "criterion:") && !strings.HasPrefix(ref.Kind, "scenario:") && !strings.HasPrefix(ref.Kind, "test:") {
+			continue
+		}
+		field := "proof_refs." + ref.Kind
+		if !needed && !strings.HasPrefix(ref.Kind, "test:") {
+			return todoTeach(field, "cite only a criterion or scenario in the current TODO content", ErrConflict)
+		}
+		if ref.Source != "external-evidence" || strings.TrimSpace(ref.Reference) == "" || ref.VerificationState != "unverified" {
+			return todoTeach(field, "record a concrete external-evidence reference for the current digest as unverified; do not claim verified test execution", ErrConflict)
+		}
+		if needed {
+			if required[ref.Kind] {
+				return todoTeach(field, "record exactly one current-digest external citation", ErrConflict)
+			}
+			required[ref.Kind] = true
+		}
+	}
+	for kind, found := range required {
+		if !found {
+			return todoTeach("proof_refs."+kind, "record one external-evidence citation bound to the current TODO content digest", ErrConflict)
+		}
+	}
+	return nil
+}
+
 // Only next-step edits may occur between preflight and the guarded transition.
 func validateLocalProofSubject(ctx context.Context, database *mongo.Database, companyID string, record TODORecord, digest string, result *LocalProofResult) error {
-	if result == nil || result.SchemaVersion != "builder-local-proof-result-v2" {
-		return todoTeach("local_proof.schema_version", "run the current v2 PACED runner against the exact Mongo TODO preflight", ErrConflict)
+	if result == nil || result.SchemaVersion != "builder-local-proof-result-v3" {
+		return todoTeach("local_proof.schema_version", "run the current v3 PACED runner against the exact Mongo TODO preflight", ErrConflict)
 	}
 	if result.CompanyID != companyID || result.ProjectID != record.ProjectID || result.TODOID != record.ID || result.TODORevision == nil || *result.TODORevision < 0 || *result.TODORevision > record.Revision || result.ContentDigest != digest || result.ReleaseID != record.ReleaseID || result.Position == nil || record.Position == nil || *result.Position != *record.Position {
 		return todoTeach("local_proof.subject", "match the preflight Company, Project, TODO, content digest and current Release placement", ErrConflict)
@@ -285,20 +283,67 @@ func validateLocalProofSubject(ctx context.Context, database *mongo.Database, co
 	return nil
 }
 
-type remoteCommitResult struct {
-	CompanyID  string   `json:"company_id"`
-	ProjectID  string   `json:"project_id"`
-	Repository string   `json:"repository"`
-	Branch     string   `json:"branch"`
-	CommitSHA  string   `json:"commit_sha"`
-	RemoteHead string   `json:"remote_head"`
-	ParentSHA  string   `json:"parent_sha"`
-	Paths      []string `json:"paths"`
-	Outcome    string   `json:"outcome"`
+// verifyLocalProofHeads proves that the checked checkout heads were already
+// reachable from their immutable Release-owned branches. It deliberately does
+// not require those branches to remain at the same tip after the local run.
+func (m *MongoStore) verifyLocalProofHeads(ctx context.Context, companyID string, todo TODORecord, branchPlan map[string]string, result *LocalProofResult) error {
+	for i, repository := range result.Repositories {
+		branch := branchPlan[repository.RepositoryID]
+		if !validDeliveryBranch(branch) || repository.Branch != branch {
+			return todoTeach(fmt.Sprintf("local_proof.repositories[%d].branch", i), "match the exact TODO-selected Release branch", ErrConflict)
+		}
+		if _, err := m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository.RepositoryID, branch, repository.HeadBefore, true); err != nil {
+			return todoTeach(fmt.Sprintf("local_proof.repositories[%d].head_before", i), "prove the tested checkout head is already published on its Release-owned branch", ErrConflict)
+		}
+	}
+	return nil
 }
+
+type remoteCommitResult struct {
+	CompanyID        string   `json:"company_id"`
+	ProjectID        string   `json:"project_id"`
+	Repository       string   `json:"repository"`
+	RepositoryNodeID string   `json:"repository_node_id"`
+	Branch           string   `json:"branch"`
+	CommitSHA        string   `json:"commit_sha"`
+	TestedHeadSHA    string   `json:"tested_head_sha,omitempty"`
+	BaselineSHA      string   `json:"baseline_sha,omitempty"`
+	RemoteHead       string   `json:"remote_head"`
+	ParentSHA        string   `json:"parent_sha"`
+	Paths            []string `json:"paths"`
+	Outcome          string   `json:"outcome"`
+}
+
+// The private Reader admits up to eleven GitHub commit pages (100 files each).
+// Their complete path list can exceed the former 32 KiB transport limit even
+// when the commit is attributable. Keep the response bounded by that upstream
+// page budget instead of rejecting a valid large commit as an outage.
+const maxRemoteCommitProofBytes = 12 << 20
 
 // The approved scope, not the current checkout diff, decides attribution.
 func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference) (TODOProofReference, error) {
+	branchPlan := map[string]string{}
+	foundationOnly := todo.Source.Kind != "mongo-content-revision" && len(todo.DiffExpectation) > 0
+	for _, scope := range todo.DiffExpectation {
+		if !foundationScope(scope.Repository) {
+			foundationOnly = false
+			break
+		}
+	}
+	if !foundationOnly {
+		var err error
+		branchPlan, err = confirmedTODOReleaseBranches(ctx, m, companyID, todo)
+		if err != nil {
+			return TODOProofReference{}, err
+		}
+	}
+	return m.verifyRemoteLocalDeliveryWithBranchPlan(ctx, companyID, foundationRepositoryID, todo, contentDigest, local, branchPlan)
+}
+
+func (m *MongoStore) verifyRemoteLocalDeliveryWithBranchPlan(ctx context.Context, companyID, foundationRepositoryID string, todo TODORecord, contentDigest string, local TODOProofReference, branchPlan map[string]string, testedHeadPlans ...map[string]string) (TODOProofReference, error) {
+	if len(todo.ImplementationCommits) > maxLocalDeliveryCommits {
+		return TODOProofReference{}, todoTeach("implementation_commits", "limit one local delivery to 32 attributable commits before remote verification", ErrInvalid)
+	}
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, todoTeach("remote_proof", "configure the private Project Reader before Local-Implemented", ErrUnavailable)
 	}
@@ -306,35 +351,45 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 	if todo.Source.Kind != "mongo-content-revision" && (len(parts) != 2 || parts[0] == "" || parts[1] == "") {
 		return TODOProofReference{}, todoTeach("remote_proof", "use the registered Project Foundation repository owner", ErrConflict)
 	}
-	foundationOnly := len(todo.DiffExpectation) > 0
+	legacyFoundation := todo.Source.Kind != "mongo-content-revision"
+	codeOnly := todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion && local.Kind == "" && local.Source == ""
+	foundationOnly := legacyFoundation && len(todo.DiffExpectation) > 0
 	for _, scope := range todo.DiffExpectation {
 		if !foundationScope(scope.Repository) {
 			foundationOnly = false
 			break
 		}
 	}
-	if !foundationOnly && (local.Kind != "local-run-verified" || local.VerificationState != "verified") {
+	if !foundationOnly && !codeOnly && (local.Kind != "local-run-verified" || local.VerificationState != "verified") {
 		return TODOProofReference{}, todoTeach("local_proof", "pass the fixed PACED local run before remote code proof", ErrConflict)
 	}
+	var testedHeads map[string]string
+	if len(testedHeadPlans) > 0 {
+		testedHeads = testedHeadPlans[0]
+	}
+	typedMongoDelivery := todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion
 	var verified []remoteCommitResult
+	type repositoryIdentity struct {
+		RepositoryID string `json:"repository_id"`
+		NodeID       string `json:"repository_node_id"`
+		Branch       string `json:"branch"`
+		HeadSHA      string `json:"head_sha"`
+	}
+	identities := make(map[string]repositoryIdentity, len(todo.DiffExpectation))
 	for _, scope := range todo.DiffExpectation {
-		if foundationScope(scope.Repository) && !foundationOnly {
+		if legacyFoundation && foundationScope(scope.Repository) && !foundationOnly {
 			continue
 		}
-		branch, repository := scope.DeliveryBranch, scope.RepositoryID
-		if todo.Source.Kind == "mongo-content-revision" {
-			if !validGitRepositoryID(repository) || !validDeliveryBranch(branch) {
-				return TODOProofReference{}, todoTeach("diff_expectation.repository_id/delivery_branch", "publish an exact approved owner/repository and destination branch for each implementing repository", ErrConflict)
-			}
+		branch, repository := "", scope.RepositoryID
+		if legacyFoundation && foundationScope(scope.Repository) {
+			branch, repository = "main", foundationRepositoryID
 		} else {
-			var ok bool
-			branch, ok = implementationBranch(todo.ProjectID, todo.ReleaseID, scope.Repository)
-			if !ok {
-				return TODOProofReference{}, todoTeach("diff_expectation.repository", "configure the remote release branch for this implementing repository", ErrConflict)
+			if !validGitRepositoryID(repository) {
+				return TODOProofReference{}, todoTeach("diff_expectation.repository_id", "select the exact confirmed implementation repository for this Project", ErrConflict)
 			}
-			repository = parts[0] + "/" + canonicalImplementationLabel(scope.Repository)
-			if foundationScope(scope.Repository) {
-				repository = foundationRepositoryID
+			branch = branchPlan[repository]
+			if !validDeliveryBranch(branch) {
+				return TODOProofReference{}, todoTeach("release_id.delivery_branches."+repository, "confirm this repository's branch on the exact Release before local proof", ErrConflict)
 			}
 		}
 		claims := 0
@@ -346,10 +401,29 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 			if !validGitCommit(claim.Commit) || claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
 				return TODOProofReference{}, todoTeach("implementation_commits", "bind each full commit SHA to the approved current TODO content revision", ErrConflict)
 			}
-			result, err := m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit, todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion)
+			var result remoteCommitResult
+			var err error
+			if typedMongoDelivery && !codeOnly {
+				testedHead := testedHeads[repository]
+				if !validGitCommit(testedHead) {
+					return TODOProofReference{}, todoTeach("local_proof.repositories.head_before", "bind every implementation commit to that repository's tested checkout head", ErrConflict)
+				}
+				result, err = m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit, true, testedHead)
+			} else {
+				if codeOnly {
+					result, err = m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit, true, "", scope.Baseline)
+				} else {
+					result, err = m.readRemoteCommit(ctx, companyID, todo.ProjectID, repository, branch, claim.Commit, false)
+				}
+			}
 			if err != nil {
 				return TODOProofReference{}, err
 			}
+			identity := repositoryIdentity{RepositoryID: repository, NodeID: result.RepositoryNodeID, Branch: branch, HeadSHA: result.RemoteHead}
+			if prior, ok := identities[repository]; ok && prior.NodeID != identity.NodeID {
+				return TODOProofReference{}, todoTeach("repository_identity.github_node_id", "remain bound to one immutable GitHub ID across commit checks", ErrConflict)
+			}
+			identities[repository] = identity
 			for _, changed := range result.Paths {
 				if !approvedCommitPath(changed, scope) {
 					return TODOProofReference{}, todoTeach("implementation_commits.paths", "identify attributable commits whose changed paths fit this TODO's approved repository scope", ErrConflict)
@@ -358,29 +432,57 @@ func (m *MongoStore) verifyRemoteLocalDelivery(ctx context.Context, companyID, f
 			verified = append(verified, result)
 		}
 		if claims == 0 {
-			return TODOProofReference{}, todoTeach("implementation_commits", "record at least one pushed attributable commit for each implementing repository", ErrConflict)
+			return TODOProofReference{}, todoTeach("implementation_commits."+repository, "record at least one attributable original commit for every selected repository", ErrConflict)
 		}
 	}
 	if len(verified) == 0 || len(verified) != len(todo.ImplementationCommits) {
 		return TODOProofReference{}, todoTeach("implementation_commits", "record only commits from the approved implementing repositories", ErrConflict)
 	}
-	data, err := json.Marshal(struct {
-		Local  TODOProofReference   `json:"local"`
-		Remote []remoteCommitResult `json:"remote"`
-	}{local, verified})
+	var data []byte
+	var err error
+	allIdentities := make([]repositoryIdentity, 0, len(identities))
+	identityAliases := make([]string, 0, len(identities))
+	for alias := range identities {
+		identityAliases = append(identityAliases, alias)
+	}
+	sort.Strings(identityAliases)
+	for _, alias := range identityAliases {
+		allIdentities = append(allIdentities, identities[alias])
+	}
+	if codeOnly {
+		data, err = json.Marshal(struct {
+			CompanyID     string               `json:"company_id"`
+			ProjectID     string               `json:"project_id"`
+			TODOID        string               `json:"todo_id"`
+			ContentDigest string               `json:"content_digest"`
+			Repositories  []repositoryIdentity `json:"repositories"`
+			Remote        []remoteCommitResult `json:"remote"`
+		}{companyID, todo.ProjectID, todo.ID, contentDigest, allIdentities, verified})
+	} else {
+		data, err = json.Marshal(struct {
+			Local        TODOProofReference   `json:"local"`
+			Repositories []repositoryIdentity `json:"repositories"`
+			Remote       []remoteCommitResult `json:"remote"`
+		}{local, allIdentities, verified})
+	}
 	if err != nil {
 		return TODOProofReference{}, ErrInvalid
 	}
 	claims := make([]string, 0, len(verified)+1)
-	if !foundationOnly {
+	if !foundationOnly && !codeOnly {
 		claims = append(claims, "run="+local.Reference)
 	}
 	for _, result := range verified {
 		claims = append(claims, result.Repository+"@"+result.Branch+":"+result.CommitSHA+"/parent="+result.ParentSHA+"/head="+result.RemoteHead)
 	}
+	for _, identity := range allIdentities {
+		claims = append(claims, "repository_node_id="+identity.RepositoryID+":"+identity.NodeID)
+	}
 	kind, source := "remote-local-delivery", "private-reader-and-paced-runner"
 	if foundationOnly {
 		kind, source = "foundation-publication", "private-reader"
+	} else if codeOnly {
+		kind, source = "remote-code-delivery", "private-reader"
 	}
 	return TODOProofReference{Kind: kind, Source: source, Reference: strings.Join(claims, ";"), SourceDigest: sourceHash(data), VerificationState: "verified"}, nil
 }
@@ -406,32 +508,6 @@ func foundationScope(repository string) bool {
 	return repository == "Foundation" || strings.HasSuffix(repository, "_foundation_documentation")
 }
 
-func canonicalImplementationLabel(repository string) string {
-	switch repository {
-	case "Builder":
-		return "belluga_builder_docker"
-	case "PACED":
-		return "delphi-ai"
-	default:
-		return repository
-	}
-}
-
-func implementationBranch(projectID, releaseID, repository string) (string, bool) {
-	if foundationScope(repository) {
-		return "main", true
-	}
-	if projectID == "builder" {
-		if repository == "delphi-ai" || repository == "PACED" {
-			return "builder", true
-		}
-		if (repository == "belluga_builder_docker" || repository == "Builder") && strings.HasPrefix(releaseID, "r-") {
-			return releaseID + "-rc", true
-		}
-	}
-	return "", false
-}
-
 func approvedCommitPath(changed string, scope TODORepositoryScope) bool {
 	if changed == "" || strings.HasPrefix(changed, "/") || strings.Contains(changed, "..") || strings.Contains(changed, "\\") {
 		return false
@@ -453,14 +529,55 @@ func matchesCommitPath(pattern, changed string) bool {
 	if strings.HasSuffix(pattern, "/**") {
 		return strings.HasPrefix(changed, strings.TrimSuffix(pattern, "/**")+"/")
 	}
-	matched, err := path.Match(pattern, changed)
-	return err == nil && matched
+	patternParts := strings.Split(pattern, "/")
+	changedParts := strings.Split(changed, "/")
+	type position struct{ pattern, changed int }
+	memo := make(map[position]bool)
+	visited := make(map[position]bool)
+	var match func(int, int) bool
+	match = func(patternIndex, changedIndex int) bool {
+		at := position{patternIndex, changedIndex}
+		if visited[at] {
+			return memo[at]
+		}
+		visited[at] = true
+		if patternIndex == len(patternParts) {
+			memo[at] = changedIndex == len(changedParts)
+			return memo[at]
+		}
+		if patternParts[patternIndex] == "**" {
+			memo[at] = match(patternIndex+1, changedIndex) || changedIndex < len(changedParts) && match(patternIndex, changedIndex+1)
+			return memo[at]
+		}
+		if changedIndex == len(changedParts) {
+			return false
+		}
+		matched, err := path.Match(patternParts[patternIndex], changedParts[changedIndex])
+		memo[at] = err == nil && matched && match(patternIndex+1, changedIndex+1)
+		return memo[at]
+	}
+	return match(0, 0)
 }
 
-func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID, repository, branch, sha string, mongoV2 bool) (remoteCommitResult, error) {
+func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID, repository, branch, sha string, mongoV2 bool, proofBounds ...string) (remoteCommitResult, error) {
 	q := url.Values{"company_id": {companyID}, "project_id": {projectID}, "repository": {repository}, "branch": {branch}, "commit_sha": {sha}}
 	if mongoV2 {
 		q.Set("todo_authority", "mongo-v2")
+	}
+	if len(proofBounds) > 2 {
+		return remoteCommitResult{}, ErrInvalid
+	}
+	if len(proofBounds) == 1 && proofBounds[0] != "" {
+		if !validGitCommit(proofBounds[0]) || !mongoV2 {
+			return remoteCommitResult{}, ErrInvalid
+		}
+		q.Set("tested_head_sha", proofBounds[0])
+	}
+	if len(proofBounds) == 2 {
+		if proofBounds[0] != "" || !validGitCommit(proofBounds[1]) || !mongoV2 {
+			return remoteCommitResult{}, ErrInvalid
+		}
+		q.Set("baseline_sha", proofBounds[1])
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/commit?"+q.Encode(), nil)
 	if err != nil {
@@ -472,9 +589,12 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 		return remoteCommitResult{}, todoTeach("remote_proof", "retry when the private Reader can verify the remote release branch", ErrUnavailable)
 	}
 	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 32<<10))
-	if err != nil || len(data) == 0 || len(data) >= 32<<10 {
+	data, err := io.ReadAll(io.LimitReader(response.Body, maxRemoteCommitProofBytes+1))
+	if err != nil || len(data) == 0 {
 		return remoteCommitResult{}, ErrUnavailable
+	}
+	if len(data) > maxRemoteCommitProofBytes {
+		return remoteCommitResult{}, todoTeach("remote_proof", "the private Reader commit proof exceeds the bounded response; split the attributable delivery into smaller commits", ErrConflict)
 	}
 	if response.StatusCode != http.StatusOK {
 		var problem struct {
@@ -486,7 +606,7 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 		return remoteCommitResult{}, todoTeach("remote_proof", "verify the commit on the remote release branch", ErrConflict)
 	}
 	var result remoteCommitResult
-	if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.Repository != repository || result.Branch != branch || result.CommitSHA != sha || !validGitCommit(result.RemoteHead) || !validGitCommit(result.ParentSHA) || len(result.Paths) == 0 || result.Outcome != "verified" {
+	if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.Repository != repository || result.Branch != branch || result.CommitSHA != sha || len(proofBounds) == 1 && result.TestedHeadSHA != proofBounds[0] || len(proofBounds) == 2 && result.BaselineSHA != proofBounds[1] || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || !validGitCommit(result.RemoteHead) || !validGitCommit(result.ParentSHA) || len(result.Paths) == 0 || result.Outcome != "verified" {
 		return remoteCommitResult{}, todoTeach("remote_proof", "match the exact repository, branch and attributable commit returned by the private Reader", ErrConflict)
 	}
 	return result, nil

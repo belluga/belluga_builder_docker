@@ -62,6 +62,155 @@ func TestCreateReleaseRouteAcceptsFlatRequestAndUsesEpicPath(t *testing.T) {
 	}
 }
 
+func TestReleaseDeliveryBranchRouteUsesDedicatedBranchAndOwnerFields(t *testing.T) {
+	service := &roadmapChangeCapture{testService: &testService{}}
+	path := "/internal/v1/companies/company-a/projects/builder/roadmap/releases/r-10/delivery-branches"
+	body := `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"branch-op-001","repository_id":"belluga/delphi-ai","branch":"builder","owner_reference":"owner/confirmation"}`
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(body)))
+	if response.Code != http.StatusOK || service.calls != 1 || service.action != "confirm-release-branch" || service.request.ID != "r-10" || service.request.Branch != "builder" || service.request.RepositoryID != "belluga/delphi-ai" {
+		t.Fatalf("branch confirmation response=%d %s; action=%q calls=%d request=%+v", response.Code, response.Body, service.action, service.calls, service.request)
+	}
+	badBody := `{"project_id":"builder","expected_roadmap_revision":3,"operation_id":"branch-op-002","repository_id":"belluga/delphi-ai","delivery_branch":"builder","owner_reference":"owner/confirmation"}`
+	response = httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(badBody)))
+	if response.Code != http.StatusBadRequest || service.calls != 1 || !strings.Contains(response.Body.String(), `"teach":"TEACH: request.delivery_branch `) || !strings.Contains(response.Body.String(), "historical and non-authoritative") {
+		t.Fatalf("legacy branch field was accepted: response=%d %s calls=%d", response.Code, response.Body, service.calls)
+	}
+}
+
+func TestConfirmReleaseBranchRequiresDedicatedAndAttributedRequest(t *testing.T) {
+	revision := int64(3)
+	valid := RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &revision, OperationID: "branch-op-001", ID: "r-10", RepositoryID: "belluga/delphi-ai", Branch: "builder", OwnerReference: "owner/confirmation"}
+	for name, mutate := range map[string]func(*RoadmapChange){
+		"missing repository":      func(request *RoadmapChange) { request.RepositoryID = "" },
+		"missing branch":          func(request *RoadmapChange) { request.Branch = "" },
+		"invalid branch":          func(request *RoadmapChange) { request.Branch = "../main" },
+		"missing owner reference": func(request *RoadmapChange) { request.OwnerReference = "" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			request := valid
+			mutate(&request)
+			if validRoadmapChange("confirm-release-branch", request) {
+				t.Fatalf("invalid branch confirmation accepted: %+v", request)
+			}
+		})
+	}
+}
+
+func TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated replica-set MongoDB fixture not configured")
+	}
+	ctx := context.Background()
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	t.Cleanup(func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+	if _, err := registerTestProjectWithBinding(ctx, store, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "builder", ProjectName: "Builder", Binding: validTestBinding()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ProvisionTODOCollection(ctx, "company-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "builder", ImplementationRepositoryChange{Action: "confirm", ProjectID: "builder", ExpectedRevision: 0, OperationID: "confirm-delivery-repo", Actor: "owner", OwnerReference: "owner/project-set", RepositoryID: "belluga/delphi-ai"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "builder", ImplementationRepositoryChange{Action: "confirm", ProjectID: "builder", ExpectedRevision: 1, OperationID: "confirm-product-repo", Actor: "owner", OwnerReference: "owner/project-set", RepositoryID: "belluga/belluga_builder_docker"}); err != nil {
+		t.Fatal(err)
+	}
+	revision := int64(0)
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "create-epic", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &revision, OperationID: "create-branch-epic", ID: "e-01", Name: "Epic"}); err != nil {
+		t.Fatal(err)
+	}
+	revision = 1
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "create-release", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &revision, OperationID: "create-branch-release", ID: "r-10", EpicID: "e-01", Name: "Release"}); err != nil {
+		t.Fatal(err)
+	}
+	revision = 2
+	branchless, err := store.Roadmap(ctx, "builder", "company-a")
+	if err != nil || !strings.Contains(string(branchless), `"id":"r-10"`) || strings.Contains(string(branchless), `"delivery_branches":[{`) {
+		t.Fatalf("new Release was not readable without a confirmed branch: %s, %v", branchless, err)
+	}
+	branchRequest := RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &revision, OperationID: "confirm-release-branch-001", ID: "r-10", RepositoryID: "belluga/delphi-ai", Branch: "builder", OwnerReference: "owner/release-branch"}
+	unknownRepository := branchRequest
+	unknownRepository.RepositoryID = "belluga/not-confirmed"
+	unknownRepository.OperationID = "unknown-repository-branch"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", unknownRepository); !errors.Is(err, ErrConflict) {
+		t.Fatalf("branch for a repository outside the Project set was accepted: %v", err)
+	}
+	confirmed, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", branchRequest)
+	if err != nil || confirmed.RoadmapRevision != 3 || confirmed.Branch != "builder" {
+		t.Fatalf("first immutable branch confirmation = %+v, %v", confirmed, err)
+	}
+	stale := branchRequest
+	stale.OperationID = "stale-new-branch-operation"
+	stale.RepositoryID = "belluga/belluga_builder_docker"
+	stale.Branch = "r-10-rc"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", stale); !errors.Is(err, ErrConflict) {
+		t.Fatalf("new branch assignment accepted stale Roadmap revision: %v", err)
+	}
+	productRevision := int64(3)
+	productBranch, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &productRevision, OperationID: "confirm-product-release-branch", ID: "r-10", RepositoryID: "belluga/belluga_builder_docker", Branch: "r-10-rc", OwnerReference: "owner/product-release-branch"})
+	if err != nil || productBranch.RoadmapRevision != 4 {
+		t.Fatalf("second repository-specific branch confirmation = %+v, %v", productBranch, err)
+	}
+	interveningRevision := int64(4)
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "create-epic", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &interveningRevision, OperationID: "intervening-roadmap-op", ID: "e-02", Name: "Other Epic"}); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", branchRequest)
+	if err != nil || !retried.NoOp || retried.RoadmapRevision != 5 {
+		t.Fatalf("durable exact retry after intervening Roadmap write = %+v, %v", retried, err)
+	}
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "edit-release", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &interveningRevision, OperationID: branchRequest.OperationID, ID: "r-10", Name: "reused operation", Description: "different action"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("branch operation ID reused by another Roadmap action = %v, want conflict", err)
+	}
+	changed := branchRequest
+	changed.Branch = "different"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused operation ID with changed branch was accepted: %v", err)
+	}
+	changed = branchRequest
+	changed.OwnerReference = "another-owner"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused operation ID with changed owner was accepted: %v", err)
+	}
+	changed = branchRequest
+	changed.RepositoryID = "belluga/belluga_builder_docker"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", changed); !errors.Is(err, ErrConflict) {
+		t.Fatalf("reused operation ID with changed repository was accepted: %v", err)
+	}
+	secondConfirmation := branchRequest
+	currentRevision := int64(5)
+	secondConfirmation.ExpectedRoadmapRevision = &currentRevision
+	secondConfirmation.OperationID = "confirm-release-branch-002"
+	secondConfirmation.Branch = "different"
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", secondConfirmation); !errors.Is(err, ErrConflict) {
+		t.Fatalf("confirmed repository branch was mutable: %v", err)
+	}
+	deletionRevision := int64(5)
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "delete-release", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &deletionRevision, OperationID: "delete-confirmed-release", ID: "r-10"}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("branch-confirmed Release was deletable: %v", err)
+	}
+	data, err := store.Roadmap(ctx, "builder", "company-a")
+	if err != nil || !strings.Contains(string(data), `"delivery_branches":[{"repository_id":"belluga/belluga_builder_docker","branch":"r-10-rc"`) || !strings.Contains(string(data), `"repository_id":"belluga/delphi-ai","branch":"builder"`) {
+		t.Fatalf("Roadmap did not expose the Release-owned branch: %s, %v", data, err)
+	}
+	selected, err := selectedTODOReleaseBranches(ctx, store.client.Database(store.tenantDatabase("company-a")), TODORecord{ProjectID: "builder", ReleaseID: "r-10", DiffExpectation: []TODORepositoryScope{{RepositoryID: "belluga/delphi-ai"}}})
+	if err != nil || len(selected) != 1 || selected[0].RepositoryID != "belluga/delphi-ai" || selected[0].Branch != "builder" {
+		t.Fatalf("exact TODO readback selected unrelated Release branches: %+v, %v", selected, err)
+	}
+}
+
 func TestMongoRoadmapPlanningMutationsAndPlacementShareProjectRevision(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {

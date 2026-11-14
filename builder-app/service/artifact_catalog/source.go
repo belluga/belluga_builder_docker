@@ -69,15 +69,15 @@ func (s *WorkingTree) List(prefix string) ([]Entry, error) {
 	}
 	root, err := s.safePath(prefix)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && prefix == "prototypes" {
-			return nil, ErrMissingCatalog
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, &PathFailure{Path: prefix, Err: ErrNotExist}
 		}
 		return nil, err
 	}
 	info, err := os.Lstat(root)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) && prefix == "prototypes" {
-			return nil, ErrMissingCatalog
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, &PathFailure{Path: prefix, Err: ErrNotExist}
 		}
 		return nil, err
 	}
@@ -430,9 +430,6 @@ func (s *GitTree) List(prefix string) ([]Entry, error) {
 			if entry.Path == prefix && entry.Mode != ModeDirectory {
 				return nil, &PathFailure{Path: prefix, Err: ErrUnsafePath}
 			}
-		}
-		if prefix == "prototypes" {
-			return nil, ErrMissingCatalog
 		}
 		return nil, &PathFailure{Path: prefix, Err: ErrNotExist}
 	}

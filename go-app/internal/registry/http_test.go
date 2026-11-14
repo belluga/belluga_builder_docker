@@ -230,9 +230,6 @@ func (s *testService) Register(_ context.Context, in Registration) (Project, err
 	return Project{ID: in.ProjectID, CompanyID: in.CompanyID}, nil
 }
 func (s *testService) Decline(context.Context, string, string, Binding) error { return nil }
-func (s *testService) UpdateSnapshotReference(_ context.Context, _, id string, _ SnapshotReference) (Project, error) {
-	return Project{ID: id}, nil
-}
 func (s *testService) LifecycleControl(context.Context) (LifecycleControl, error) {
 	return LifecycleControl{Revision: 3, Value: json.RawMessage(`{"state":"started"}`)}, nil
 }
@@ -257,7 +254,7 @@ func TestPrivateRoutesPreserveExplicitEmptyRoadmap(t *testing.T) {
 		{http.MethodGet, "/internal/v1/catalog", "", `"companies":null`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder", "", `"id":"builder"`, http.StatusOK},
 		{http.MethodPost, "/internal/v1/companies/company-1/projects", `{"company_id":"company-1","project_id":"builder"}`, `"id":"builder"`, http.StatusOK},
-		{http.MethodPut, "/internal/v1/companies/company-1/projects/builder/snapshot-reference", `{"company_id":"company-1"}`, `"id":"builder"`, http.StatusOK},
+		{http.MethodPut, "/internal/v1/companies/company-1/projects/builder/snapshot-reference", `{"company_id":"company-1"}`, `404 page not found`, http.StatusNotFound},
 		{http.MethodGet, "/internal/v1/companies/company-1/projects/builder/roadmap", "", `"epics":[]`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/tenants/resolve?type=host&identifier=example.test", "", `"company_id":"company-1"`, http.StatusOK},
 		{http.MethodGet, "/internal/v1/lifecycle-control", "", `"revision":3`, http.StatusOK},
@@ -302,6 +299,30 @@ func TestPrivateAPIRejectsUnknownFieldsAndOversizedBodies(t *testing.T) {
 	}
 }
 
+func TestTODOContentEditUnknownFieldReturnsActionableTeach(t *testing.T) {
+	handler := NewHandler(&MongoStore{})
+	request := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/unifast/projects/accountzz/todos/todo-1/content", strings.NewReader(`{"project_id":"accountzz","todo_id":"todo-1","expected_revision":16,"operation_id":"invalid-edit","reason":"diagnose contract","new_content":{}}`))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	var body errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusBadRequest || !strings.Contains(body.Teach, "request.new_content") || !strings.Contains(body.Teach, "use content for the authored TODO fields") {
+		t.Fatalf("unknown field response = %d %+v", response.Code, body)
+	}
+	missing := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/unifast/projects/accountzz/todos/todo-1/content", strings.NewReader(`{"project_id":"accountzz","todo_id":"todo-1","expected_revision":16,"operation_id":"missing-edit","reason":"diagnose contract"}`))
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	var missingBody errorResponse
+	if err := json.Unmarshal(missingResponse.Body.Bytes(), &missingBody); err != nil {
+		t.Fatal(err)
+	}
+	if missingResponse.Code != http.StatusBadRequest || !strings.Contains(missingBody.Teach, "content must provide") {
+		t.Fatalf("missing content response = %d %+v", missingResponse.Code, missingBody)
+	}
+}
+
 func TestPrivateAPIRejectsCompanyMismatchBeforeRegister(t *testing.T) {
 	service := &testService{}
 	req := httptest.NewRequest(http.MethodPost, "/internal/v1/companies/company-a/projects", strings.NewReader(`{"company_id":"company-b","project_id":"project-a"}`))
@@ -338,6 +359,7 @@ type testSelectedTODOLifecycle struct {
 	*testService
 	readCalls       int
 	transitionCalls int
+	transitionErr   error
 	verifyCalls     int
 	verifyRequest   *VerifyCurrentTODOStageRequest
 	readRevision    *int64
@@ -350,11 +372,14 @@ func (s *testSelectedTODOLifecycle) ReadTODO(_ context.Context, companyID, proje
 	if s.readErr != nil {
 		return TODOReadResponse{}, s.readErr
 	}
-	return TODOReadResponse{CompanyID: companyID, ProjectID: projectID, SnapshotFingerprint: "fingerprint", TODO: TODORecord{ID: todoID, ProjectID: projectID, Stage: "Completed", StageVerification: "unverified", Revision: 4}, TODORevision: 4}, nil
+	return TODOReadResponse{CompanyID: companyID, ProjectID: projectID, TODO: TODORecord{ID: todoID, ProjectID: projectID, Stage: "Completed", StageVerification: "unverified", Revision: 4}, TODORevision: 4}, nil
 }
 
 func (s *testSelectedTODOLifecycle) TransitionTODO(_ context.Context, _ string, _ TODOActionRequest) (TODOActionResponse, error) {
 	s.transitionCalls++
+	if s.transitionErr != nil {
+		return TODOActionResponse{}, s.transitionErr
+	}
 	return TODOActionResponse{}, todoTeach("requested_stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
 }
 
@@ -364,12 +389,43 @@ func (s *testSelectedTODOLifecycle) VerifyCurrentTODOStage(_ context.Context, co
 	return TODOActionResponse{}, todoTeach("verify-current-stage", "require a deterministic Go proof guard defined and approved in a later TODO; this operation is unavailable and no write occurred", ErrConflict)
 }
 
+func TestTODOBodyLimitReturnsActionable413OnBothDecoderReads(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"first read", `{"value":"` + strings.Repeat("a", 128) + `"}`},
+		{"trailing read", `{}` + strings.Repeat(" ", 128)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &Handler{}
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/todo", strings.NewReader(tc.body))
+			var payload map[string]any
+			if h.decodeTODOLimit(recorder, request, &payload, 128) {
+				t.Fatal("oversized TODO body was accepted")
+			}
+			if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), `"error":"request_too_large"`) || !strings.Contains(recorder.Body.String(), "request.body") || !strings.Contains(recorder.Body.String(), "128-byte") {
+				t.Fatalf("wrong TODO limit response: status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+	generic := httptest.NewRecorder()
+	if (&Handler{}).decodeLimit(generic, httptest.NewRequest(http.MethodPost, "/other", strings.NewReader(`{"value":"`+strings.Repeat("a", 128)+`"}`)), new(map[string]any), 128) || generic.Code != http.StatusBadRequest {
+		t.Fatal("non-TODO route changed its existing invalid-body response")
+	}
+	malformed := httptest.NewRecorder()
+	if (&Handler{}).decodeTODOLimit(malformed, httptest.NewRequest(http.MethodPost, "/todo", strings.NewReader(`{"value":`)), new(map[string]any), 128) || malformed.Code != http.StatusBadRequest {
+		t.Fatal("malformed JSON was mistaken for an oversized TODO request")
+	}
+}
+
 func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	service := &testSelectedTODOLifecycle{testService: &testService{}}
 	handler := NewHandler(service)
 	read := httptest.NewRecorder()
 	handler.ServeHTTP(read, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/belluga-solutions/projects/boora/todos/t-b9e3ea9e3a616b01?todo_revision=4", nil))
-	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"todo_revision":4`) || !strings.Contains(read.Body.String(), `"snapshot_fingerprint":"fingerprint"`) || service.readCalls != 1 || service.readRevision == nil || *service.readRevision != 4 {
+	if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"todo_revision":4`) || strings.Contains(read.Body.String(), `"snapshot_fingerprint"`) || service.readCalls != 1 || service.readRevision == nil || *service.readRevision != 4 {
 		t.Fatalf("exact TODO read = %d %s; calls=%d revision=%v", read.Code, read.Body.String(), service.readCalls, service.readRevision)
 	}
 
@@ -406,5 +462,18 @@ func TestMigratedTODOPrivateReadAndConditionalRoutes(t *testing.T) {
 	handler.ServeHTTP(reapproval, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/verify-current-stage", strings.NewReader(body)))
 	if reapproval.Code != http.StatusConflict || service.verifyCalls != 2 || service.verifyRequest == nil || len(service.verifyRequest.ProofReferences) != 1 || service.verifyRequest.ProofReferences[0].Reference != "builder/todo-a/content/7" {
 		t.Fatalf("current-content verification request was not passed through to the deterministic verifier: %d %s request=%+v calls=%d", reapproval.Code, reapproval.Body.String(), service.verifyRequest, service.verifyCalls)
+	}
+}
+
+func TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP(t *testing.T) {
+	service := &testSelectedTODOLifecycle{
+		testService:   &testService{},
+		transitionErr: todoTeach("proof_refs.criterion:criterion-build.source", "be exactly paced-local-runner for PACED command evidence", ErrConflict),
+	}
+	body := `{"project_id":"builder","todo_id":"todo-a","expected_revision":7,"operation_id":"local-run-7","requested_stage":"Local-Implemented","proof_refs":[],"waiver_refs":[],"local_proof":{"schema_version":"builder-local-proof-result-v3"}}`
+	response := httptest.NewRecorder()
+	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/transition", strings.NewReader(body)))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || service.transitionCalls != 1 {
+		t.Fatalf("field-specific local proof TEACH was not surfaced by HTTP: %d %s calls=%d", response.Code, response.Body.String(), service.transitionCalls)
 	}
 }

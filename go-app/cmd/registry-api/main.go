@@ -70,9 +70,6 @@ func main() {
 	if err := store.ConfigureProofReader(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_TOKEN"))); err != nil {
 		log.Fatal("private proof Reader is unavailable")
 	}
-	if err := store.ConfigureLocalMatrix(strings.TrimSpace(os.Getenv("LOCAL_PROOF_MATRIX"))); err != nil {
-		log.Fatal("local proof matrix is unavailable")
-	}
 	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_STATE_ROOT")); stateRoot != "" {
 		if err := store.ConfigureDesignSystemSourceMapRoot(stateRoot); err != nil {
 			log.Fatal("private Design System source-map state is unavailable")
@@ -83,12 +80,7 @@ func main() {
 	if address == "" {
 		address = "0.0.0.0:8080"
 	}
-	server := &http.Server{
-		Addr: address, Handler: registry.NewHandler(store),
-		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
-		WriteTimeout: 20 * time.Second, IdleTimeout: 60 * time.Second,
-		MaxHeaderBytes: 16 << 10,
-	}
+	server := newRegistryServer(address, registry.NewHandler(store))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	serveError := make(chan error, 1)
@@ -104,6 +96,15 @@ func main() {
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatal("registry API failed")
 		}
+	}
+}
+
+func newRegistryServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr: address, Handler: handler,
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 110 * time.Second, IdleTimeout: 60 * time.Second,
+		MaxHeaderBytes: 16 << 10,
 	}
 }
 

@@ -142,13 +142,22 @@ func TestProjectSerializationHasNoPerProjectRoadmapAuthority(t *testing.T) {
 	}
 }
 
-func TestSnapshotReferenceDoesNotAcceptArtifactInventory(t *testing.T) {
-	data := []byte(`{"company_id":"company-a","binding_digest":"sha256:abc","fingerprint":"abc","artifacts":[{"id":"landing"}]}`)
-	var reference SnapshotReference
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&reference); err == nil {
-		t.Fatal("snapshot reference accepted artifact inventory")
+func TestProjectAPIOmitsHistoricalSnapshotField(t *testing.T) {
+	document := projectDocument{ID: "builder", CompanyID: "belluga", Name: "Builder", RegisteredAt: time.Now().UTC(), SnapshotFingerprint: "legacy-fingerprint"}
+	encodedDocument, err := bson.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored bson.M
+	if err := bson.Unmarshal(encodedDocument, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored["snapshot_fingerprint"] != "legacy-fingerprint" {
+		t.Fatalf("historical snapshot field was not retained in private Mongo projection: %v", stored["snapshot_fingerprint"])
+	}
+	encodedAPI, err := json.Marshal(document.toAPI())
+	if err != nil || bytes.Contains(encodedAPI, []byte("snapshot_fingerprint")) {
+		t.Fatalf("Project API exposed historical snapshot field: %s, %v", encodedAPI, err)
 	}
 }
 
@@ -764,10 +773,18 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "other", ProjectID: "shared", ProjectName: "Shared"}); err != ErrConflict {
 		t.Fatalf("conflicting Company: %v", err)
 	}
-	const fingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	updated, err := store.UpdateSnapshotReference(ctx, "company-a", "shared", SnapshotReference{CompanyID: "company-a", BindingRevision: 1, BindingDigest: bindingDigest(validTestBinding()), ExpectedFingerprint: "", Fingerprint: fingerprint, PreparationState: "ready"})
-	if err != nil || updated.SnapshotFingerprint != fingerprint {
-		t.Fatalf("snapshot pointer update = %+v, %v", updated, err)
+	const historicalFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	projectCollection := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection)
+	if _, err := projectCollection.UpdateOne(ctx, bson.M{"id": "shared"}, bson.M{"$set": bson.M{"snapshot_fingerprint": historicalFingerprint}}); err != nil {
+		t.Fatalf("seed historical snapshot field: %v", err)
+	}
+	apiProject, err := store.Project(ctx, "company-a", "shared")
+	if err != nil {
+		t.Fatalf("read Project with historical snapshot field: %v", err)
+	}
+	apiBytes, err := json.Marshal(apiProject)
+	if err != nil || strings.Contains(string(apiBytes), "snapshot_fingerprint") {
+		t.Fatalf("Project API exposed historical snapshot field: %s, %v", apiBytes, err)
 	}
 	changedBinding := validTestBinding()
 	changedBinding.DockerRepositoryID = "belluga/docker"
@@ -776,8 +793,23 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 		t.Fatalf("registration accepted a repository binding: %v", err)
 	}
 	genesis, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"})
-	if err != nil || genesis.Binding != nil || genesis.SnapshotFingerprint != "" {
+	if err != nil || genesis.Binding != nil {
 		t.Fatalf("Genesis registration: %+v, %v", genesis, err)
+	}
+	if _, err := projectCollection.UpdateOne(ctx, bson.M{"id": "genesis"}, bson.M{"$set": bson.M{"snapshot_fingerprint": historicalFingerprint}}); err != nil {
+		t.Fatalf("seed Genesis historical snapshot field: %v", err)
+	}
+	assertHistoricalFingerprint := func(label string) {
+		t.Helper()
+		var stored bson.M
+		if err := projectCollection.FindOne(ctx, bson.M{"id": "genesis"}).Decode(&stored); err != nil || stored["snapshot_fingerprint"] != historicalFingerprint {
+			t.Fatalf("%s changed historical snapshot field: got=%v err=%v", label, stored["snapshot_fingerprint"], err)
+		}
+		project, err := store.Project(ctx, "company-a", "genesis")
+		encoded, marshalErr := json.Marshal(project)
+		if err != nil || marshalErr != nil || strings.Contains(string(encoded), "snapshot_fingerprint") {
+			t.Fatalf("%s exposed historical snapshot field in Project API: %s err=%v marshalErr=%v", label, encoded, err, marshalErr)
+		}
 	}
 	if retry, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"}); err != nil || retry.Binding != nil {
 		t.Fatalf("Genesis retry: %+v, %v", retry, err)
@@ -791,6 +823,7 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	if err != nil || bound.Binding == nil || bound.BindingRevision != 1 || *bound.Binding != first.Binding {
 		t.Fatalf("first binding: %+v, %v", bound, err)
 	}
+	assertHistoricalFingerprint("first binding")
 	if retry, err := store.BindFirst(ctx, "company-a", "genesis", first); err != nil || retry.BindingRevision != 1 {
 		t.Fatalf("first binding retry: %+v, %v", retry, err)
 	}
@@ -802,19 +835,10 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	if retry, err := store.ChangeRepositoryBinding(ctx, "company-a", "genesis", repositoryRequest); err != nil || retry != configured {
 		t.Fatalf("repository exact retry: %+v, %v", retry, err)
 	}
+	assertHistoricalFingerprint("repository replace")
 	projectAfterReplace, err := store.Project(ctx, "company-a", "genesis")
 	if err != nil || projectAfterReplace.Binding == nil || !projectAfterReplace.Binding.LegacyFoundationSourceDisabled || projectAfterReplace.Binding.SourceBindingsPath != first.Binding.SourceBindingsPath || projectAfterReplace.Binding.SourceBindingsStatePath != first.Binding.SourceBindingsStatePath || projectAfterReplace.Binding.SourceBindingsDigest != first.Binding.SourceBindingsDigest {
 		t.Fatalf("repository replace did not persist legacy-source fence and independent metadata: %+v, %v", projectAfterReplace, err)
-	}
-	staleSnapshot := SnapshotReference{CompanyID: "company-a", BindingRevision: 1, BindingDigest: bindingDigest(first.Binding), ExpectedFingerprint: "", Fingerprint: fingerprint, PreparationState: "ready"}
-	if _, err := store.UpdateSnapshotReference(ctx, "company-a", "genesis", staleSnapshot); err != ErrConflict {
-		t.Fatalf("stale snapshot pointer accepted after repository replace: %v", err)
-	}
-	currentSnapshot := staleSnapshot
-	currentSnapshot.BindingRevision = 2
-	currentSnapshot.BindingDigest = bindingDigest(*projectAfterReplace.Binding)
-	if updated, err := store.UpdateSnapshotReference(ctx, "company-a", "genesis", currentSnapshot); err != nil || updated.SnapshotFingerprint != fingerprint {
-		t.Fatalf("current snapshot pointer rejected: %+v, %v", updated, err)
 	}
 	if _, err := store.ChangeRepositoryBinding(ctx, "company-a", "genesis", RepositoryBindingRequest{Action: "bind", ProjectID: "genesis", ExpectedRevision: 2, OperationID: "wrong-state-bind", Actor: "owner", RepositoryID: "belluga/other", Branch: "main"}); !errors.Is(err, ErrConflict) || err == nil || !strings.Contains(err.Error(), "TEACH:") {
 		t.Fatalf("bind on configured Project did not return actionable conflict: %v", err)
@@ -833,9 +857,10 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	if err != nil || unbound.State != "absent" || unbound.Revision != 3 {
 		t.Fatalf("repository unbind: %+v, %v", unbound, err)
 	}
+	assertHistoricalFingerprint("repository unbind")
 	projectAfterUnbind, err := store.Project(ctx, "company-a", "genesis")
-	if err != nil || projectAfterUnbind.Binding == nil || !projectAfterUnbind.Binding.LegacyFoundationSourceDisabled || projectAfterUnbind.SnapshotFingerprint != "" {
-		t.Fatalf("repository unbind did not retain the legacy-source fence or clear the snapshot: %+v, %v", projectAfterUnbind, err)
+	if err != nil || projectAfterUnbind.Binding == nil || !projectAfterUnbind.Binding.LegacyFoundationSourceDisabled {
+		t.Fatalf("repository unbind did not retain the legacy-source fence: %+v, %v", projectAfterUnbind, err)
 	}
 	if _, err := store.ChangeRepositoryBinding(ctx, "company-a", "genesis", RepositoryBindingRequest{Action: "bind", ProjectID: "genesis", ExpectedRevision: 3, OperationID: "bind-after-unbind", Actor: "owner", RepositoryID: "belluga/next-repo", Branch: "main"}); err != nil {
 		t.Fatalf("bind after unbind: %v", err)
@@ -844,18 +869,13 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	if err != nil || projectAfterRebind.BindingRevision != 4 || projectAfterRebind.Binding == nil || projectAfterRebind.Binding.DockerRepositoryID != first.Binding.DockerRepositoryID || !projectAfterRebind.Binding.LegacyFoundationSourceDisabled {
 		t.Fatalf("repository rebind lost independent metadata: %+v, %v", projectAfterRebind, err)
 	}
-	if _, err := store.UpdateSnapshotReference(ctx, "company-a", "genesis", currentSnapshot); err != ErrConflict {
-		t.Fatalf("stale snapshot pointer accepted after repository rebind: %v", err)
-	}
+	assertHistoricalFingerprint("repository rebind")
 	first.OperationID = "conflicting-binding"
 	if _, err := store.BindFirst(ctx, "company-a", "genesis", first); err != ErrConflict {
 		t.Fatalf("first binding accepted a new operation: %v", err)
 	}
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "genesis", ProjectName: "Genesis"}); err != nil {
 		t.Fatalf("identity retry after binding: %v", err)
-	}
-	if _, err := store.UpdateSnapshotReference(ctx, "company-b", "shared", SnapshotReference{CompanyID: "company-a", BindingDigest: bindingDigest(validTestBinding()), Fingerprint: fingerprint, PreparationState: "ready"}); err != ErrInvalid {
-		t.Fatalf("mismatched snapshot Company: %v", err)
 	}
 	catalog, err := store.Catalog(ctx)
 	if err != nil || len(catalog.Projects) != 5 {

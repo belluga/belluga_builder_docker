@@ -2,6 +2,8 @@
 !go-app/
 !go-app/go.mod
 !go-app/go.sum
+!go-app/vendor/
+!go-app/vendor/**
 !go-app/cmd/
 !go-app/cmd/**
 !go-app/internal/

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -28,6 +29,7 @@ const (
 	lifecycleControlCollection = "lifecycle_control"
 	preferencesCollection      = "registration_preferences"
 	projectsCollection         = "projects"
+	sessionsCollection         = "sessions"
 	epicsCollection            = "roadmap_epics"
 	releasesCollection         = "roadmap_releases"
 	operationTimeout           = 15 * time.Second
@@ -37,17 +39,29 @@ const (
 var mongoDatabaseName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
 type MongoStore struct {
-	client                    *mongo.Client
-	control                   *mongo.Database
-	beforeProjectWrite        func() error
-	beforeSnapshotWrite       func() error
-	tenantPrefix              string
-	proofReaderURL            string
-	proofReaderToken          string
-	proofHTTPClient           *http.Client
-	localMatrix               *localProofMatrix
-	designSystemVerifier      designSystemRemoteVerifier
-	designSystemSourceMapRoot string
+	client                           *mongo.Client
+	control                          *mongo.Database
+	beforeProjectWrite               func() error
+	tenantPrefix                     string
+	proofReaderURL                   string
+	proofReaderToken                 string
+	proofHTTPClient                  *http.Client
+	designSystemVerifier             designSystemRemoteVerifier
+	prototypeGit                     prototypeGitReader
+	prototypeFileCache               *prototypeFileCache
+	prototypeHot                     *prototypeHotCache
+	prototypeReady                   sync.Map
+	knowledgeProofIndex              sync.Map
+	landingMu                        sync.Mutex
+	landingCatalogs                  map[string]LandingCatalogResponse
+	landingOrder                     []string
+	portfolioMu                      sync.Mutex
+	portfolioFiles                   map[string]map[string]portfolioCachedFile
+	landingBindingReader             func(context.Context, string, string) (RepositoryBinding, error)
+	landingManifestReader            func(context.Context, string, string) (CanonicalManifest, error)
+	prototypeIdentityReader          func(context.Context, string, string) (Project, error)
+	prototypeCanonicalManifestReader func(context.Context, string, string) (CanonicalManifest, error)
+	designSystemSourceMapRoot        string
 }
 
 func (m *MongoStore) ConfigureDesignSystemSourceMapRoot(root string) error {
@@ -73,33 +87,38 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 	return nil
 }
 
-const maxSnapshotReferenceBytes = 128 << 10
+const maxProjectDocumentBytes = 128 << 10
 
 type projectDocument struct {
-	ObjectID                    bson.ObjectID               `bson:"_id,omitempty"`
-	ID                          string                      `bson:"id"`
-	Name                        string                      `bson:"name"`
-	CompanyID                   string                      `bson:"company_id"`
-	RoadmapRevision             int64                       `bson:"roadmap_revision,omitempty"`
-	RoadmapLastOperation        *roadmapOperation           `bson:"roadmap_last_operation,omitempty"`
-	Binding                     *Binding                    `bson:"binding,omitempty"`
-	BindingRevision             int64                       `bson:"binding_revision,omitempty"`
-	BindingOperation            string                      `bson:"binding_operation,omitempty"`
-	BindingActor                string                      `bson:"binding_actor,omitempty"`
-	BindingRequestDigest        string                      `bson:"binding_request_digest,omitempty"`
-	PendingDesignSystemMutation *DesignSystemMutationIntent `bson:"pending_design_system_mutation,omitempty"`
-	DesignSystemState           string                      `bson:"design_system_state,omitempty"`
-	DesignSystemSHA             string                      `bson:"design_system_sha,omitempty"`
-	DesignSystemInventoryDigest string                      `bson:"design_system_inventory_digest,omitempty"`
-	DesignSystemLastOperation   *DesignSystemMutationResult `bson:"design_system_last_operation,omitempty"`
-	OverviewRevision            int64                       `bson:"overview_revision,omitempty"`
-	OverviewOperation           string                      `bson:"overview_operation,omitempty"`
-	OverviewDigest              string                      `bson:"overview_digest,omitempty"`
-	RegisteredAt                time.Time                   `bson:"registered_at"`
-	PreparationState            string                      `bson:"preparation_state"`
-	PreparationDiagnostic       string                      `bson:"preparation_diagnostic,omitempty"`
-	SnapshotFingerprint         string                      `bson:"snapshot_fingerprint,omitempty"`
-	KnowledgeGenerationID       string                      `bson:"knowledge_generation_id,omitempty"`
+	ObjectID                                bson.ObjectID                          `bson:"_id,omitempty"`
+	ID                                      string                                 `bson:"id"`
+	Name                                    string                                 `bson:"name"`
+	CompanyID                               string                                 `bson:"company_id"`
+	RoadmapRevision                         int64                                  `bson:"roadmap_revision,omitempty"`
+	RoadmapLastOperation                    *roadmapOperation                      `bson:"roadmap_last_operation,omitempty"`
+	Binding                                 *Binding                               `bson:"binding,omitempty"`
+	BindingRevision                         int64                                  `bson:"binding_revision,omitempty"`
+	BindingOperation                        string                                 `bson:"binding_operation,omitempty"`
+	BindingActor                            string                                 `bson:"binding_actor,omitempty"`
+	BindingRequestDigest                    string                                 `bson:"binding_request_digest,omitempty"`
+	ImplementationRepositories              []string                               `bson:"implementation_repositories,omitempty"`
+	ImplementationRepositoryConfirmations   []ImplementationRepositoryConfirmation `bson:"implementation_repository_confirmations,omitempty"`
+	ImplementationRepositoriesRevision      int64                                  `bson:"implementation_repositories_revision,omitempty"`
+	ImplementationRepositoriesLastOperation *implementationRepositoryOperation     `bson:"implementation_repositories_last_operation,omitempty"`
+	PendingDesignSystemMutation             *DesignSystemMutationIntent            `bson:"pending_design_system_mutation,omitempty"`
+	DesignSystemState                       string                                 `bson:"design_system_state,omitempty"`
+	DesignSystemSHA                         string                                 `bson:"design_system_sha,omitempty"`
+	DesignSystemInventoryDigest             string                                 `bson:"design_system_inventory_digest,omitempty"`
+	DesignSystemLastOperation               *DesignSystemMutationResult            `bson:"design_system_last_operation,omitempty"`
+	OverviewRevision                        int64                                  `bson:"overview_revision,omitempty"`
+	OverviewOperation                       string                                 `bson:"overview_operation,omitempty"`
+	OverviewDigest                          string                                 `bson:"overview_digest,omitempty"`
+	RegisteredAt                            time.Time                              `bson:"registered_at"`
+	PreparationState                        string                                 `bson:"preparation_state"`
+	PreparationDiagnostic                   string                                 `bson:"preparation_diagnostic,omitempty"`
+	SnapshotFingerprint                     string                                 `bson:"snapshot_fingerprint,omitempty"`
+	KnowledgeGenerationID                   string                                 `bson:"knowledge_generation_id,omitempty"`
+	CanonicalWriteEpoch                     int64                                  `bson:"canonical_write_epoch,omitempty"`
 }
 
 type preferenceDocument struct {
@@ -139,15 +158,16 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 		ObjectID: objectID, ID: project.ID, Name: project.Name, CompanyID: project.CompanyID,
 		RoadmapRevision: project.RoadmapRevision, BindingRevision: project.BindingRevision,
 		RegisteredAt: time.UnixMilli(registeredAt.UnixMilli()).UTC(), PreparationState: project.PreparationState,
-		PreparationDiagnostic: project.PreparationDiagnostic, SnapshotFingerprint: project.SnapshotFingerprint,
+		PreparationDiagnostic: project.PreparationDiagnostic,
 		KnowledgeGenerationID: project.KnowledgeGenerationID,
+		CanonicalWriteEpoch:   project.CanonicalWriteEpoch,
 	}
 	if project.Binding != nil && !validBinding(*project.Binding) {
 		return projectDocument{}, ErrInvalid
 	}
 	document.Binding = project.Binding
 	encoded, err := bson.Marshal(document)
-	if err != nil || len(encoded) > maxSnapshotReferenceBytes {
+	if err != nil || len(encoded) > maxProjectDocumentBytes {
 		return projectDocument{}, ErrInvalid
 	}
 	return document, nil
@@ -161,7 +181,8 @@ func (p projectDocument) toAPI() Project {
 		BindingRevision:  p.BindingRevision,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
-		SnapshotFingerprint: p.SnapshotFingerprint, KnowledgeGenerationID: p.KnowledgeGenerationID,
+		KnowledgeGenerationID: p.KnowledgeGenerationID,
+		CanonicalWriteEpoch:   p.CanonicalWriteEpoch,
 	}
 }
 
@@ -242,7 +263,8 @@ func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
 	}
-	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier()}
+	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }, prototypeCacheRoot: os.Getenv("DELPHI_PROTOTYPE_GIT_CACHE_ROOT")}
+	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier(), prototypeGit: prototypeGit, prototypeFileCache: newPrototypeFileCache(), prototypeHot: newPrototypeHotCache()}
 	if err := store.ensureControlIndexes(pingCtx); err != nil {
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
@@ -445,7 +467,7 @@ func (m *MongoStore) BindFirst(ctx context.Context, companyID, id string, input 
 		{Key: "binding", Value: bson.M{"$eq": nil}},
 		{Key: "binding_revision", Value: bson.M{"$in": []any{nil, int64(0)}}}}
 	update := bson.M{"$set": bson.M{"binding": input.Binding, "binding_revision": int64(1),
-		"binding_operation": input.OperationID, "preparation_state": "not_ready", "snapshot_fingerprint": ""}}
+		"binding_operation": input.OperationID, "preparation_state": "not_ready"}}
 	result, err := collection.UpdateOne(ctx, filter, update)
 	if err != nil {
 		return Project{}, normalizeMongoError(err)
@@ -562,7 +584,7 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		filter = append(filter, bson.E{Key: "binding", Value: *stored.Binding})
 	}
 	filter = append(filter, bson.E{Key: "pending_design_system_mutation", Value: bson.M{"$exists": false}})
-	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": "", "snapshot_fingerprint": ""}
+	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": ""}
 	if input.Action == "unbind" {
 		set["design_system_state"] = "unbound"
 	} else {
@@ -693,48 +715,6 @@ func (m *MongoStore) Preference(ctx context.Context, companyID, id string) (Pref
 		return Preference{}, ErrUnavailable
 	}
 	return stored.toAPI(), nil
-}
-
-func (m *MongoStore) UpdateSnapshotReference(ctx context.Context, companyID, id string, input SnapshotReference) (Project, error) {
-	if !validID(id) || !validID(companyID) || companyID != input.CompanyID || !validSnapshotFingerprint(input.Fingerprint) || !validFingerprint(input.BindingDigest) || !validSnapshotState(input.PreparationState) {
-		return Project{}, ErrInvalid
-	}
-	project, err := m.Project(ctx, companyID, id)
-	if err != nil {
-		return Project{}, err
-	}
-	if project.CompanyID != input.CompanyID || project.Binding == nil || project.BindingRevision != input.BindingRevision || bindingDigest(*project.Binding) != input.BindingDigest || project.SnapshotFingerprint != input.ExpectedFingerprint {
-		return Project{}, ErrConflict
-	}
-	company, err := m.company(ctx, project.CompanyID)
-	if err != nil {
-		return Project{}, err
-	}
-	filter := bson.D{{Key: "id", Value: id}, {Key: "company_id", Value: input.CompanyID}, {Key: "binding", Value: *project.Binding}}
-	if input.BindingRevision == 0 {
-		filter = append(filter, bson.E{Key: "binding_revision", Value: bson.M{"$in": []any{nil, int64(0)}}})
-	} else {
-		filter = append(filter, bson.E{Key: "binding_revision", Value: input.BindingRevision})
-	}
-	if input.ExpectedFingerprint == "" {
-		filter = append(filter, bson.E{Key: "snapshot_fingerprint", Value: bson.M{"$in": []any{"", nil}}})
-	} else {
-		filter = append(filter, bson.E{Key: "snapshot_fingerprint", Value: input.ExpectedFingerprint})
-	}
-	update := bson.M{"$set": bson.M{"snapshot_fingerprint": input.Fingerprint, "preparation_state": input.PreparationState}}
-	if m.beforeSnapshotWrite != nil {
-		if err := m.beforeSnapshotWrite(); err != nil {
-			return Project{}, err
-		}
-	}
-	result, err := m.client.Database(company.DatabaseName).Collection(projectsCollection).UpdateOne(ctx, filter, update)
-	if err != nil {
-		return Project{}, normalizeMongoError(err)
-	}
-	if result.MatchedCount != 1 {
-		return Project{}, ErrConflict
-	}
-	return m.readProject(ctx, company, id)
 }
 
 func (m *MongoStore) LifecycleControl(ctx context.Context) (LifecycleControl, error) {
@@ -949,6 +929,8 @@ func (m *MongoStore) ensureControlIndexes(ctx context.Context) error {
 		{companiesCollection, bson.D{{Key: "domain_keys", Value: 1}}, "companies_domain_unique", bson.M{"domain_keys": bson.M{"$exists": true}}},
 		{companiesCollection, bson.D{{Key: "app_keys", Value: 1}}, "companies_app_unique", bson.M{"app_keys": bson.M{"$exists": true}}},
 		{lifecycleControlCollection, bson.D{{Key: "key", Value: 1}}, "lifecycle_control_key_unique", bson.M{"key": bson.M{"$type": "string"}}},
+		{sessionsCollection, bson.D{{Key: "type", Value: 1}, {Key: "external_id", Value: 1}}, "sessions_external_identity_unique", bson.M{"type": bson.M{"$type": "string"}, "external_id": bson.M{"$type": "string"}}},
+		{sessionsCollection, bson.D{{Key: "binding.company_id", Value: 1}, {Key: "binding.project_id", Value: 1}, {Key: "_id", Value: 1}}, "sessions_project_listing", bson.M{"binding.company_id": bson.M{"$type": "string"}, "binding.project_id": bson.M{"$type": "string"}}},
 	}
 	for _, item := range indexes {
 		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true).SetPartialFilterExpression(item.partial)}
@@ -970,9 +952,6 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 		{preferencesCollection, bson.D{{Key: "project_id", Value: 1}}, "registration_preferences_project_unique", bson.M{"project_id": bson.M{"$type": "string"}}},
 		{epicsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "id", Value: 1}}, "roadmap_epic_identity_unique", bson.M{"id": bson.M{"$type": "string"}}},
 		{releasesCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "id", Value: 1}}, "roadmap_release_identity_unique", bson.M{"id": bson.M{"$type": "string"}}},
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "revision", Value: 1}}, "overview_project_revision_unique", nil},
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}}, "overview_project_operation_unique", nil},
-		{overviewMediaCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "slot", Value: 1}}, "overview_project_operation_slot_unique", nil},
 	}
 	for _, item := range indexes {
 		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true).SetPartialFilterExpression(item.partial)}
@@ -980,7 +959,13 @@ func (m *MongoStore) ensureTenantIndexes(ctx context.Context, database string) e
 			return err
 		}
 	}
-	return m.ensureCanonicalCollections(ctx, database)
+	if err := m.ensureOverviewIndexes(ctx, m.client.Database(database)); err != nil {
+		return err
+	}
+	if err := m.ensureCanonicalCollections(ctx, database); err != nil {
+		return err
+	}
+	return m.ensurePrototypeCollections(ctx, database)
 }
 
 func sanitizeProject(project Project) Project { project.Binding = nil; return project }

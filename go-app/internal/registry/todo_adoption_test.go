@@ -223,12 +223,20 @@ func TestTODOValidatorRecognizesPinnedMVPParentCombinationOnly(t *testing.T) {
 func TestTODOValidatorRecognizesImmediateAdministrativePredecessor(t *testing.T) {
 	previous := TODOCollectionValidatorBeforeAdministrativeAcceptance()
 	encoded, err := bson.Marshal(previous)
-	if err != nil { t.Fatal(err) }
-	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("deployed strict validator before administrative acceptance was not recognized") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("deployed strict validator before administrative acceptance was not recognized")
+	}
 	unknown := withoutBSONFieldsAtPath(previous, []string{"$jsonSchema", "properties"}, "source")
 	encoded, err = bson.Marshal(unknown)
-	if err != nil { t.Fatal(err) }
-	if recognizedTODOCollectionValidator(bson.Raw(encoded)) { t.Fatal("unrelated validator relaxation was accepted") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recognizedTODOCollectionValidator(bson.Raw(encoded)) {
+		t.Fatal("unrelated validator relaxation was accepted")
+	}
 }
 
 func TestEvidenceCapacityUpgradeRecognizesOnlyPriorStrictValidator(t *testing.T) {
@@ -551,13 +559,19 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 	activeProof := TODOProofReference{Kind: "work-started", Source: "mongo-todo-api", Reference: fmt.Sprintf("boora/%s/content/0/revision/1", record.ID), SourceDigest: sourceVersion.Digest, VerificationState: "verified"}
 	activeRecord := convertedRead.TODO
 	activeRecord.Stage, activeRecord.StageVerification, activeRecord.VerifiedTransitionRef = "In-Progress", "verified", &activeProof
+	for _, criterion := range activeRecord.Content.Criteria {
+		activeRecord.ProofReferences = append(activeRecord.ProofReferences, TODOProofReference{Kind: "criterion:" + criterion.ID, Source: "external-evidence", Reference: "fixture/" + criterion.ID, SourceDigest: convertedRead.ContentDigest, VerificationState: "unverified"})
+	}
+	for _, scenario := range activeRecord.Content.ValidationScenarios {
+		activeRecord.ProofReferences = append(activeRecord.ProofReferences, TODOProofReference{Kind: "scenario:" + scenario.ID, Source: "external-evidence", Reference: "fixture/" + scenario.ID, SourceDigest: convertedRead.ContentDigest, VerificationState: "unverified"})
+	}
 	if err := requireApprovedCurrentContent(activeRecord, convertedRead.ContentDigest); err == nil {
 		t.Fatal("migration-carried v1 approval authorized a new v2 stage")
 	}
 	// The v2 delivery edge must reject the former v1 approval digest.
 	activeMongoSource := TODOSource{Kind: "mongo-content-revision", Ref: fmt.Sprintf("boora/%s/content/0", record.ID), Digest: sourceVersion.Digest}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}, bson.D{{Key: "$set", Value: bson.D{
-		{Key: "source", Value: activeMongoSource}, {Key: "stage", Value: "In-Progress"}, {Key: "stage_verification", Value: "verified"}, {Key: "verified_transition_ref", Value: activeProof},
+		{Key: "source", Value: activeMongoSource}, {Key: "stage", Value: "In-Progress"}, {Key: "stage_verification", Value: "verified"}, {Key: "verified_transition_ref", Value: activeProof}, {Key: "proof_refs", Value: activeRecord.ProofReferences},
 	}}}); err != nil {
 		t.Fatalf("prepare isolated migrated In-Progress aggregate: %v", err)
 	}
@@ -566,7 +580,7 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("v2 delivery accepted the prior v1 approval: %+v, %v", closeout, closeoutErr)
 	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "boora"}, {Key: "id", Value: record.ID}}, bson.D{{Key: "$set", Value: bson.D{
-		{Key: "source", Value: convertedRead.TODO.Source}, {Key: "stage", Value: convertedRead.TODO.Stage}, {Key: "stage_verification", Value: convertedRead.TODO.StageVerification}, {Key: "verified_transition_ref", Value: convertedRead.TODO.VerifiedTransitionRef},
+		{Key: "source", Value: convertedRead.TODO.Source}, {Key: "stage", Value: convertedRead.TODO.Stage}, {Key: "stage_verification", Value: convertedRead.TODO.StageVerification}, {Key: "verified_transition_ref", Value: convertedRead.TODO.VerifiedTransitionRef}, {Key: "proof_refs", Value: append([]TODOProofReference{}, convertedRead.TODO.ProofReferences...)},
 	}}}); err != nil {
 		t.Fatalf("restore historical adoption pilot after isolated transition guard: %v", err)
 	}

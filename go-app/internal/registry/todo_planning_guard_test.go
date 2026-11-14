@@ -192,9 +192,17 @@ func TestRequiredReviewOutcomeMustBeGo(t *testing.T) {
 
 func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testing.T) {
 	content := TODOAuthoredContent{
-		TODOContent: validTODOContent(),
-		Title:       "TODO: Guarded planning",
-		Objective:   "Keep the Mongo TODO contract authoritative.",
+		TODOContent: TODOContent{
+			SchemaVersion:       todoContentSchemaVersion,
+			Context:             "Provide a concise execution context.",
+			Scope:               &TODOContentScope{Included: []string{"typed validation"}, Excluded: []string{}},
+			Criteria:            []TODOContentItem{{ID: "criterion-one", Text: "Invalid payloads receive field-addressed TEACH."}},
+			ValidationScenarios: []TODOValidationScenario{{ID: "scenario-one", CriterionIDs: []string{"criterion-one"}, Method: "Run the focused registry tests.", Expected: "Invalid values identify their field."}},
+			ImplementationPlan:  []TODOContentItem{{ID: "plan-one", Text: "Define bounded typed content."}}, Decisions: []TODOContentItem{}, Risks: []TODOContentRisk{}, References: []TODOContentReference{},
+			LocalChecks: []TODOLocalCheck{{ID: "G-TEST", RepositoryID: "belluga/belluga_builder_docker", Argv: []string{"go", "test", "./go-app/internal/registry"}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}}, {ID: "test_quality_check", RepositoryID: "belluga/belluga_builder_docker", Argv: []string{"go", "test", "./go-app/internal/registry"}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}}},
+		},
+		Title:     "TODO: Guarded planning",
+		Objective: "Keep the Mongo TODO contract authoritative.",
 		DiffExpectation: []TODORepositoryScope{{
 			Repository: "Builder", Baseline: strings.Repeat("a", 40),
 			RepositoryID: "belluga/belluga_builder_docker", DeliveryBranch: "r-10-rc",
@@ -207,6 +215,24 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	if err := validateMongoPlanningContract(record, content); err != nil {
 		t.Fatalf("valid typed planning contract rejected: %v", err)
 	}
+	missingChecks := content
+	missingChecks.LocalChecks = nil
+	if err := validateMongoPlanningContract(record, missingChecks); err != nil {
+		t.Fatalf("code TODO without executable checks was rejected: %v", err)
+	}
+	wrongRepository := content
+	wrongRepository.LocalChecks = []TODOLocalCheck{{ID: "G-TEST", RepositoryID: "other/repo", Argv: []string{"go", "test"}, WorkingDirectory: ".", InputPaths: []string{"**"}}}
+	if err := validateMongoPlanningContract(record, wrongRepository); err == nil || !strings.Contains(err.Error(), "content.local_checks[0].repository_id") {
+		t.Fatalf("out-of-scope local check was accepted: %v", err)
+	}
+	withoutLegacyBranch := content
+	withoutLegacyBranch.DiffExpectation = append([]TODORepositoryScope{}, content.DiffExpectation...)
+	withoutLegacyBranch.DiffExpectation[0].DeliveryBranch = ""
+	record.DiffExpectation = withoutLegacyBranch.DiffExpectation
+	if err := validateMongoPlanningContract(record, withoutLegacyBranch); err != nil {
+		t.Fatalf("code scope without legacy TODO branch rejected: %v", err)
+	}
+	record.DiffExpectation = content.DiffExpectation
 	archived := content
 	archived.LegacyContext = []TODOLegacyContext{{Body: "archived only"}}
 	if err := validateMongoPlanningContract(record, archived); err != nil {
@@ -216,8 +242,9 @@ func TestMongoPlanningGuardRequiresCoveredCriteriaAndExplicitCodeOrigin(t *testi
 	withoutOrigin.DiffExpectation = append([]TODORepositoryScope{}, content.DiffExpectation...)
 	withoutOrigin.DiffExpectation[0].RepositoryID = ""
 	withoutOrigin.DiffExpectation[0].DeliveryBranch = ""
+	withoutOrigin.LocalChecks = nil
 	record.DiffExpectation = withoutOrigin.DiffExpectation
-	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "repository_id/delivery_branch") {
+	if err := validateMongoPlanningContract(record, withoutOrigin); err == nil || !strings.Contains(err.Error(), "content.diff_expectation[0].repository_id") {
 		t.Fatalf("missing code origin accepted or wrong TEACH: %v", err)
 	}
 	record.DiffExpectation = content.DiffExpectation

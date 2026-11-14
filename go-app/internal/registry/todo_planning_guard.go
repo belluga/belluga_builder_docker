@@ -32,6 +32,21 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 	if !(len(record.DiffExpectation) == 0 && len(content.DiffExpectation) == 0) && !reflect.DeepEqual(record.DiffExpectation, content.DiffExpectation) {
 		return todoTeach("content.diff_expectation", "match the current Mongo TODO aggregate and immutable content revision", ErrConflict)
 	}
+	if content.Delivery != nil && len(content.DiffExpectation) != 0 {
+		return todoTeach("content.delivery.kind", "use knowledge-only only for a TODO without implementation repository scopes; keep code/Git-artifact delivery on its ordinary proof path", ErrConflict)
+	}
+	if len(content.LocalChecks) > 0 {
+		for i, check := range content.LocalChecks {
+			field := fmt.Sprintf("content.local_checks[%d].repository_id", i)
+			inScope := false
+			for _, scope := range content.DiffExpectation {
+				inScope = inScope || check.RepositoryID == scope.RepositoryID
+			}
+			if !inScope {
+				return todoTeach(field, "select a repository present in this exact TODO diff scope", ErrConflict)
+			}
+		}
+	}
 	for i, scope := range content.DiffExpectation {
 		field := fmt.Sprintf("content.diff_expectation[%d]", i)
 		if foundationScope(scope.Repository) {
@@ -40,8 +55,8 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 		if !validGitCommit(scope.Baseline) {
 			return todoTeach(field+".baseline", "identify the exact approved Git baseline commit", ErrConflict)
 		}
-		if !validGitRepositoryID(scope.RepositoryID) || !validDeliveryBranch(scope.DeliveryBranch) {
-			return todoTeach(field+".repository_id/delivery_branch", "identify the exact implementing owner/repository and remote delivery branch before approval", ErrConflict)
+		if !validGitRepositoryID(scope.RepositoryID) {
+			return todoTeach(field+".repository_id", "identify the exact implementing repository from the Project's confirmed implementation repository set; Release branch selection is separate", ErrConflict)
 		}
 		if len(scope.ExpectedPaths) == 0 {
 			return todoTeach(field+".expected_paths", "identify at least one approved attributable path for this repository", ErrConflict)

@@ -30,6 +30,64 @@ func TestValidateTODOContentAcceptsCanonicalTypedPayload(t *testing.T) {
 	}
 }
 
+func TestValidateTODOLocalChecksAreTypedAndRepositoryScoped(t *testing.T) {
+	content := validTODOContent()
+	content.LocalChecks = []TODOLocalCheck{{
+		ID: "G-TEST", RepositoryID: "belluga/belluga_builder_docker",
+		Argv:             []string{"docker", "build", "--target", "test", "-f", "go-app/Dockerfile", "."},
+		WorkingDirectory: ".", InputPaths: []string{"go-app/**", "builder-app/service/**"},
+	}}
+	if err := ValidateTODOContent(content, false); err != nil {
+		t.Fatalf("valid explicit local check rejected: %v", err)
+	}
+	content.LocalChecks[0].ID = "lint_check_2"
+	if err := ValidateTODOContent(content, false); err != nil {
+		t.Fatalf("generic project check ID rejected: %v", err)
+	}
+	content.LocalChecks[0].ID = "G-TEST"
+	for _, test := range []struct {
+		name  string
+		edit  func(*TODOLocalCheck)
+		field string
+	}{
+		{"repository", func(c *TODOLocalCheck) { c.RepositoryID = "builder" }, "repository_id"},
+		{"empty argv", func(c *TODOLocalCheck) { c.Argv = nil }, "argv"},
+		{"absolute cwd", func(c *TODOLocalCheck) { c.WorkingDirectory = "/tmp" }, "working_directory"},
+		{"traversal input", func(c *TODOLocalCheck) { c.InputPaths = []string{"../outside"} }, "input_paths[0]"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := validTODOContent()
+			check := content.LocalChecks[0]
+			test.edit(&check)
+			candidate.LocalChecks = []TODOLocalCheck{check}
+			err := ValidateTODOContent(candidate, false)
+			var teach *TODOValidationError
+			if !errors.As(err, &teach) || !strings.Contains(teach.Field, test.field) {
+				t.Fatalf("error=%#v, want TEACH field containing %q", err, test.field)
+			}
+		})
+	}
+}
+
+func TestTODOContentMongoSchemaIncludesStrictLocalCheckShape(t *testing.T) {
+	properties, ok := valueAt(TODOContentSchemaValidator(), "properties").(bson.D)
+	if !ok {
+		t.Fatal("content validator has no typed properties")
+	}
+	localChecks, ok := valueAt(properties, "local_checks").(bson.D)
+	if !ok || valueAt(localChecks, "bsonType") != "array" || valueAt(localChecks, "maxItems") != 32 {
+		t.Fatalf("local_checks schema is not bounded array: %#v", localChecks)
+	}
+	check, ok := valueAt(localChecks, "items").(bson.D)
+	if !ok || valueAt(check, "additionalProperties") != false {
+		t.Fatalf("local check schema does not reject extra fields: %#v", check)
+	}
+	checkProperties, ok := valueAt(check, "properties").(bson.D)
+	if !ok || valueAt(checkProperties, "id") == nil || valueAt(checkProperties, "repository_id") == nil || valueAt(checkProperties, "argv") == nil || valueAt(checkProperties, "working_directory") == nil || valueAt(checkProperties, "input_paths") == nil {
+		t.Fatalf("local check schema omits required typed fields: %#v", checkProperties)
+	}
+}
+
 func TestTODOAuthoredContentV2FlattensTypedFieldsInBSON(t *testing.T) {
 	content := TODOAuthoredContent{TODOContent: validTODOContent(), Title: "TODO: Typed contract", Objective: "Store the bounded typed fields.", DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
 	data, err := bson.Marshal(content)
@@ -48,12 +106,13 @@ func TestTODOAuthoredContentV2FlattensTypedFieldsInBSON(t *testing.T) {
 
 func TestTODOAuthoredContentBSONPreservesExplicitEmptyArrays(t *testing.T) {
 	content := TODOAuthoredContent{TODOContent: validTODOContent(), Title: "TODO: Typed contract", Objective: "Preserve explicit empty arrays.", DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	content.LocalChecks = []TODOLocalCheck{}
 	encoded, err := bson.Marshal(content)
 	if err != nil {
 		t.Fatal(err)
 	}
 	raw := bson.Raw(encoded)
-	for _, field := range []string{"decisions", "risks", "references"} {
+	for _, field := range []string{"decisions", "risks", "references", "local_checks"} {
 		if value := raw.Lookup(field); value.Type != bson.TypeArray || len(value.Array()) != 5 {
 			t.Fatalf("explicit empty %s array was not retained in BSON: %v", field, value.Type)
 		}

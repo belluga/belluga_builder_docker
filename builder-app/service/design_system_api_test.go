@@ -14,7 +14,7 @@ func designSystemResponseFixture(companyID, projectID, revision string) []byte {
 	return []byte(fmt.Sprintf(`{"selection":{"state":"selected","repository_id":"belluga/builder","publication_branch":"main","sha":%q,"inventory_digest":%q,"binding_revision":3},"evaluation":{"schema_version":"1","project_id":%q,"company_id":%q,"target":"design-system","authority_scope":"local_structure_only","mode":"committed","revision":%q,"outcome":"go","inventory_digest":%q,"items":[{"id":"system","name":"System","assets":["design/system/assets/mark.svg"]}],"diagnostics":[],"selected_level":"project","design_system_validation":"valid"}}`, revision, digest, projectID, companyID, revision, digest))
 }
 
-func TestDesignSystemAPIWorksWhenLocalPreviewIsPendingAndForwardsExactSHAAssets(t *testing.T) {
+func TestDesignSystemAPIWorksAfterSnapshotRoutesAreRetiredAndForwardsExactSHAAssets(t *testing.T) {
 	const companyID, projectID = "belluga", "builder"
 	const revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	detail := designSystemResponseFixture(companyID, projectID, revision)
@@ -73,8 +73,8 @@ func TestDesignSystemAPIWorksWhenLocalPreviewIsPendingAndForwardsExactSHAAssets(
 		return response
 	}
 	local := read("/api/local-preview?company_id=belluga&project_id=builder", nil)
-	if local.Code != http.StatusOK || !strings.Contains(local.Body.String(), `"consumer_readiness":"pending"`) {
-		t.Fatalf("local preview should remain pending independently: %d %s", local.Code, local.Body.String())
+	if local.Code != http.StatusGone || !strings.Contains(local.Body.String(), "project_snapshot_retired") {
+		t.Fatalf("local preview must be retired independently: %d %s", local.Code, local.Body.String())
 	}
 	selected := read("/api/design-system?company_id=belluga&project_id=builder", map[string]string{"Authorization": "Bearer private", "Cookie": "session=private"})
 	if selected.Code != http.StatusOK || !strings.Contains(selected.Body.String(), revision) || !strings.Contains(selected.Body.String(), `"outcome":"go"`) {

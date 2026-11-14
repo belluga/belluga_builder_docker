@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import "./prototype-viewer.css";
 
-type Artifact = { id: string; kind: string; name: string; state: string; entry_point?: string; diagnostic?: string };
 type Reference = { id: string; image: string; approval_evidence: string };
 type State = { id: string; name: string; identifier_image: string; approved_references: Reference[] };
 type Screen = { id: string; name: string; path: string; default_state_id: string; states: State[] };
@@ -13,43 +12,35 @@ type Prototype = {
   authoring_mode: "image_first" | "design_system_first"; entry_point: string;
   screens: Screen[]; scenarios: Scenario[];
   transitions: { from_screen_id: string; from_state_id: string; action: string; to_screen_id: string; to_state_id: string }[];
+  file_urls: { path: string; url: string }[];
 };
-export type PrototypeDetail = {
-  consumer_readiness: string; snapshot_fingerprint?: string; artifacts: Artifact[];
-  prototype_todo_sources?: { prototype_id: string; todo_id: string; label: string; path: string }[];
-  snapshot_observations?: Record<string, unknown>; diagnostic?: string;
-};
+type PrototypeRead = { revision: string; inventory_digest: string; item: Omit<Prototype, "file_urls">; file_urls: { path: string; url: string }[] };
+type PrototypeCatalog = { revision: string; inventory_digest: string; items: { id: string; name: string; status: "active" | "archived"; detail_url: string }[] };
+type PrototypeSummary = PrototypeCatalog["items"][number];
+type ReaderState = { key: string; state: "loading" | "ready" | "error"; revision?: string; inventoryDigest?: string; summaries: PrototypeSummary[]; message?: string };
 export type PrototypeSelection = {
   mode: string; artifact: string; prototypeID: string; screenID: string; stateID: string;
-  scenarioID: string; scenarioStep: string; fingerprint: string; device: string; scale: string;
+  scenarioID: string; scenarioStep: string; revision: string; device: string; scale: string;
 };
 type Props = {
   companyID: string; projectID: string; companyName: string; projectName: string;
-  detail: PrototypeDetail | null; selection: PrototypeSelection;
+  selection: PrototypeSelection;
   onNavigate: (changes: Record<string, string | null>, replace?: boolean) => void;
 };
 
-function snapshotURL(companyID: string, projectID: string, fingerprint: string, path: string) {
-  return `/snapshot/${encodeURIComponent(companyID)}/${encodeURIComponent(projectID)}/${fingerprint}/${path.split("/").map(encodeURIComponent).join("/")}`;
+function fileURL(prototype: Prototype | undefined, path: string) {
+  return prototype?.file_urls.find((item) => item.path === path)?.url || "";
 }
 
-function admittedPrototypes(detail: PrototypeDetail | null): Prototype[] {
-  if (detail?.consumer_readiness !== "ready" || !detail.snapshot_fingerprint) return [];
-  const status = detail.snapshot_observations?.prototype_status as { outcome?: string; items?: Prototype[] } | undefined;
-  if (status?.outcome !== "go" || !Array.isArray(status.items)) return [];
-  const available = new Set(detail.artifacts.filter((item) => item.kind === "prototype" && item.state === "available" && item.entry_point).map((item) => item.id));
-  return status.items.filter((item) => available.has(item.id));
-}
-
-function presentationURL(props: Props, prototype: Prototype, screen: Screen, state: State) {
+function presentationURL(props: Props, prototype: Prototype, screen: Screen, state: State, revision: string) {
   const query = new URLSearchParams({ company_id: props.companyID, project_id: props.projectID, page: "prototypes", mode: "presentation",
     artifact: `prototype:${prototype.id}`, prototype_id: prototype.id, screen_id: screen.id, state_id: state.id,
-    fingerprint: props.detail?.snapshot_fingerprint || "", device: "mobile", scale: "fit" });
+    revision, device: "mobile", scale: "fit" });
   return `/?${query}`;
 }
 
-function PrototypePresentation({ props, prototypes }: { props: Props; prototypes: Prototype[] }) {
-  const { selection, detail, companyID, projectID, onNavigate } = props;
+function PrototypePresentation({ props, prototypes, summaries, reader }: { props: Props; prototypes: Prototype[]; summaries: PrototypeSummary[]; reader: ReaderState }) {
+  const { selection, companyID, projectID, onNavigate } = props;
   const prototype = prototypes.find((item) => item.id === selection.prototypeID && selection.artifact === `prototype:${item.id}`);
   const screen = prototype?.screens.find((item) => item.id === selection.screenID);
   const state = screen?.states.find((item) => item.id === selection.stateID);
@@ -57,26 +48,12 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
   const stepIndex = /^\d+$/.test(selection.scenarioStep) ? Number(selection.scenarioStep) : -1;
   const step = scenario?.steps[stepIndex];
   const scenarioValid = (!selection.scenarioID && !selection.scenarioStep) || Boolean(scenario && step && step.screen_id === screen?.id && step.state_id === state?.id);
-  const valid = Boolean(prototype && screen && state && /^[a-f0-9]{64}$/.test(selection.fingerprint) &&
+  const valid = Boolean(prototype && screen && state && /^[a-f0-9]{40}$/.test(selection.revision) &&
     ["mobile", "desktop"].includes(selection.device) && ["fit", "100"].includes(selection.scale) && scenarioValid);
-  const currentFingerprint = detail?.snapshot_fingerprint || "";
-  const stale = Boolean(selection.fingerprint && currentFingerprint && selection.fingerprint !== currentFingerprint);
+  const currentRevision = reader.revision || "";
+  const stale = Boolean(selection.revision && currentRevision && selection.revision !== currentRevision);
   const entry = valid && prototype && screen && state
-    ? `${snapshotURL(companyID, projectID, selection.fingerprint, `${prototype.root}/${screen.path}`)}?prototype_state=${encodeURIComponent(state.id)}` : "";
-  const [check, setCheck] = useState<{ key: string; state: "checking" | "ready" | "error"; message?: string } | null>(null);
-  const entryKey = `${entry}|${currentFingerprint}`;
-  useEffect(() => {
-    if (!entry || stale || !currentFingerprint || detail?.consumer_readiness !== "ready") return;
-    const controller = new AbortController();
-    setCheck({ key: entryKey, state: "checking" });
-    fetch(entry, { method: "HEAD", signal: controller.signal }).then((response) => {
-      if (!response.ok || response.headers.get("X-Builder-Snapshot-Fingerprint") !== selection.fingerprint) throw new Error("The selected HTML is unavailable in this snapshot.");
-      if (!controller.signal.aborted) setCheck({ key: entryKey, state: "ready" });
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted) setCheck({ key: entryKey, state: "error", message: error instanceof Error ? error.message : "Snapshot verification failed." });
-    });
-    return () => controller.abort();
-  }, [currentFingerprint, detail?.consumer_readiness, entry, entryKey, selection.fingerprint, stale]);
+    ? (() => { const href = fileURL(prototype, `${prototype.root}/${screen.path}`); if (!href) return ""; const url = new URL(href, location.origin); url.searchParams.set("prototype_state", state.id); return url.pathname + url.search; })() : "";
   const canvasRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState({ width: window.innerWidth - 32, height: window.innerHeight - 96 });
   useEffect(() => {
@@ -92,7 +69,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
   const exitPresentation = (event: ReactMouseEvent<HTMLAnchorElement>) => {
     if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
-    onNavigate({ page: "prototypes", mode: null, prototype_id: null, scenario_id: null, scenario_step: null, fingerprint: null, device: null, scale: null });
+    onNavigate({ page: "prototypes", mode: null, prototype_id: null, scenario_id: null, scenario_step: null, revision: null, device: null, scale: null });
   };
   return <main className="prototype-presentation">
     <header className="prototype-presentation-bar">
@@ -103,7 +80,7 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
         const nextScreen = next?.screens.find((item) => item.path === next.entry_point) || next?.screens[0];
         const nextState = nextScreen?.states.find((item) => item.id === nextScreen.default_state_id) || nextScreen?.states[0];
         choose({ artifact: next ? `prototype:${next.id}` : null, prototype_id: next?.id || null, screen_id: nextScreen?.id || null, state_id: nextState?.id || null, scenario_id: null, scenario_step: null });
-      }}>{prototypes.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      }}>{summaries.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>Cenário<select aria-label="Cenário" value={scenario?.id || ""} onChange={(event) => {
         const next = prototype?.scenarios.find((item) => item.id === event.target.value);
         const first = next?.steps[0];
@@ -118,65 +95,106 @@ function PrototypePresentation({ props, prototypes }: { props: Props; prototypes
       <label>Estado<select aria-label="Estado" value={state?.id || ""} onChange={(event) => choose({ state_id: event.target.value, scenario_id: null, scenario_step: null })}>{(screen?.states || []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <div className="prototype-presentation-toggle" role="group" aria-label="Dispositivo"><button aria-pressed={selection.device === "mobile"} onClick={() => choose({ device: "mobile" })}>Mobile</button><button aria-pressed={selection.device === "desktop"} onClick={() => choose({ device: "desktop" })}>Desktop</button></div>
       <div className="prototype-presentation-toggle" role="group" aria-label="Escala"><button aria-pressed={selection.scale === "fit"} onClick={() => choose({ scale: "fit" })}>Ajustar</button><button aria-pressed={selection.scale === "100"} onClick={() => choose({ scale: "100" })}>100%</button></div>
-      {check?.key === entryKey && check.state === "ready" && entry ? <a href={entry} target="_blank" rel="noopener noreferrer">Abrir HTML bruto ↗</a> : <span aria-disabled="true">Abrir HTML bruto indisponível</span>}
+      {entry && !stale && reader.state === "ready" ? <a href={entry} target="_blank" rel="noopener noreferrer">Abrir HTML bruto ↗</a> : <span aria-disabled="true">Abrir HTML bruto indisponível</span>}
     </header>
     <section ref={canvasRef} className="prototype-presentation-canvas" aria-label={`${props.companyName} / ${props.projectName} · apresentação`}>
-      {!detail ? <p role="status">Carregando snapshot…</p>
-        : stale ? <p role="alert">Snapshot alterado; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
+      {reader.state === "loading" ? <p role="status">Carregando catálogo Git…</p>
+        : reader.state === "error" ? <p role="alert">{reader.message || "O catálogo atual de Prototypes está indisponível."}</p>
+          : stale ? <p role="alert">A revisão Git mudou; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
-            : check?.key !== entryKey || check.state === "checking" ? <p role="status">Verificando entrada do snapshot…</p>
-              : check.state === "error" ? <p role="alert">{check.message}</p>
-                : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
+            : !entry ? <p role="alert">O HTML desta tela não consta dos arquivos verificados da revisão.</p>
+              : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
     </section>
   </main>;
 }
 
 export function LocalArtifactPreview(props: Props) {
-  const { detail, selection, companyID, projectID, onNavigate } = props;
-  const prototypes = admittedPrototypes(detail);
+  const { selection, companyID, projectID, onNavigate } = props;
+  const readerKey = `${companyID}/${projectID}`;
+  const [reader, setReader] = useState<ReaderState>({ key: "", state: "loading", summaries: [] });
+  const [details, setDetails] = useState<Record<string, Prototype>>({});
+  const [retryCount, setRetryCount] = useState(0);
+  useEffect(() => {
+    if (!companyID || !projectID) { setReader({ key: readerKey, state: "error", summaries: [], message: "Company and Project are required." }); return; }
+    const controller = new AbortController();
+    setReader({ key: readerKey, state: "loading", summaries: [] });
+    setDetails({});
+    async function load() {
+      try {
+        const query = new URLSearchParams({ company_id: companyID, project_id: projectID });
+        const response = await fetch(`/api/prototypes?${query}`, { signal: controller.signal });
+        if (!response.ok) throw new Error("The current Prototype catalog is unavailable.");
+        const catalog = await response.json() as PrototypeCatalog;
+        if (!/^[a-f0-9]{40}$/.test(catalog.revision) || !/^sha256:[a-f0-9]{64}$/.test(catalog.inventory_digest) || !Array.isArray(catalog.items)) throw new Error("The Prototype catalog identity is invalid.");
+        if (catalog.items.some((summary) => !summary || typeof summary.id !== "string" || !["active", "archived"].includes(summary.status) || typeof summary.detail_url !== "string" || !summary.detail_url.startsWith(`/api/prototypes/${catalog.revision}/`))) throw new Error("The Prototype catalog item is invalid.");
+        if (!controller.signal.aborted) setReader({ key: readerKey, state: "ready", revision: catalog.revision, inventoryDigest: catalog.inventory_digest, summaries: catalog.items });
+      } catch (error) {
+        if (!controller.signal.aborted) setReader({ key: readerKey, state: "error", summaries: [], message: error instanceof Error ? error.message : "The current Prototype catalog could not be read." });
+      }
+    }
+    void load();
+    return () => controller.abort();
+  }, [companyID, projectID, readerKey, retryCount]);
+  const currentReader = reader.key === readerKey ? reader : { key: readerKey, state: "loading" as const, summaries: [] };
   const requestedID = selection.artifact.startsWith("prototype:") ? selection.artifact.slice(10) : selection.prototypeID;
-  const requested = prototypes.find((item) => item.id === requestedID);
-  const [filter, setFilter] = useState<"active" | "archived" | "all">(requested?.status || "active");
+  const [filter, setFilter] = useState<"active" | "archived" | "all">("active");
+  const visibleSummaries = currentReader.summaries.filter((item) => filter === "all" || item.status === filter);
+  const selectedSummary = requestedID ? currentReader.summaries.find((item) => item.id === requestedID) : visibleSummaries[0];
+  useEffect(() => {
+    if (currentReader.state !== "ready" || !selectedSummary || details[selectedSummary.id]) return;
+    const controller = new AbortController();
+    const expectedRevision = currentReader.revision;
+    const expectedDigest = currentReader.inventoryDigest || "";
+    async function loadDetail() {
+      try {
+        const response = await fetch(selectedSummary!.detail_url, { signal: controller.signal });
+        if (!response.ok) throw new Error("The selected Prototype detail is unavailable.");
+        const value = await response.json() as PrototypeRead;
+		const filePrefix = `/api/prototypes/file/${encodeURIComponent(companyID)}/${encodeURIComponent(projectID)}/${expectedRevision}/${expectedDigest.slice(7)}/files/`;
+		if (value.revision !== expectedRevision || value.inventory_digest !== expectedDigest || value.item?.id !== selectedSummary!.id || !Array.isArray(value.file_urls) || !value.file_urls.length || value.file_urls.some((file) => typeof file.path !== "string" || typeof file.url !== "string" || !file.url.startsWith(filePrefix))) throw new Error("Prototype detail revision or file links do not match the catalog.");
+        if (!controller.signal.aborted) setDetails((old) => ({ ...old, [selectedSummary!.id]: { ...value.item, file_urls: value.file_urls } }));
+      } catch (error) {
+        if (!controller.signal.aborted) setReader((old) => ({ ...old, state: "error", message: error instanceof Error ? error.message : "The selected Prototype detail could not be read." }));
+      }
+    }
+    void loadDetail();
+    return () => controller.abort();
+  }, [currentReader.inventoryDigest, currentReader.revision, currentReader.state, details, selectedSummary?.detail_url, selectedSummary?.id]);
+  const prototypes = Object.values(details);
+  const requested = requestedID ? details[requestedID] : undefined;
+  const selectedPrototype = selectedSummary ? details[selectedSummary.id] : undefined;
   const [expanded, setExpanded] = useState("");
   const [imageError, setImageError] = useState(false);
   useEffect(() => { if (requested) setFilter(requested.status); }, [requested?.id, requested?.status]);
   const visible = prototypes.filter((item) => filter === "all" || item.status === filter);
-  const prototype = requestedID ? requested : visible[0];
+  const prototype = requested || selectedPrototype || visible[0];
   const screen = selection.screenID ? prototype?.screens.find((item) => item.id === selection.screenID) : prototype?.screens.find((item) => item.path === prototype.entry_point) || prototype?.screens[0];
   const state = selection.stateID ? screen?.states.find((item) => item.id === selection.stateID) : screen?.states.find((item) => item.id === screen.default_state_id) || screen?.states[0];
   const invalidSelection = Boolean((selection.artifact && (!requestedID || selection.artifact !== `prototype:${requestedID}`)) ||
     (selection.prototypeID && selection.prototypeID !== requestedID) || (requestedID && !requested) ||
     (selection.screenID && !screen) || (selection.stateID && !state));
-  const fingerprint = detail?.snapshot_fingerprint || "";
-  const file = (path: string) => snapshotURL(companyID, projectID, fingerprint, path);
-  const todoSource = (prototypeID: string, sourcePath: string) => (detail?.prototype_todo_sources || []).find((item) => item.prototype_id === prototypeID && item.path === sourcePath);
-  const todoHref = (todoID: string) => `/?company_id=${encodeURIComponent(companyID)}&project_id=${encodeURIComponent(projectID)}&page=todo&todo_id=${encodeURIComponent(todoID)}`;
-  const navigateToTodo = (event: ReactMouseEvent<HTMLAnchorElement>, todoID: string) => {
-    if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); onNavigate({ page: "todo", todo_id: todoID }); }
-  };
+  const file = (path: string) => fileURL(prototype, path);
   const selectedImage = prototype && state ? file(`${prototype.root}/${state.identifier_image}`) : "";
-  const evidenceTODOPaths = new Set((state?.approved_references || []).filter((reference) => reference.approval_evidence.startsWith("todos/")).map((reference) => reference.approval_evidence));
   useEffect(() => { setImageError(false); }, [selectedImage]);
-  if (selection.mode === "presentation") return <PrototypePresentation props={props} prototypes={prototypes} />;
-  if (!detail) return <p role="status">Loading the saved Project snapshot…</p>;
-  if (detail.consumer_readiness !== "ready") return <p role="alert">{detail.diagnostic || "The saved Project snapshot is not ready."}</p>;
-  if (invalidSelection) return <section className="prototype-review" aria-label="Prototype inspector"><p role="alert">This Prototype, Screen or State selection is unavailable in the saved snapshot.</p><button onClick={() => onNavigate({ artifact: null, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null })}>Show available Prototypes</button></section>;
-  const unavailable = detail.artifacts.find((item) => ["prototype", "prototype_collection"].includes(item.kind) && item.state === "invalid");
-  const choosePrototype = (item: Prototype) => {
+  if (currentReader.state === "loading") return <p role="status">Carregando o catálogo de Prototypes da revisão Git…</p>;
+  if (currentReader.state === "error") return <section className="prototype-review" aria-label="Prototype inspector"><p role="alert">{currentReader.message || "O catálogo atual de Prototypes está indisponível."}</p><button onClick={() => setRetryCount((value) => value + 1)}>Tentar novamente</button></section>;
+  if (selectedSummary && !details[selectedSummary.id] && currentReader.state === "ready") return <p role="status">Carregando detalhe do Prototype na revisão Git…</p>;
+  if (selection.mode === "presentation") return <PrototypePresentation props={props} prototypes={prototypes} summaries={currentReader.summaries} reader={currentReader} />;
+  if (invalidSelection) return <section className="prototype-review" aria-label="Prototype inspector"><p role="alert">This Prototype, Screen or State selection is unavailable in the selected Git revision.</p><button onClick={() => onNavigate({ artifact: null, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null, revision: null })}>Show available Prototypes</button></section>;
+  const choosePrototype = (item: Pick<PrototypeSummary, "id" | "status">) => {
     setFilter(item.status); setExpanded("");
-    onNavigate({ artifact: `prototype:${item.id}`, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null });
+    onNavigate({ artifact: `prototype:${item.id}`, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null, revision: currentReader.revision || null });
   };
   return <section className="prototype-review" aria-label="Prototype inspector">
-    {unavailable && <p className="project-notice" role="alert">{unavailable.diagnostic || "The Prototype inventory is invalid."}</p>}
     <div className="prototype-review-layout">
       <aside className="prototype-review-list">
-        <label>Status do protótipo<select aria-label="Status do protótipo" value={filter} onChange={(event) => { const next = event.target.value as "active" | "archived" | "all"; setFilter(next); if (requested && next !== "all" && requested.status !== next) onNavigate({ artifact: null, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null }); }}><option value="active">Ativos</option><option value="archived">Arquivados</option><option value="all">Todos</option></select></label>
-        {visible.map((item) => <button key={item.id} className={prototype?.id === item.id ? "selected" : ""} onClick={() => choosePrototype(item)}>{item.name}<small>{item.status === "active" ? "Ativo" : "Arquivado"}</small></button>)}
+        <label>Status do protótipo<select aria-label="Status do protótipo" value={filter} onChange={(event) => { const next = event.target.value as "active" | "archived" | "all"; setFilter(next); if (requested && next !== "all" && requested.status !== next) onNavigate({ artifact: null, prototype_id: null, screen_id: null, state_id: null, scenario_id: null, scenario_step: null, revision: null }); }}><option value="active">Ativos</option><option value="archived">Arquivados</option><option value="all">Todos</option></select></label>
+        {visibleSummaries.map((item) => <button key={item.id} className={prototype?.id === item.id ? "selected" : ""} onClick={() => choosePrototype(item)}>{item.name}<small>{item.status === "active" ? "Ativo" : "Arquivado"}</small></button>)}
         {!visible.length && <p>Nenhum protótipo {filter === "archived" ? "arquivado" : filter === "active" ? "ativo" : ""} disponível.</p>}
       </aside>
       <div className="prototype-review-body">
         {prototype && screen && state ? <>
-          <div className="prototype-review-actions"><div><small>PROTÓTIPO · {prototype.status === "active" ? "ATIVO" : "ARQUIVADO"}</small><h3>{prototype.name}</h3><span>{prototype.authoring_mode === "image_first" ? "Exploração visual" : "Design System direto"} · snapshot {fingerprint.slice(0, 12)}</span></div><a href={presentationURL(props, prototype, screen, state)} target="_blank" rel="noopener noreferrer">Abrir apresentação do protótipo ↗</a></div>
+          <div className="prototype-review-actions"><div><small>PROTÓTIPO · {prototype.status === "active" ? "ATIVO" : "ARQUIVADO"}</small><h3>{prototype.name}</h3><span>{prototype.authoring_mode === "image_first" ? "Exploração visual" : "Design System direto"} · revisão Git {(currentReader.revision || "").slice(0, 12)}</span></div><a href={presentationURL(props, prototype, screen, state, currentReader.revision || "")} target="_blank" rel="noopener noreferrer">Abrir apresentação do protótipo ↗</a></div>
           <div className="prototype-review-columns"><nav className="prototype-review-tree" aria-label="Telas e estados"><div className="prototype-review-tree-heading"><small>PROTÓTIPO · {prototype.status === "active" ? "ATIVO" : "ARQUIVADO"}</small><strong>Telas e estados</strong></div>{prototype.screens.map((item) => {
             const open = (expanded || screen.id) === item.id;
             return <div key={item.id}><button aria-expanded={open} className={screen.id === item.id ? "selected" : ""} onClick={() => {
@@ -187,15 +205,13 @@ export function LocalArtifactPreview(props: Props) {
             <figure><img key={selectedImage} src={selectedImage} alt={`Imagem identificadora · ${screen.name} · ${state.name}`} onError={() => setImageError(true)} /><figcaption>Imagem identificadora deste estado</figcaption></figure>
             {imageError && <p role="alert">Não foi possível carregar a imagem identificadora deste estado.</p>}
             {state.approved_references.map((reference) => {
-              const source = todoSource(prototype.id, reference.approval_evidence);
               const isTODOPath = reference.approval_evidence.startsWith("todos/");
-              return <figure key={reference.id}><img src={file(`${prototype.root}/${reference.image}`)} alt={`Referência visual aprovada · ${reference.id}`} /><figcaption>{reference.id} · {source ? <a href={todoHref(source.todo_id)} onClick={(event) => navigateToTodo(event, source.todo_id)}>Abrir evidência TODO: {source.label} ↗</a> : isTODOPath ? <span aria-disabled="true">Evidência TODO indisponível</span> : <a href={file(reference.approval_evidence)} target="_blank" rel="noopener noreferrer">Abrir evidência ↗</a>}</figcaption></figure>;
+              return <figure key={reference.id}><img src={file(`${prototype.root}/${reference.image}`)} alt={`Referência visual aprovada · ${reference.id}`} /><figcaption>{reference.id} · {file(reference.approval_evidence) ? <a href={file(reference.approval_evidence)} target="_blank" rel="noopener noreferrer">{isTODOPath ? "Abrir evidência relacionada" : "Abrir evidência"} ↗</a> : <span aria-disabled="true">Evidência indisponível</span>}</figcaption></figure>;
             })}
-            {(detail?.prototype_todo_sources || []).filter((item) => item.prototype_id === prototype.id && !evidenceTODOPaths.has(item.path)).map((item) => <p key={item.todo_id}><a href={todoHref(item.todo_id)} onClick={(event) => navigateToTodo(event, item.todo_id)}>Abrir TODO relacionado: {item.label} ↗</a></p>)}
             {!state.approved_references.length && <p>Nenhuma referência visual aprovada foi registrada para este estado.</p>}
             <h4>Transições deste estado</h4><ul>{prototype.transitions.filter((item) => item.from_screen_id === screen.id && item.from_state_id === state.id).map((item) => <li key={`${item.action}/${item.to_screen_id}/${item.to_state_id}`}>{item.action} → {item.to_screen_id} / {item.to_state_id}</li>)}</ul>
           </section></div>
-        </> : <p role="status">No admitted Prototype is available in this saved snapshot.</p>}
+        </> : selectedSummary ? <p role="status">Carregando telas e estados do Prototype selecionado…</p> : <p role="status">Nenhum Prototype está disponível na revisão Git publicada.</p>}
       </div>
     </div>
   </section>;

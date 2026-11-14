@@ -48,6 +48,15 @@ func TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies(t *testing.T) {
 	}
 	addCompany("company-b")
 	addCompany("company-a")
+	// Provisioning must upgrade the exact strict/error history validator that
+	// existed before content v2 gained its optional local_checks field.
+	for _, companyID := range []string{"company-a", "company-b"} {
+		database := store.client.Database(store.tenantDatabase(companyID))
+		create := options.CreateCollection().SetValidator(contentVersionsValidatorBeforeLocalChecks()).SetValidationLevel("strict").SetValidationAction("error")
+		if err := database.CreateCollection(ctx, todoContentVersionsCollection, create); err != nil {
+			t.Fatalf("install deployed pre-local-checks validator for %s: %v", companyID, err)
+		}
+	}
 	if err := store.ProvisionTODOCollection(ctx, "company-a"); err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +77,68 @@ func TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies(t *testing.T) {
 		if !item.Verified || item.Phase != "verified" {
 			t.Fatalf("Company was not verified: %+v", item)
 		}
+		if err := verifyTODOHistoryCollections(ctx, store.client.Database(store.tenantDatabase(item.CompanyID))); err != nil {
+			t.Fatalf("Company %s history validator/index readback: %v", item.CompanyID, err)
+		}
+	}
+	content := TODOAuthoredContent{TODOContent: validTODOContent(),
+		Title: "TODO: Strict local check schema", Objective: "Verify tenant-scoped content schema enforcement.",
+		DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	content.TODOContent.LocalChecks = []TODOLocalCheck{{
+		ID: "G-TEST", RepositoryID: "owner/repo", Argv: []string{"go", "test", "./..."},
+		WorkingDirectory: ".", InputPaths: []string{"go-app/**"},
+	}}
+	contentBytes, err := bson.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var contentDocument bson.M
+	if err := bson.Unmarshal(contentBytes, &contentDocument); err != nil {
+		t.Fatal(err)
+	}
+	for _, companyID := range []string{"company-a", "company-b"} {
+		collection := store.client.Database(store.tenantDatabase(companyID)).Collection(todoContentVersionsCollection)
+		base := bson.D{{Key: "_id", Value: bson.NewObjectID()}, {Key: "project_id", Value: "builder"},
+			{Key: "todo_id", Value: "strict-local-check"}, {Key: "revision", Value: int64(1)},
+			{Key: "content", Value: contentDocument}}
+		if _, err := collection.InsertOne(ctx, base); err != nil {
+			t.Fatalf("Company %s rejected valid typed local check: %v", companyID, err)
+		}
+		invalidContent := bson.M{}
+		for key, value := range contentDocument {
+			invalidContent[key] = value
+		}
+		invalidContent["local_checks"] = bson.A{bson.M{
+			"id": "G-TEST", "repository_id": "owner/repo", "argv": bson.A{"go", "test"},
+			"working_directory": ".", "input_paths": bson.A{"go-app/**"}, "unexpected": true,
+		}}
+		invalid := append(bson.D(nil), base...)
+		invalid[0].Value = bson.NewObjectID()
+		invalid[2].Value = "strict-local-check-extra-field"
+		invalid[4].Value = invalidContent
+		if _, err := collection.InsertOne(ctx, invalid); err == nil {
+			t.Fatalf("Company %s accepted an unknown local check field", companyID)
+		}
+	}
+	unknownHistoryDrift := bson.D{{Key: "$jsonSchema", Value: bson.D{{Key: "bsonType", Value: "object"}}}}
+	if err := store.client.Database(store.tenantDatabase("company-a")).RunCommand(ctx, bson.D{
+		{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: unknownHistoryDrift},
+		{Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"},
+	}).Err(); err != nil {
+		t.Fatalf("install unknown content-version validator drift: %v", err)
+	}
+	driftReport, err := store.ProvisionRegisteredTODOs(ctx)
+	if err != nil || driftReport.Verified || len(driftReport.Companies) != 2 || driftReport.Companies[0].Verified || !strings.Contains(driftReport.Companies[0].Error, todoContentVersionsCollection+".validator") || !driftReport.Companies[1].Verified {
+		t.Fatalf("unknown history validator drift did not fail closed per Company: %+v, %v", driftReport, err)
+	}
+	if err := store.client.Database(store.tenantDatabase("company-a")).RunCommand(ctx, bson.D{
+		{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: TODOContentVersionsValidator()},
+		{Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"},
+	}).Err(); err != nil {
+		t.Fatalf("restore canonical content-version validator: %v", err)
+	}
+	if restored, err := store.ProvisionRegisteredTODOs(ctx); err != nil || !restored.Verified || len(restored.Companies) != 2 {
+		t.Fatalf("restore after unknown history drift: %+v, %v", restored, err)
 	}
 	database := store.client.Database(store.tenantDatabase("company-a"))
 	project := Project{ID: "builder", CompanyID: "company-a", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}

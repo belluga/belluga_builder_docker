@@ -62,6 +62,9 @@ func (content TODOAuthoredContent) MarshalBSON() ([]byte, error) {
 		if content.References != nil && len(content.References) == 0 {
 			document = append(document, bson.E{Key: "references", Value: []TODOContentReference{}})
 		}
+		if content.LocalChecks != nil && len(content.LocalChecks) == 0 {
+			document = append(document, bson.E{Key: "local_checks", Value: []TODOLocalCheck{}})
+		}
 	}
 	document = append(document,
 		bson.E{Key: "title", Value: content.Title},
@@ -105,6 +108,8 @@ type TODOHistoryChanges struct {
 	WaiverReferences              *[]TODOProofReference         `json:"waiver_refs,omitempty" bson:"waiver_refs,omitempty"`
 	ImplementationCommits         *[]TODOCommitReference        `json:"implementation_commits,omitempty" bson:"implementation_commits,omitempty"`
 	VerifiedTransitionRef         *TODOProofReference           `json:"verified_transition_ref,omitempty" bson:"verified_transition_ref,omitempty"`
+	KnowledgeDeliveryProof        *TODOKnowledgeDeliveryProof   `json:"knowledge_delivery_proof,omitempty" bson:"knowledge_delivery_proof,omitempty"`
+	ClearKnowledgeDeliveryProof   bool                          `json:"clear_knowledge_delivery_proof,omitempty" bson:"clear_knowledge_delivery_proof,omitempty"`
 	ClearVerifiedTransitionRef    bool                          `json:"clear_verified_transition_ref,omitempty" bson:"clear_verified_transition_ref,omitempty"`
 	RecordSections                *[]TODOSection                `json:"record_sections,omitempty" bson:"record_sections,omitempty"`
 	ReleaseID                     *string                       `json:"release_id,omitempty" bson:"release_id,omitempty"`
@@ -160,6 +165,7 @@ type TODOAsOfState struct {
 	WaiverReferences         []TODOProofReference          `json:"waiver_refs"`
 	ImplementationCommits    []TODOCommitReference         `json:"implementation_commits"`
 	VerifiedTransitionRef    *TODOProofReference           `json:"verified_transition_ref,omitempty"`
+	KnowledgeDeliveryProof   *TODOKnowledgeDeliveryProof   `json:"knowledge_delivery_proof,omitempty"`
 	ReleaseID                string                        `json:"release_id"`
 	Position                 int                           `json:"position"`
 	PlacementAssigned        bool                          `json:"placement_assigned"`
@@ -591,6 +597,7 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		return todoTeach(name+".validator", "match the strict/error closed history schema", ErrConflict)
 	}
 	if !bsonValidatorEqual(actualValidator.Document(), validator) {
+		beforeKnowledge := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeKnowledgeDelivery()) || name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), TODOContentVersionsValidatorBeforeKnowledgeDelivery())
 		beforeAdministrative := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeAdministrativeAcceptance())
 		beforeRemoval := name == todoEventsCollection && bsonValidatorEqual(actualValidator.Document(), TODOEventsValidatorBeforeRemoval())
 		prior := historyValidatorBeforeOwnership(validator)
@@ -604,6 +611,7 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		priorV2Match := matchesPredecessor(priorV2, historyValidatorBeforeSchemaV2(preRemovalEvents))
 		beforeRepositoryIdentity := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforePlanningAndRepositoryIdentity())
 		beforeAuditTriggers := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeAuditTriggers())
+		beforeLocalChecks := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), contentVersionsValidatorBeforeLocalChecks())
 		beforeDigest := name == todoContentVersionsCollection && bsonValidatorEqual(actualValidator.Document(), historyValidatorBeforeContentDigest(validator))
 		beforePlacement := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeClearPlacement(validator), historyValidatorBeforeClearPlacement(preRemovalEvents))
 		beforeAdoption := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeHistoricalAdoption(validator), historyValidatorBeforeHistoricalAdoption(preRemovalEvents))
@@ -612,10 +620,10 @@ func provisionHistoryCollection(ctx context.Context, database *mongo.Database, n
 		beforeReviewWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewWaiver(validator), historyValidatorBeforeReviewWaiver(preRemovalEvents))
 		beforeReviewOutcomeAndWaiver := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(validator)), historyValidatorBeforeReviewOutcome(historyValidatorBeforeReviewWaiver(preRemovalEvents)))
 		beforeAdoptionAndContentMigration := name == todoEventsCollection && matchesPredecessor(historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(validator)), historyValidatorBeforeContentMigration(historyValidatorBeforeHistoricalAdoption(preRemovalEvents)))
-		if !beforeAdministrative && !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
+		if !beforeKnowledge && !beforeAdministrative && !beforeRemoval && !priorMatch && !priorV2Match && !beforeRepositoryIdentity && !beforeAuditTriggers && !beforeLocalChecks && !beforeDigest && !beforePlacement && !beforeAdoption && !beforeContentMigration && !beforeAdoptionAndContentMigration && !beforeReviewOutcome && !beforeReviewWaiver && !beforeReviewOutcomeAndWaiver {
 			return todoTeach(name+".validator", "match the canonical history schema or the single recognized predecessor without section ownership", ErrConflict)
 		}
-		if !beforeDigest && !beforePlacement {
+		if !beforeDigest && !beforeLocalChecks && !beforePlacement {
 			if err := scanLegacyHistoryOwnership(ctx, database, name); err != nil {
 				return err
 			}
@@ -1213,6 +1221,9 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	if preserveArchived && requestedContent.SchemaVersion == todoContentSchemaVersion && current.SchemaVersion == todoContentSchemaVersion {
 		requestedContent.LegacyContext = current.LegacyContext
 	}
+	if requestedContent.SchemaVersion == todoContentSchemaVersion && len(requestedContent.LocalChecks) != 0 && !reflect.DeepEqual(requestedContent.LocalChecks, current.LocalChecks) {
+		return TODOContentEditResponse{}, todoTeach("content.local_checks", "retain existing legacy checks unchanged or remove them; new executable Project checks are not admitted", ErrConflict)
+	}
 	if reflect.DeepEqual(current, requestedContent) {
 		if record.Source.Kind == "mongo-content-revision" && record.AdministrativeAcceptance == nil && record.StageVerification == "unverified" && (record.Stage == "Local-Implemented" || record.Stage == "Promotion-Lane" || record.Stage == "Completed") {
 			contentRevision, contentDigest, contentRef, hasCurrentContent, subjectErr := currentTODOContentSubject(ctx, database, record)
@@ -1279,10 +1290,10 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 	}
 	update := bson.D{{Key: "$set", Value: setFields}, {Key: "$inc", Value: bson.D{{Key: "revision", Value: 1}}}}
 	if reopensPlanning {
-		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}}})
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "administrative_acceptance", Value: ""}, {Key: "knowledge_delivery_proof", Value: ""}}})
 	}
 	if !reopensPlanning && invalidatesContentApproval(record) {
-		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}}})
+		update = append(update, bson.E{Key: "$unset", Value: bson.D{{Key: "verified_transition_ref", Value: ""}, {Key: "knowledge_delivery_proof", Value: ""}}})
 	}
 	session, err := m.client.StartSession()
 	if err != nil {
@@ -1309,10 +1320,12 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 			changes.StageVerification = &verified
 			changes.VerifiedTransitionRef = planningProof
 			changes.ClearAdministrativeAcceptance = true
+			changes.ClearKnowledgeDeliveryProof = true
 		} else if invalidatesContentApproval(record) {
 			unverified := "unverified"
 			changes.StageVerification = &unverified
 			changes.ClearVerifiedTransitionRef = true
+			changes.ClearKnowledgeDeliveryProof = true
 		}
 		event := TODOHistoryEvent{ObjectID: bson.NewObjectID(), ProjectID: record.ProjectID, TODOID: record.ID, Revision: nextRevision, Kind: eventKind, OccurredAt: time.Now().UTC(), OperationID: request.OperationID, RequestDigest: digest, Changes: changes, ContentRevision: &contentRevision, Reason: request.Reason}
 		if _, err := database.Collection(todoEventsCollection).InsertOne(txCtx, event); err != nil {
@@ -1388,8 +1401,8 @@ func validateAuthoredEnvelope(content TODOAuthoredContent) error {
 		if !validName(scope.Repository) || strings.TrimSpace(scope.Baseline) == "" || scope.ExpectedPaths == nil || scope.NotExpectedPaths == nil {
 			return todoTeach("content.diff_expectation", "contain valid repository scopes and explicit path arrays", ErrInvalid)
 		}
-		if (scope.RepositoryID == "") != (scope.DeliveryBranch == "") || scope.RepositoryID != "" && (!validGitRepositoryID(scope.RepositoryID) || !validDeliveryBranch(scope.DeliveryBranch)) {
-			return todoTeach("content.diff_expectation.repository_id/delivery_branch", "provide both an exact owner/repository and safe destination branch, or omit both before proof", ErrInvalid)
+		if scope.RepositoryID != "" && !validGitRepositoryID(scope.RepositoryID) || scope.DeliveryBranch != "" && !validDeliveryBranch(scope.DeliveryBranch) {
+			return todoTeach("content.diff_expectation.repository_id/delivery_branch", "provide a valid repository identity and retain any historical branch text only as non-authoritative content", ErrInvalid)
 		}
 		for _, p := range append(append([]string{}, scope.ExpectedPaths...), scope.NotExpectedPaths...) {
 			if !validRepositoryPattern(p) {
@@ -1545,6 +1558,12 @@ func applyTODOHistoryChanges(state *TODOAsOfState, changes TODOHistoryChanges) {
 	} else if changes.ClearVerifiedTransitionRef {
 		state.VerifiedTransitionRef = nil
 	}
+	if changes.KnowledgeDeliveryProof != nil {
+		proof := *changes.KnowledgeDeliveryProof
+		state.KnowledgeDeliveryProof = &proof
+	} else if changes.ClearKnowledgeDeliveryProof {
+		state.KnowledgeDeliveryProof = nil
+	}
 	if changes.ReleaseID != nil {
 		state.ReleaseID = *changes.ReleaseID
 	}
@@ -1572,6 +1591,9 @@ func requireTODOHistoryBaseline(ctx context.Context, database *mongo.Database, r
 		return todoTeach("history.baseline", "be provisioned for this admitted TODO before enabling mutations", ErrUnavailable)
 	}
 	if err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return ErrUnavailable
 	}
 	if event.Revision > record.Revision || event.ContentRevision == nil {
@@ -1581,6 +1603,9 @@ func requireTODOHistoryBaseline(ctx context.Context, database *mongo.Database, r
 	if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{
 		{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "revision", Value: *event.ContentRevision},
 	}).Decode(&version); err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return err
+		}
 		return todoTeach("history.baseline.content_revision", "resolve to the immutable observed content version", ErrConflict)
 	}
 	return nil
@@ -1742,6 +1767,17 @@ func TODOContentVersionsValidator() bson.D {
 	}}}
 }
 
+func TODOContentVersionsValidatorBeforeKnowledgeDelivery() bson.D {
+	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "delivery")
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+func TODOEventsValidatorBeforeKnowledgeDelivery() bson.D {
+	prior := withoutBSONFieldsAtPath(TODOEventsValidator(), []string{"$jsonSchema", "properties", "changes", "properties"}, "knowledge_delivery_proof")
+	return withoutBSONFieldsAtPath(prior, []string{"$jsonSchema", "properties", "changes", "properties"}, "clear_knowledge_delivery_proof")
+}
+
 // This exact deployed predecessor preceded both planning metadata and the
 // two approved repository identity fields. It is accepted only for a
 // scan-before-collMod migration; old content bytes remain unchanged.
@@ -1755,6 +1791,16 @@ func contentVersionsValidatorBeforePlanningAndRepositoryIdentity() bson.D {
 
 func contentVersionsValidatorBeforeAuditTriggers() bson.D {
 	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "planning", "properties"}, "audit_triggers")
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+// contentVersionsValidatorBeforeLocalChecks is the exact strict/error
+// predecessor deployed immediately before repository-scoped local checks were
+// added to authored content v2. Only the optional v2 field is absent; v1 and
+// every other history/content constraint remain unchanged.
+func contentVersionsValidatorBeforeLocalChecks() bson.D {
+	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "local_checks")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
@@ -1831,6 +1877,14 @@ func TODOContentSchemaValidator() bson.D {
 	codeRef := object(bson.A{"repository_id", "path"}, bson.D{{Key: "repository_id", Value: text(2048)}, {Key: "path", Value: text(2048)}})
 	assumption := object(bson.A{"id", "status", "statement", "code_refs"}, bson.D{{Key: "id", Value: id}, {Key: "status", Value: text(16)}, {Key: "statement", Value: text(2048)}, {Key: "code_refs", Value: array(32, codeRef)}})
 	review := object(bson.A{"kind", "reference"}, bson.D{{Key: "kind", Value: text(32)}, {Key: "reference", Value: text(2048)}})
+	localCheckID := bson.D{{Key: "bsonType", Value: "string"}, {Key: "minLength", Value: 1}, {Key: "maxLength", Value: 64}, {Key: "pattern", Value: `^[A-Za-z][A-Za-z0-9_-]{0,63}$`}}
+	localCheck := object(bson.A{"id", "repository_id", "argv", "working_directory", "input_paths"}, bson.D{
+		{Key: "id", Value: localCheckID},
+		{Key: "repository_id", Value: text(256)},
+		{Key: "argv", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "maxItems", Value: 32}, {Key: "items", Value: text(2048)}}},
+		{Key: "working_directory", Value: text(2048)},
+		{Key: "input_paths", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "maxItems", Value: 64}, {Key: "items", Value: text(2048)}}},
+	})
 	auditProperties := bson.D{{Key: "blast_radius", Value: text(16)}, {Key: "architecture_applicability", Value: text(16)}}
 	for _, name := range []string{"behavioral_change_or_bugfix", "changes_public_contract", "touches_auth_or_tenant", "touches_runtime_or_infra", "touches_tests", "critical_user_journey", "release_or_promotion_critical", "high_severity_plan_review_issue", "explicit_three_lane_request"} {
 		auditProperties = append(auditProperties, bson.E{Key: name, Value: boolean})
@@ -1841,6 +1895,7 @@ func TODOContentSchemaValidator() bson.D {
 		{Key: "required", Value: bson.A{"schema_version"}},
 		{Key: "properties", Value: bson.D{
 			{Key: "schema_version", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "enum", Value: bson.A{todoContentSchemaVersion}}}},
+			{Key: "delivery", Value: todoKnowledgeContractSchema()},
 			{Key: "context", Value: text(16 << 10)},
 			{Key: "scope", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"included", "excluded"}}, {Key: "properties", Value: bson.D{{Key: "included", Value: stringArray(64, 2048)}, {Key: "excluded", Value: stringArray(64, 2048)}}}}},
 			{Key: "criteria", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 64}, {Key: "items", Value: item}}},
@@ -1852,6 +1907,7 @@ func TODOContentSchemaValidator() bson.D {
 			{Key: "legacy_context", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 128}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"source_revision", "section_position", "ownership", "title", "body", "digest"}}, {Key: "properties", Value: bson.D{{Key: "source_revision", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "section_position", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "minimum", Value: 0}}}, {Key: "ownership", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"contract"}}}}, {Key: "title", Value: text(2048)}, {Key: "body", Value: text(64 << 10)}, {Key: "digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}}}}}}}},
 			{Key: "architecture", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"decision", "rationale", "protection"}}, {Key: "properties", Value: bson.D{{Key: "decision", Value: text(2048)}, {Key: "rationale", Value: text(2048)}, {Key: "protection", Value: text(2048)}}}}},
 			{Key: "planning", Value: planning},
+			{Key: "local_checks", Value: array(32, localCheck)},
 		}},
 	}
 }
@@ -2027,6 +2083,8 @@ func TODOHistoryChangesValidator() bson.D {
 		{Key: "stage_verification", Value: bson.D{{Key: "enum", Value: bson.A{"unverified", "verified"}}}}, {Key: "proof_refs", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: TODOProofReferenceValidator()}}},
 		{Key: "waiver_refs", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "items", Value: TODOProofReferenceValidator()}}}, {Key: "implementation_commits", Value: bson.D{{Key: "bsonType", Value: "array"}}},
 		{Key: "verified_transition_ref", Value: TODOProofReferenceValidator()}, {Key: "clear_verified_transition_ref", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
+		{Key: "knowledge_delivery_proof", Value: todoKnowledgeProofSchema()},
+		{Key: "clear_knowledge_delivery_proof", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 		{Key: "record_sections", Value: historySectionArraySchema()}, {Key: "release_id", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "position", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "minimum", Value: 0}}}, {Key: "clear_placement", Value: bson.D{{Key: "bsonType", Value: "bool"}}},
 	}}}
 }

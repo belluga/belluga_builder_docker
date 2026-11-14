@@ -84,7 +84,7 @@ func TestDesignSystemMutationHTTPRoutesPersistVerifyAndFinalizeDisposableGit(t *
 		return remote
 	}}
 
-	manifest := []byte(`{"schema_version":"1","id":"fixture-system","name":"Fixture","owner":{"level":"project","id":"design-system-http"},"tokens":[{"id":"label","type":"string","value":"Fixture"}],"components":[],"assets":["assets/logo.svg"],"contrast_pairs":[]}`)
+	manifest := []byte(`{"schema_version":"2","id":"fixture-system","name":"Fixture","owner":{"level":"project","id":"design-system-http"},"tokens":[{"id":"ink","type":"color","value":"#000000"},{"id":"paper","type":"color","value":"#FFFFFF"},{"id":"font","type":"string","value":"Inter, Arial"},{"id":"body","type":"number","value":16},{"id":"display","type":"number","value":36},{"id":"radius","type":"number","value":8}],"presentation":{"default_context":"main","contexts":[{"id":"main","roles":{"canvas":"ink","surface":"ink","text":"paper","muted_text":"paper","border":"paper","accent":"paper","accent_text":"paper","on_accent":"ink","focus":"paper","success_text":"paper","font_family":"font","body_size":"body","display_size":"display","card_radius":"radius","control_radius":"radius"}}]},"components":[],"assets":["assets/logo.svg"],"contrast_pairs":[]}`)
 	manifestPath := filepath.Join(work, filepath.FromSlash(designSystemDefinitionPath))
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o700); err != nil {
 		t.Fatal(err)

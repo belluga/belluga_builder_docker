@@ -13,7 +13,7 @@
 .release-hero h1 { margin: 0 0 10px; font-size: clamp(36px, 4.2vw, 55px); line-height: 1.08; letter-spacing: -.048em; }
 .release-hero p { max-width: 760px; margin: 0; color: var(--project-muted); font-size: clamp(14px, 1.25vw, 17px); line-height: 1.5; }
 .release-badge { flex: none; display: inline-flex; align-items: center; gap: 13px; padding: 11px 18px; border: 1px solid var(--project-accent); border-radius: 99px; background: var(--project-surface); color: var(--project-accentText); font-size: 14px; font-weight: 700; white-space: nowrap; }
-.release-badge.delivered { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
+.release-badge.completed { border-color: var(--project-success, #82e0d0); color: var(--project-success, #82e0d0); }
 .release-badge.blocked { border-color: #c77664; color: var(--project-text); }
 .release-badge.planned, .release-badge.unknown { border-color: #b9933e; color: var(--project-text); }
 .release-context-strip { min-height: 105px; padding: 20px 0; border-top: 1px solid var(--project-border); border-bottom: 1px solid var(--project-border); }

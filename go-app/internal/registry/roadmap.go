@@ -2,12 +2,13 @@ package registry
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -21,21 +22,35 @@ type roadmapEpic struct {
 	Position    int           `bson:"position"`
 }
 type roadmapRelease struct {
-	StorageID     bson.ObjectID         `bson:"_id,omitempty"`
-	ProjectID     string                `bson:"project_id"`
-	ID            string                `bson:"id"`
-	EpicID        string                `bson:"epic_id"`
-	Name          string                `bson:"name"`
-	Description   string                `bson:"description"`
-	Position      int                   `bson:"position"`
-	Investigation *ReleaseInvestigation `bson:"investigation,omitempty"`
+	StorageID        bson.ObjectID           `bson:"_id,omitempty"`
+	ProjectID        string                  `bson:"project_id"`
+	ID               string                  `bson:"id"`
+	EpicID           string                  `bson:"epic_id"`
+	Name             string                  `bson:"name"`
+	Description      string                  `bson:"description"`
+	Position         int                     `bson:"position"`
+	DeliveryBranches []releaseDeliveryBranch `bson:"delivery_branches,omitempty"`
+	Investigation    *ReleaseInvestigation   `bson:"investigation,omitempty"`
+}
+
+// releaseDeliveryBranch is an immutable owner-confirmed destination for one
+// Project implementation repository. Its operation identity lives with the
+// Release entry so retries remain recognizable after unrelated Roadmap writes.
+type releaseDeliveryBranch struct {
+	RepositoryID   string    `json:"repository_id" bson:"repository_id"`
+	Branch         string    `json:"branch" bson:"branch"`
+	OwnerReference string    `json:"owner_reference" bson:"owner_reference"`
+	OperationID    string    `json:"operation_id" bson:"operation_id"`
+	RequestDigest  string    `json:"-" bson:"request_digest"`
+	ConfirmedAt    time.Time `json:"confirmed_at" bson:"confirmed_at"`
 }
 type roadmapReleaseView struct {
-	ID            string                       `json:"id"`
-	Name          string                       `json:"name"`
-	Description   string                       `json:"description"`
-	TODOs         []roadmapTODOView            `json:"todos"`
-	Investigation *ReleaseInvestigationSummary `json:"investigation,omitempty"`
+	ID               string                       `json:"id"`
+	Name             string                       `json:"name"`
+	Description      string                       `json:"description"`
+	DeliveryBranches []releaseDeliveryBranch      `json:"delivery_branches"`
+	TODOs            []roadmapTODOView            `json:"todos"`
+	Investigation    *ReleaseInvestigationSummary `json:"investigation,omitempty"`
 }
 
 // roadmapTODOView preserves the v3 Reader vocabulary and adds only the
@@ -56,6 +71,8 @@ type roadmapTODOView struct {
 	DeliveryStageState       string                        `json:"delivery_stage_state"`
 	DeliveryStageBasis       string                        `json:"delivery_stage_basis,omitempty"`
 	DeliveryStageTeach       string                        `json:"delivery_stage_teach,omitempty"`
+	DeliveryKind             string                        `json:"delivery_kind,omitempty"`
+	DocumentaryCompletion    bool                          `json:"documentary_completion,omitempty"`
 	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty"`
 	Disposition              *TODODisposition              `json:"disposition,omitempty"`
 	DispositionState         string                        `json:"disposition_state,omitempty"`
@@ -91,7 +108,16 @@ func projectRoadmap(projectID string, revision int64, epics []roadmapEpic, relea
 			return nil, ErrUnavailable
 		}
 		seen[release.ID] = true
-		view := roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, TODOs: []roadmapTODOView{}}
+		branches := append([]releaseDeliveryBranch{}, release.DeliveryBranches...)
+		seenRepositories := make(map[string]bool, len(branches))
+		for _, branch := range branches {
+			if !validGitRepositoryID(branch.RepositoryID) || !validDeliveryBranch(branch.Branch) || !validSummaryField(branch.OwnerReference, 512) || !todoOperationIDPattern.MatchString(branch.OperationID) || !validFingerprint(branch.RequestDigest) || branch.ConfirmedAt.IsZero() || seenRepositories[branch.RepositoryID] {
+				return nil, ErrUnavailable
+			}
+			seenRepositories[branch.RepositoryID] = true
+		}
+		sort.Slice(branches, func(i, j int) bool { return branches[i].RepositoryID < branches[j].RepositoryID })
+		view := roadmapReleaseView{ID: release.ID, Name: release.Name, Description: release.Description, DeliveryBranches: branches, TODOs: []roadmapTODOView{}}
 		if release.Investigation != nil {
 			view.Investigation = &ReleaseInvestigationSummary{Title: release.Investigation.Title}
 		}
@@ -156,6 +182,10 @@ func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 		RecordState: "active", AuthoredDeliveryStage: record.Stage, DeliveryStageState: "unverified",
 		Blocked: blocked, QualifierState: "verified", WorkState: workState, TODORevision: record.Revision,
 	}
+	if record.Content != nil && record.Content.Delivery != nil && record.Content.Delivery.Kind == "knowledge-only" {
+		view.DeliveryKind = "knowledge-only"
+		view.DocumentaryCompletion = record.Stage == "Completed" && record.StageVerification == "verified" && record.VerifiedTransitionRef != nil && record.VerifiedTransitionRef.Kind == "knowledge-final-acceptance" && record.KnowledgeDeliveryProof != nil
+	}
 	if record.Disposition != nil {
 		if record.Source.Kind == "mongo-content-revision" {
 			view.Path = ""
@@ -198,16 +228,6 @@ var branchPattern = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,255}$`)
 func validID(value string) bool          { return idPattern.MatchString(value) }
 func validName(value string) bool        { return strings.TrimSpace(value) != "" && len([]rune(value)) <= 160 }
 func validFingerprint(value string) bool { return digestPattern.MatchString(value) }
-func validSnapshotFingerprint(value string) bool {
-	if len(value) != 64 || strings.ToLower(value) != value {
-		return false
-	}
-	_, err := hex.DecodeString(value)
-	return err == nil
-}
-func validSnapshotState(value string) bool {
-	return value == "ready" || value == "not_ready" || value == "invalid" || value == "unavailable"
-}
 func validBinding(value Binding) bool {
 	legacyLocator := value.WorkspaceRoot != "" || value.ProjectRoot != "" || value.FoundationRoot != ""
 	if value.RepositoryID == "" && value.PublicationBranch == "" {

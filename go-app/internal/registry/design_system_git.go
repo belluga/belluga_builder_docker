@@ -26,6 +26,7 @@ type gitDesignSystemVerifier struct {
 	repositoryURL func(string) string
 	gitExecutable string
 	readCache     *designSystemReadCache
+	prototypeCacheRoot string
 }
 
 func newGitDesignSystemVerifier() designSystemRemoteVerifier {

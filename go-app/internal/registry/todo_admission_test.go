@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -78,6 +77,15 @@ func TestMultiRevisionEvidenceCapacityPreservesVerifiedReferences(t *testing.T) 
 	if err := preserveVerifiedEvidence(verified, verified, "proof_refs"); err != nil {
 		t.Fatalf("preserved verified history rejected: %v", err)
 	}
+	forged := append([]TODOProofReference(nil), verified...)
+	forged[0].Reference = "forged-new-reference"
+	if err := preserveVerifiedEvidence(nil, forged, "proof_refs"); err == nil || !strings.Contains(err.Error(), "not assert verification") {
+		t.Fatalf("new caller-asserted verified reference accepted: %v", err)
+	}
+	removed := append([]TODOProofReference(nil), verified[1:]...)
+	if err := preserveVerifiedEvidence(verified, removed, "proof_refs"); err == nil || !strings.Contains(err.Error(), "preserve every previously verified") {
+		t.Fatalf("removed verified reference accepted: %v", err)
+	}
 	record.ProofReferences = append(record.ProofReferences, make([]TODOProofReference, maxTODOProofs-len(record.ProofReferences)+1)...)
 	if err := validateGenericTODOAdmission(record); err == nil {
 		t.Fatal("evidence above the shared bound was accepted")
@@ -124,6 +132,12 @@ func TestMongoBornTODOCreationContractAndVersionedTemplate(t *testing.T) {
 	}
 	if !containsTODOString(template.Optional, "todo.release_id") || !containsTODOString(template.Optional, "todo.position") || template.Limits["record_bytes"] != maxTODORecordBytes {
 		t.Fatalf("template omits Backlog placement or record limits: %+v", template)
+	}
+	if !containsTODOString(template.Optional, "todo.content.delivery") || !containsTODOString(template.ContentEditRequired, "content") || !containsTODOString(template.ContentEditRequired, "content.title") || !containsTODOString(template.ContentEditRequired, "content.diff_expectation") || !strings.Contains(template.ContentEditGuide, "read-todo") {
+		t.Fatalf("template does not teach a governed content edit: %+v", template)
+	}
+	if !strings.Contains(template.ContentShape["proof_refs"], "external-evidence") || !strings.Contains(template.ContentEditGuide, "submit no inline executable proof") || containsTODOString(template.Optional, "todo.content.local_checks") || len(template.Example.TODO.Content.Criteria) != 1 || len(template.Example.TODO.Content.ValidationScenarios) != 1 {
+		t.Fatalf("template does not teach API-only external evidence: %+v", template)
 	}
 	for name, mutate := range map[string]func(*TODORecord){
 		"later initial stage":          func(value *TODORecord) { value.Stage = "In-Progress" },
@@ -249,6 +263,13 @@ func TestTODOCreationTemplateRouteIsCompanyProjectScoped(t *testing.T) {
 	NewHandler(service).ServeHTTP(response, request)
 	if response.Code != http.StatusOK || service.companyID != "belluga-solutions" || service.projectID != "builder" || !strings.Contains(response.Body.String(), `"schema_version":"builder-todo-creation-v2"`) {
 		t.Fatalf("Project creation template response = %d %s; company=%q project=%q", response.Code, response.Body.String(), service.companyID, service.projectID)
+	}
+	var publicTemplate TODOCreationTemplate
+	if err := json.Unmarshal(response.Body.Bytes(), &publicTemplate); err != nil {
+		t.Fatal(err)
+	}
+	if !containsTODOString(publicTemplate.ContentEditRequired, "content") || !containsTODOString(publicTemplate.ContentEditRequired, "content.title") || !strings.Contains(publicTemplate.ContentEditGuide, "todo_revision") || !strings.Contains(publicTemplate.ContentEditGuide, "content.delivery") || !strings.Contains(publicTemplate.ContentEditGuide, "external-evidence") || !strings.Contains(publicTemplate.ContentEditGuide, "submit no inline executable proof") || !strings.Contains(response.Body.String(), "example-criterion") {
+		t.Fatalf("served template does not teach the update-todo envelope: %+v", publicTemplate)
 	}
 }
 
@@ -388,6 +409,11 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		TODOValidationScenario{ID: "scenario-image", CriterionIDs: []string{"criterion-one"}, Method: "Build the registry runtime image.", Expected: "The image builds."},
 	)
 	typed.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", RepositoryID: "owner/repo", DeliveryBranch: "r-08-rc", Baseline: strings.Repeat("a", 40), ExpectedPaths: []string{"go-app/**"}, NotExpectedPaths: []string{"flutter-app/**"}}}
+	typed.LocalChecks = []TODOLocalCheck{
+		{ID: "G-TEST", RepositoryID: "owner/repo", Argv: []string{"go", "test", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-VET", RepositoryID: "owner/repo", Argv: []string{"go", "vet", "./..."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**"}},
+		{ID: "G-IMAGE", RepositoryID: "owner/repo", Argv: []string{"docker", "build", "--target", "runtime", "."}, WorkingDirectory: ".", InputPaths: []string{"go-app/**", "go-app/Dockerfile"}},
+	}
 	typed.Planning = &TODOPlanning{Complexity: "small", AuditTriggers: testAuditTriggers(), Assumptions: []TODOPlanningAssumption{}, Reviews: []TODOPlanningReview{{Kind: "critique", Reference: "review/critique"}}}
 	typedDigest, err := todoContentRevisionDigest("builder", imported.TODO.ID, 1, typed)
 	if err != nil {
@@ -407,6 +433,37 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 	reviewRevision := recordPlanningReviewSubjects(t, ctx, store, "builder", imported.TODO.ID, "typed-review-subject")
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: imported.TODO.ID, ExpectedRevision: &reviewRevision,
+		OperationID: "reject-unconfirmed-implementation-repository", RequestedStage: "Implementation-Approval-Pending",
+	}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "confirm this Git-backed delivery repository") {
+		t.Fatalf("Planning exit accepted an unconfirmed Project repository: %v", err)
+	}
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "builder", ImplementationRepositoryChange{
+		Action: "confirm", ProjectID: "builder", ExpectedRevision: 0,
+		OperationID: "typed-planning-repository-confirmation", Actor: "fixture-owner",
+		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
+	}); err != nil {
+		t.Fatalf("confirm the code-backed fixture repository before Planning exit: %v", err)
+	}
+	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{
+		ProjectID: "builder", TODOID: imported.TODO.ID, ExpectedRevision: &reviewRevision,
+		OperationID: "reject-missing-release-branch", RequestedStage: "Implementation-Approval-Pending",
+	}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "release_id.delivery_branches") {
+		t.Fatalf("Planning exit accepted a confirmed repository without its Release branch: %v", err)
+	}
+	projectBeforeBranch, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchRevision := projectBeforeBranch.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{
+		ProjectID: "builder", ExpectedRoadmapRevision: &branchRevision,
+		OperationID: "typed-planning-release-branch", ID: "r-08", RepositoryID: "owner/repo",
+		Branch: "r-08-rc", OwnerReference: "fixture-owner-confirmed-release-branch",
+	}); err != nil {
+		t.Fatalf("confirm the code-backed fixture Release branch before Planning exit: %v", err)
+	}
 	// Two independent agents may submit the same approved predecessor at once.
 	// Exactly one stage event must win the aggregate revision CAS.
 	results := make(chan error, 2)
@@ -535,7 +592,9 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	}
 	builderBorn := mongoBornTODOFixture()
 	builderBorn.ID, builderBorn.ProjectID, builderBorn.ReleaseID, builderBorn.Position = "no-foundation-todo", "no-foundation", "r-01", intPointer(0)
-	builderBorn.Content = &typed.TODOContent
+	newContent := typed.TODOContent
+	newContent.LocalChecks = nil
+	builderBorn.Content = &newContent
 	builderBorn.DiffExpectation = typed.DiffExpectation
 	if _, err := store.AdmitTODO(ctx, "company-a", "no-foundation", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "builder-born-no-foundation", TODO: builderBorn}); err != nil {
 		t.Fatalf("Foundation-free TODO admission: %v", err)
@@ -564,6 +623,25 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 		t.Fatalf("refresh Planning review: %v", err)
 	}
 	currentRevision++
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "no-foundation", ImplementationRepositoryChange{
+		Action: "confirm", ProjectID: "no-foundation", ExpectedRevision: 0,
+		OperationID: "anchor-fixture-repository-confirmation", Actor: "fixture-owner",
+		OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo",
+	}); err != nil {
+		t.Fatalf("confirm the code-anchor fixture repository before Planning exit: %v", err)
+	}
+	projectBeforeAnchorBranch, err := store.Project(ctx, "company-a", "no-foundation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchorBranchRevision := projectBeforeAnchorBranch.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{
+		ProjectID: "no-foundation", ExpectedRoadmapRevision: &anchorBranchRevision,
+		OperationID: "anchor-fixture-release-branch", ID: "r-01", RepositoryID: "owner/repo",
+		Branch: "builder", OwnerReference: "fixture-owner-confirmed-anchor-release-branch",
+	}); err != nil {
+		t.Fatalf("confirm the code-anchor fixture Release branch before Planning exit: %v", err)
+	}
 	anchorExists := false
 	anchorReader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -623,12 +701,12 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	if err != nil || noFoundation.Binding != nil {
 		t.Fatalf("unexpected Foundation binding: %+v, %v", noFoundation, err)
 	}
-	assertTypedDelivery(t, ctx, store, "builder", migration.TODO.ID, 4, migrated.ContentDigest)
+	assertTypedDelivery(t, ctx, store, "builder", migration.TODO.ID, 4, "r-08-rc", migrated.ContentDigest)
 	noFoundationTODO, err := store.ReadTODO(ctx, "company-a", "no-foundation", builderBorn.ID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertTypedDelivery(t, ctx, store, "no-foundation", builderBorn.ID, currentRevision, noFoundationTODO.ContentDigest)
+	assertTypedDelivery(t, ctx, store, "no-foundation", builderBorn.ID, currentRevision, "builder", noFoundationTODO.ContentDigest)
 }
 
 func recordPlanningReviewSubjects(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID, operation string) int64 {
@@ -653,28 +731,38 @@ func recordPlanningReviewSubjects(t *testing.T, ctx context.Context, store *Mong
 	return result.Revision
 }
 
-func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, digest string) {
+func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, branch, digest string) {
 	t.Helper()
-	commit := strings.Repeat("a", 40)
-	root := strings.Repeat("d", 40)
+	canonical := CanonicalImport{ProjectID: projectID, GenerationID: "mvp-delivery-fixture", SourceRevision: strings.Repeat("a", 40), OperationID: "mvp-delivery-canonical-import", Actor: "fixture-owner", Records: []CanonicalImportRecord{
+		canonicalTestRecord(FamilyMandate, projectID, `{"purpose":"Exercise MVP delivery","scope":["project"]}`),
+		canonicalTestRecord(FamilyDomain, projectID, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
+		canonicalTestRecord(FamilyConstitution, projectID, `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Project API records verified delivery"}]}`),
+		canonicalTestRecord(FamilyRoadmap, projectID, `{"stages":[{"id":"delivery","name":"Delivery","status":"planned"}]}`),
+		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-PROJECT-01","status":"current","statement":"Project owns TODO delivery"}],"schemas":[{"id":"todo","name":"todos","kind":"collection","fields":[{"name":"stage","type":"string"}]}]}`),
+		canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-PROJECT-01"}]}`),
+	}}
+	for i := range canonical.Records {
+		canonical.Records[i].Record.ProjectID = projectID
+		canonical.Records[i].Record.GenerationID = canonical.GenerationID
+	}
+	if _, err := store.ImportCanonicalDraft(ctx, "company-a", canonical); err != nil {
+		t.Fatalf("import MVP fixture constitution: %v", err)
+	}
+	if _, err := store.ActivateCanonical(ctx, "company-a", projectID, canonical.GenerationID, "mvp-delivery-canonical-activate", "fixture-owner"); err != nil {
+		t.Fatalf("activate MVP fixture constitution: %v", err)
+	}
+	commit, root := strings.Repeat("a", 40), strings.Repeat("d", 40)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if strings.HasSuffix(r.URL.Path, "/code-anchor") {
-			_ = json.NewEncoder(w).Encode(map[string]string{"company_id": "company-a", "project_id": projectID, "repository": q.Get("repository"), "baseline": q.Get("baseline"), "path": q.Get("path"), "type": "file"})
-			return
-		}
-		if q.Get("todo_authority") != "mongo-v2" {
-			t.Errorf("typed proof omitted current Mongo authority: %s", r.URL.String())
-		}
 		if strings.HasSuffix(r.URL.Path, "/commit") {
-			if q.Get("repository") != "owner/repo" || q.Get("branch") != "r-08-rc" {
-				t.Errorf("wrong approved repository: %s", r.URL.String())
+			if q.Get("company_id") != "company-a" || q.Get("project_id") != projectID || q.Get("repository") != "owner/repo" || q.Get("branch") != branch || q.Get("commit_sha") != commit || q.Get("todo_authority") != "mongo-v2" || q.Get("baseline_sha") != commit {
+				t.Errorf("wrong typed Reader request: %s", r.URL)
 			}
-			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: "r-08-rc", CommitSHA: commit, RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, Outcome: "verified"})
+			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: branch, CommitSHA: commit, BaselineSHA: q.Get("baseline_sha"), RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
 			return
 		}
 		if q.Get("docker_repository_id") != "owner/repo" {
-			t.Errorf("production proof missed approved repository: %s", r.URL.String())
+			t.Errorf("production proof missed approved repository: %s", r.URL)
 		}
 		_, _ = fmt.Fprintf(w, `{"company_id":"company-a","project_id":%q,"todo_id":%q,"deployment_id":17,"environment":"production","root_sha":%q,"module_path":"project","commit_sha":%q,"project_commits":[%q],"outcome":"verified","project_mode":"mvp","reader_sha":%q}`, projectID, todoID, root, root, commit, strings.Repeat("e", 40))
 	}))
@@ -689,179 +777,58 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 		t.Fatalf("start: %v", err)
 	}
 	revision++
+	read, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proofs := []TODOProofReference{{Kind: "final_review", Source: "human-review", Reference: "review/final", SourceDigest: digest, VerificationState: "unverified", Outcome: "go"}}
+	for _, item := range read.TODO.Content.Criteria {
+		proofs = append(proofs, TODOProofReference{Kind: "criterion:" + item.ID, Source: "external-evidence", Reference: "fixture/" + item.ID, SourceDigest: digest, VerificationState: "unverified"})
+	}
+	for _, item := range read.TODO.Content.ValidationScenarios {
+		proofs = append(proofs, TODOProofReference{Kind: "scenario:" + item.ID, Source: "external-evidence", Reference: "fixture/" + item.ID, SourceDigest: digest, VerificationState: "unverified"})
+	}
 	claim := TODOCommitReference{Repository: "Builder", Commit: commit, SourceDigest: digest, VerificationState: "unverified"}
-	review := TODOProofReference{Kind: "final_review", Source: "human-review", Reference: "review/final", SourceDigest: digest, VerificationState: "unverified", Outcome: "go"}
-	criterionProof := TODOProofReference{Kind: "criterion:criterion-one", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"}
-	scenarioProof := TODOProofReference{Kind: "scenario:scenario-one", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"}
-	vetProof := TODOProofReference{Kind: "scenario:scenario-vet", Source: "paced-local-runner", Reference: "G-VET", SourceDigest: digest, VerificationState: "unverified"}
-	imageProof := TODOProofReference{Kind: "scenario:scenario-image", Source: "paced-local-runner", Reference: "G-IMAGE", SourceDigest: digest, VerificationState: "unverified"}
-	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "delivery-commit", ProofReferences: []TODOProofReference{review, criterionProof, scenarioProof, vetProof, imageProof}, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{claim}, RecordSections: []TODOSection{}, Reason: "Attribute the implementation"}); err != nil {
+	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "delivery-evidence", ProofReferences: proofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{claim}, RecordSections: []TODOSection{}, Reason: "Attribute API-only delivery"}); err != nil {
 		t.Fatalf("evidence: %v", err)
 	}
 	revision++
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
-		t.Fatal(err)
+	local := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-delivery", RequestedStage: "Local-Implemented"}
+	withRunner := local
+	withRunner.OperationID = "reject-inline-runner"
+	withRunner.LocalProof = &LocalProofResult{SchemaVersion: "builder-local-proof-result-v3"}
+	if _, err := store.TransitionTODO(ctx, "company-a", withRunner); err == nil || !strings.Contains(err.Error(), "local_proof/proof_refs/waiver_refs") {
+		t.Fatalf("inline runner was accepted or wrong TEACH: %v", err)
 	}
-	now := time.Now().UTC()
-	preflight, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	proofRevision := revision
-	result := &LocalProofResult{SchemaVersion: "builder-local-proof-result-v2", CompanyID: "company-a", ProjectID: projectID, TODOID: todoID, TODORevision: &proofRevision, ContentDigest: digest, ReleaseID: preflight.TODO.ReleaseID, Position: preflight.TODO.Position, RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest, StartedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), FinishedAt: now.Format(time.RFC3339Nano), Before: localProofSnapshot{BuilderHead: commit, PACEDHead: commit, BuilderInputsDigest: digest, PACEDInputsDigest: digest}, OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}}, OutsideUntrackedAfter: map[string]map[string]string{"builder": {}, "paced": {}}}
-	result.After = result.Before
-	for _, id := range store.localMatrix.DefaultRequired {
-		result.Commands = append(result.Commands, localProofCommand{ID: id})
-	}
-	seal := func() {
-		bytes, _ := json.Marshal(result)
-		var fields map[string]any
-		_ = json.Unmarshal(bytes, &fields)
-		delete(fields, "result_digest")
-		bytes, _ = json.Marshal(fields)
-		result.ResultDigest = sourceHash(bytes)
-	}
-	seal()
-	if _, err := store.EditTODONextStep(ctx, "company-a", TODONextStepEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "next-step-during-proof", NextExactStep: "Request the verified local transition.", Reason: "Update the operational next step"}); err != nil {
-		t.Fatalf("next-step edit: %v", err)
-	}
-	revision++
-	stale := revision - 1
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &stale, OperationID: "stale-local-delivery", RequestedStage: "Local-Implemented", LocalProof: result}); !errors.Is(err, ErrConflict) {
-		t.Fatalf("stale local revision accepted: %v", err)
-	}
-	localRequest := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-delivery", RequestedStage: "Local-Implemented", LocalProof: result}
-	localCompetitor := localRequest
+	localCompetitor := local
 	if projectID == "builder" {
 		localCompetitor.OperationID = "competing-local-delivery"
 	}
-	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, localRequest, localCompetitor)
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, local, localCompetitor)
 	revision++
-	beforeMove, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-	if err != nil {
-		t.Fatal(err)
+	after, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+	if err != nil || after.TODO.Stage != "Local-Implemented" || after.TODO.VerifiedTransitionRef == nil || after.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || after.TODO.VerifiedTransitionRef.Source != "private-reader" || after.TODO.VerifiedTransitionRef.VerificationState != "verified" {
+		t.Fatalf("API-only Local-Implemented readback: %+v, %v", after, err)
+	}
+	for _, ref := range after.TODO.ProofReferences {
+		if strings.HasPrefix(ref.Kind, "criterion:") || strings.HasPrefix(ref.Kind, "scenario:") {
+			if ref.VerificationState != "unverified" {
+				t.Fatalf("external citation was marked verified: %+v", ref)
+			}
+		}
 	}
 	changedClaim := claim
 	changedClaim.Commit = strings.Repeat("c", 40)
-	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-local-commit-change", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{changedClaim}, RecordSections: []TODOSection{}, Reason: "Reject changed commit after local delivery"}); err == nil || !strings.Contains(err.Error(), "implementation_commits") {
-		t.Fatalf("local implementation commit changed or wrong TEACH: %v", err)
-	}
-	afterEvidence, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-	if err != nil || afterEvidence.TODORevision != revision || len(afterEvidence.TODO.ImplementationCommits) != 1 || afterEvidence.TODO.ImplementationCommits[0] != claim {
-		t.Fatalf("rejected commit change mutated evidence: %+v, %v", afterEvidence, err)
+	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-local-commit-change", ProofReferences: proofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{changedClaim}, RecordSections: []TODOSection{}, Reason: "Reject changed commit after local delivery"}); err == nil || !strings.Contains(err.Error(), "implementation_commits") {
+		t.Fatalf("local commit changed or wrong TEACH: %v", err)
 	}
 	deployment := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
-	legacyLocal := beforeMove.TODO
-	legacyProof := TODOProofReference{Kind: "local-run-accepted", Source: "historical", Reference: "old", SourceDigest: digest, VerificationState: "verified"}
-	legacyLocal.VerifiedTransitionRef = &legacyProof
-	if _, err := store.verifyMVPProduction(ctx, "company-a", legacyLocal, TODOActionRequest{ProofReferences: []TODOProofReference{deployment}}, ""); err == nil || !strings.Contains(err.Error(), "local_proof") {
-		t.Fatalf("v2 completion accepted a historical local proof: %v", err)
-	}
-	staleLocal := beforeMove.TODO
-	staleLocal.ImplementationCommits = append([]TODOCommitReference{}, beforeMove.TODO.ImplementationCommits...)
-	staleLocal.ImplementationCommits[0].SourceDigest = sourceHash([]byte("older content"))
-	if _, err := store.verifyMVPProduction(ctx, "company-a", staleLocal, TODOActionRequest{ProofReferences: []TODOProofReference{deployment}}, ""); err == nil || !strings.Contains(err.Error(), "implementation_commits.source_digest") {
-		t.Fatalf("v2 completion accepted commits from an older digest: %v", err)
-	}
-	project, err := store.Project(ctx, "company-a", projectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.EditTODOPlacement(ctx, "company-a", TODOPlacementEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, ExpectedRoadmapRevision: &project.RoadmapRevision, OperationID: "change-local-placement", ReleaseID: beforeMove.TODO.ReleaseID, Position: *beforeMove.TODO.Position + 1, Reason: "Reopen review for changed placement"}); err != nil {
-		t.Fatalf("change local placement: %v", err)
-	}
-	revision++
-	afterMove, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-	if err != nil || afterMove.TODORevision != revision || afterMove.TODO.Stage != "Planning" || *afterMove.TODO.Position != *beforeMove.TODO.Position+1 {
-		t.Fatalf("changed placement did not reopen review: %+v, %v", afterMove, err)
-	}
-	for _, ref := range afterMove.TODO.ProofReferences {
-		if ref.Source == "human-review" {
-			t.Fatal("placement change retained an active review citation")
-		}
-	}
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-prior-local-proof", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}); err == nil {
-		t.Fatal("prior local proof authorized a different placement")
-	}
-	project, err = store.Project(ctx, "company-a", projectID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.EditTODOPlacement(ctx, "company-a", TODOPlacementEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, ExpectedRoadmapRevision: &project.RoadmapRevision, OperationID: "restore-local-placement", ReleaseID: beforeMove.TODO.ReleaseID, Position: *beforeMove.TODO.Position, Reason: "Confirm original placement still requires fresh proof"}); err != nil {
-		t.Fatalf("restore placement: %v", err)
-	}
-	revision++
-	afterMove, err = store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-stale-placement-review", RequestedStage: "Implementation-Approval-Pending"}); err == nil || !strings.Contains(err.Error(), "planning.reviews") {
-		t.Fatalf("unchanged review accepted: %v", err)
-	}
-	updated := contentFromTODO(afterMove.TODO)
-	updated.Context += " Reviewed after placement."
-	unchangedReview, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "placement-with-old-review", Content: updated, Reason: "Check the prior review cannot be reused"})
-	if err != nil {
-		t.Fatalf("edit without fresh review: %v", err)
-	}
-	revision = unchangedReview.Revision
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "reject-reused-review", RequestedStage: "Implementation-Approval-Pending"}); err == nil || !strings.Contains(err.Error(), "planning.reviews.critique") {
-		t.Fatalf("reused review accepted: %v", err)
-	}
-	updated.Planning.Reviews[0].Reference = "review/critique-new-placement"
-	for i := 1; i < len(updated.Planning.Reviews); i++ {
-		updated.Planning.Reviews[i].Reference += "-new-placement"
-	}
-	edit, err := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "fresh-placement-review", Content: updated, Reason: "Review the changed placement"})
-	if err != nil {
-		t.Fatalf("refresh review: %v", err)
-	}
-	revision = edit.Revision
-	digest = edit.ContentDigest
-	approval.SourceDigest, claim.SourceDigest, review.SourceDigest, deployment.SourceDigest = digest, digest, digest, digest
-	criterionProof.SourceDigest, scenarioProof.SourceDigest = digest, digest
-	vetProof.SourceDigest, imageProof.SourceDigest = digest, digest
-	result.ContentDigest = digest
-	placementProofs := append([]TODOProofReference{}, afterMove.TODO.ProofReferences...)
-	placementProofs = append(placementProofs, review, criterionProof, scenarioProof, vetProof, imageProof)
-	if _, err := store.EditTODOEvidence(ctx, "company-a", TODOEvidenceEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "rebind-placement-commit", ProofReferences: placementProofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{claim}, RecordSections: []TODOSection{}, Reason: "Bind implementation to fresh review"}); err != nil {
-		t.Fatalf("rebind evidence: %v", err)
-	}
-	revision++
-	revision = recordPlanningReviewSubjects(t, ctx, store, projectID, todoID, "repeat-planning-review-subject")
-	for _, stage := range []string{"Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress", "Local-Implemented"} {
-		transition := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "repeat-" + strings.ToLower(stage), RequestedStage: stage}
-		if stage == "Ready-for-Implementation" {
-			transition.ProofReferences = []TODOProofReference{approval}
-		}
-		if stage == "Local-Implemented" {
-			transition.LocalProof = result
-			if _, err := store.TransitionTODO(ctx, "company-a", transition); err == nil || !strings.Contains(err.Error(), "local_proof.todo_revision") {
-				t.Fatalf("replayed local proof accepted after placement change: %v", err)
-			}
-			proofRevision = revision
-			result.Position = afterMove.TODO.Position
-			result.RunID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
-			seal()
-			transition.OperationID = "repeat-local-fresh"
-			transition.LocalProof = result
-		}
-		if _, err := store.TransitionTODO(ctx, "company-a", transition); err != nil {
-			t.Fatalf("revalidate %s: %v", stage, err)
-		}
-		revision++
-	}
-	wrongDeployment := deployment
-	wrongDeployment.SourceDigest = sourceHash([]byte("wrong contract"))
-	if _, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "wrong-production-digest", RequestedStage: "Completed", ProofReferences: []TODOProofReference{wrongDeployment}}); err == nil || !strings.Contains(err.Error(), "proof_refs") {
-		t.Fatalf("stale production digest accepted or wrong TEACH: %v", err)
-	}
-	completedRequest := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}
-	completedCompetitor := completedRequest
+	completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}
+	competitor := completed
 	if projectID == "no-foundation" {
-		completedCompetitor.OperationID = "competing-production-delivery"
+		competitor.OperationID = "competing-production-delivery"
 	}
-	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, completedRequest, completedCompetitor)
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, completed, competitor)
 }
 
 func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, first, second TODOActionRequest) {
@@ -882,6 +849,7 @@ func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *M
 	close(start)
 	var winningOperation string
 	successes, conflicts := 0, 0
+	var conflictErrors []string
 	for range 2 {
 		result := <-results
 		switch {
@@ -890,16 +858,17 @@ func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *M
 			winningOperation = result.operationID
 		case errors.Is(result.err, ErrConflict):
 			conflicts++
+			conflictErrors = append(conflictErrors, result.operationID+": "+result.err.Error())
 		default:
 			t.Fatalf("concurrent %s transition: %v", first.RequestedStage, result.err)
 		}
 	}
 	if first.OperationID == second.OperationID {
 		if successes < 1 || successes+conflicts != 2 {
-			t.Fatalf("same-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
+			t.Fatalf("same-key %s outcomes: successes=%d conflicts=%d errors=%v", first.RequestedStage, successes, conflicts, conflictErrors)
 		}
 	} else if successes != 1 || conflicts != 1 {
-		t.Fatalf("competing-key %s outcomes: successes=%d conflicts=%d", first.RequestedStage, successes, conflicts)
+		t.Fatalf("competing-key %s outcomes: successes=%d conflicts=%d errors=%v", first.RequestedStage, successes, conflicts, conflictErrors)
 	}
 	current, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
 	if err != nil || current.TODORevision != revision+1 || current.TODO.Stage != first.RequestedStage || current.TODO.StageVerification != "verified" {
@@ -1188,6 +1157,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	completeMongoBornContent := validTODOContent()
 	completeMongoBornContent.Planning = &TODOPlanning{Complexity: "small", AuditTriggers: testAuditTriggers(), Assumptions: []TODOPlanningAssumption{}, Reviews: []TODOPlanningReview{{Kind: "critique", Reference: "review/critique"}}}
 	mongoBorn.Content = &completeMongoBornContent
+	mongoBorn.DiffExpectation = []TODORepositoryScope{{Repository: "Builder", RepositoryID: "owner/repo", DeliveryBranch: "r-08-rc", Baseline: strings.Repeat("a", 40), ExpectedPaths: []string{"go-app/**"}, NotExpectedPaths: []string{"flutter-app/**"}}}
 	setTODOValidator(TODOCollectionValidatorBeforeCreation())
 	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: historyValidatorBeforeContentDigest(TODOContentVersionsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatalf("set pre-creation content-version validator: %v", err)
@@ -1301,6 +1271,17 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("refresh placement review: %v", err)
 	}
 	recordPlanningReviewSubjects(t, ctx, store, "builder", mongoBorn.ID, "mongo-placement-review-subject")
+	if _, err := store.ChangeImplementationRepository(ctx, "company-a", "builder", ImplementationRepositoryChange{Action: "confirm", ProjectID: "builder", ExpectedRevision: 0, OperationID: "mongo-placement-repository-confirmation", Actor: "fixture-owner", OwnerReference: "fixture-owner-confirmed-owner-repo", RepositoryID: "owner/repo"}); err != nil {
+		t.Fatalf("confirm Mongo-born fixture repository: %v", err)
+	}
+	projectBeforeBranch, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	branchRevision := projectBeforeBranch.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &branchRevision, OperationID: "mongo-placement-release-branch", ID: "r-08", RepositoryID: "owner/repo", Branch: "r-08-rc", OwnerReference: "fixture-owner-confirmed-release-branch"}); err != nil {
+		t.Fatalf("confirm Mongo-born fixture Release branch: %v", err)
+	}
 	threeMongoRevision := int64(5)
 	wrongProof := TODOProofReference{Kind: "owner-approval", Source: "mongo-content-revision", Reference: "builder/" + mongoBorn.ID + "/content/0", SourceDigest: "sha256:" + strings.Repeat("0", 64), VerificationState: "unverified"}
 	wrongStart := TODOActionRequest{ProjectID: "builder", TODOID: mongoBorn.ID, ExpectedRevision: &threeMongoRevision, OperationID: "mongo-start-wrong-digest", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{wrongProof}, WaiverReferences: []TODOProofReference{}}
@@ -1803,21 +1784,11 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if err != nil || finalVersionCount != 4 {
 		t.Fatalf("section normalization content version count=%d err=%v; want 4", finalVersionCount, err)
 	}
-	if err := store.ConfigureLocalMatrix(filepath.Join("..", "..", "config", "selected_todo_local_checks.json")); err != nil {
-		t.Fatalf("load local proof matrix: %v", err)
-	}
 	proofResult := &LocalProofResult{
-		SchemaVersion: "builder-local-proof-result-v1", TODOID: request.TODO.ID,
-		RunID: "11111111-2222-4333-8444-555555555555", MatrixDigest: store.localMatrix.digest,
-		StartedAt:              time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
-		FinishedAt:             time.Now().UTC().Format(time.RFC3339Nano),
-		Before:                 localProofSnapshot{BuilderHead: strings.Repeat("a", 40), PACEDHead: strings.Repeat("b", 40), BuilderInputsDigest: "sha256:" + strings.Repeat("a", 64), PACEDInputsDigest: "sha256:" + strings.Repeat("b", 64)},
-		OutsideUntrackedBefore: map[string]map[string]string{"builder": {}, "paced": {}},
-	}
-	proofResult.After = proofResult.Before
-	proofResult.OutsideUntrackedAfter = proofResult.OutsideUntrackedBefore
-	for _, command := range store.localMatrix.DefaultRequired {
-		proofResult.Commands = append(proofResult.Commands, localProofCommand{ID: command, ExitCode: 0})
+		SchemaVersion: "builder-local-proof-result-v3", TODOID: request.TODO.ID,
+		RunID:      "11111111-2222-4333-8444-555555555555",
+		StartedAt:  time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		FinishedAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	proofBytes, err := json.Marshal(proofResult)
 	if err != nil {
@@ -1851,7 +1822,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "planning-create-test", TODO: planning}); err != nil {
 		t.Fatalf("create Planning regression TODO: %v", err)
 	}
-	planningContent := TODOAuthoredContent{TODOContent: validTODOContent(), Title: planning.Title, Objective: planning.Objective, DiffExpectation: []TODORepositoryScope{}, AffectedFiles: []string{}}
+	planningContent := TODOAuthoredContent{TODOContent: validTODOContent(), Title: planning.Title, Objective: planning.Objective, DiffExpectation: []TODORepositoryScope{{Repository: "Builder", RepositoryID: "owner/repo", DeliveryBranch: "r-09-rc", Baseline: strings.Repeat("a", 40), ExpectedPaths: []string{"go-app/**"}, NotExpectedPaths: []string{"flutter-app/**"}}}, AffectedFiles: []string{}}
 	planningContent.Planning = &TODOPlanning{Complexity: "small", AuditTriggers: testAuditTriggers(), Assumptions: []TODOPlanningAssumption{}, Reviews: []TODOPlanningReview{{Kind: "critique", Reference: "review/critique"}}}
 	planningContent.Objective = "Refined while still in Planning"
 	zeroPlanning := int64(0)
@@ -1871,6 +1842,14 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatalf("recover already affected Planning TODO: %+v, %v", recovered, err)
 	}
 	twoPlanning := recordPlanningReviewSubjects(t, ctx, store, "builder", planning.ID, "recovered-planning-review-subject")
+	planningBranchProject, err := store.Project(ctx, "company-a", "builder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planningBranchRevision := planningBranchProject.RoadmapRevision
+	if _, err := store.ChangeRoadmap(ctx, "company-a", "confirm-release-branch", RoadmapChange{ProjectID: "builder", ExpectedRoadmapRevision: &planningBranchRevision, OperationID: "planning-regression-release-branch", ID: "r-09", RepositoryID: "owner/repo", Branch: "r-09-rc", OwnerReference: "fixture-owner-confirmed-release-branch"}); err != nil {
+		t.Fatalf("confirm Planning regression Release branch: %v", err)
+	}
 	pending, err := store.TransitionTODO(ctx, "company-a", TODOActionRequest{ProjectID: "builder", TODOID: planning.ID, ExpectedRevision: &twoPlanning, OperationID: "review-planning-001", RequestedStage: "Implementation-Approval-Pending", ProofReferences: []TODOProofReference{}, WaiverReferences: []TODOProofReference{}})
 	if err != nil || pending.Stage != "Implementation-Approval-Pending" || pending.StageVerification != "verified" {
 		t.Fatalf("pre-approval transition: %+v, %v", pending, err)

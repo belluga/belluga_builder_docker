@@ -50,7 +50,7 @@ func TestGitTreeRejectsOversizedBlobBeforeRead(t *testing.T) {
 
 func TestGitTreeListsOnlyTheSelectedManagedSubtree(t *testing.T) {
 	root := t.TempDir()
-	for _, item := range []struct{ path, contents string }{{"prototypes/catalog.json", "{}"}, {"design/system/design-system.json", "{}"}, {"unrelated/large.bin", "unrelated"}} {
+	for _, item := range []struct{ path, contents string }{{"design/system/catalog.json", "{}"}, {"design/system/design-system.json", "{}"}, {"unrelated/large.bin", "unrelated"}} {
 		path := filepath.Join(root, filepath.FromSlash(item.path))
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -98,7 +98,7 @@ func TestGitTreeDoesNotTreatNonDirectoryCollectionRootAsAbsent(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "target", "README.md"), []byte("fixture"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("target", filepath.Join(root, "prototypes")); err != nil {
+	if err := os.Symlink("target", filepath.Join(root, "design")); err != nil {
 		t.Fatal(err)
 	}
 	runGitFixture(t, root, "init", "-q")
@@ -110,9 +110,8 @@ func TestGitTreeDoesNotTreatNonDirectoryCollectionRootAsAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := Evaluate(source, DefaultProjectID)
-	if response.Outcome != "no_go" || !diagnosticCode(response, "unsupported_file") || diagnosticCode(response, "missing_catalog") {
-		t.Fatalf("committed symlink collection root was conflated with an absent root: %#v", response)
+	if _, err := source.List("design"); !errors.Is(err, ErrUnsafePath) {
+		t.Fatalf("committed symlink collection root was not rejected as unsafe: %v", err)
 	}
 }
 
@@ -285,10 +284,10 @@ func TestGitTreeIgnoresAmbientGitDirectoryAndConfig(t *testing.T) {
 func TestWorkingTreeFinalCheckDetectsInventoryAndReadChanges(t *testing.T) {
 	root := t.TempDir()
 	runGitFixture(t, root, "init", "-q")
-	if err := os.Mkdir(filepath.Join(root, "prototypes"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "design", "system"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, "prototypes", "catalog.json")
+	path := filepath.Join(root, "design", "system", "catalog.json")
 	if err := os.WriteFile(path, []byte(`{"fixture":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -296,10 +295,10 @@ func TestWorkingTreeFinalCheckDetectsInventoryAndReadChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.List("prototypes"); err != nil {
+	if _, err := source.List("design/system"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := source.Read("prototypes/catalog.json", 256); err != nil {
+	if _, _, err := source.Read("design/system/catalog.json", 256); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte(`{"fixture":false}`), 0o644); err != nil {
@@ -313,23 +312,23 @@ func TestWorkingTreeFinalCheckDetectsInventoryAndReadChanges(t *testing.T) {
 func TestWorkingTreeFinalCheckDetectsNewInventoryEntry(t *testing.T) {
 	root := t.TempDir()
 	runGitFixture(t, root, "init", "-q")
-	if err := os.Mkdir(filepath.Join(root, "prototypes"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(root, "design", "system"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "prototypes", "catalog.json"), []byte("{}"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "design", "system", "catalog.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	source, err := NewWorkingTree(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := source.List("prototypes"); err != nil {
+	if _, err := source.List("design/system"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := source.Read("prototypes/catalog.json", 256); err != nil {
+	if _, _, err := source.Read("design/system/catalog.json", 256); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "prototypes", "new-file"), []byte("new"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "design", "system", "new-file"), []byte("new"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := source.VerifyStable(); err == nil {
@@ -354,7 +353,7 @@ func TestWorkingTreeStabilityUsesCapturedManagedPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := source.VerifyStable(); err != nil {
-		t.Fatalf("generic source stability was hardcoded to a Prototype prefix: %v", err)
+		t.Fatalf("generic source stability was hardcoded to an artifact prefix: %v", err)
 	}
 }
 

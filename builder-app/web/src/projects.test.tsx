@@ -24,6 +24,9 @@ function verifiedStage(stage: "Planning" | "Implementation-Approval-Pending" | "
 function unverifiedStage(authored = "unknown", teach = "TEACH: stage requires review.") {
   return { authored_delivery_stage: authored, delivery_stage_state: "unverified", delivery_stage_teach: teach, blocked: false, qualifier_state: "verified", work_state: "unknown" } as const;
 }
+function completedTodo(id: string, title: string, basis: "verified" | "administrative") {
+  return { id, title, kind: "executable", record_state: "active", authored_delivery_stage: "Completed", delivery_stage: "Completed", delivery_stage_state: basis, ...(basis === "administrative" ? { delivery_stage_basis: "administrative-acceptance", administrative_acceptance: { accepted_stage: "Completed", owner_reference: "APROVADO", reason: "Already delivered", permission_decision: "pre-iam-private-api-allow-all", accepted_at: "2026-11-07T00:00:00Z", content_digest: "sha256:accepted" } } : {}), objective_state: "complete", next_step_state: "complete", blocked: false, qualifier_state: "verified", work_state: "unknown" };
+}
 function roadmap(projectID: string) { return { schema_version: "builder-roadmap-projection-v3", project_id: projectID, focus_release_id: "r-04", backlog: { todos: [{ id: "backlog:todos/active/backlog-item.md", title: "Unassigned active task", path: "todos/active/backlog-item.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }, { id: "backlog:todos/active/backlog-item-two.md", title: "Second unassigned task", path: "todos/active/backlog-item-two.md", kind: "executable", record_state: "active", ...verifiedStage("Planning", "Pending"), objective_state: "absent", next_step_state: "absent" }], folders: [] }, unclassified: [], diagnostics: [], epics: [
   { id: "e-01", name: `${projectID} Local projects`, description: "Local Project view", releases: [
     { id: "r-01", name: "First local viewer", description: "Local knowledge", todos: [
@@ -59,8 +62,11 @@ function detail(companyID: string, projectID: string, documents: { path: string;
     visual_origin: { state: "matching", knowledge_source_state: "matching", roadmap_source_state: "matching", design_system_state: "matching" },
   } }; }
 function overviewRead(companyID: string, projectID: string) { const source = detail(companyID, projectID).overview; return { state: "available", company_id: companyID, project_id: projectID, revision: 1, content: { schema_version: "1", tagline: source.tagline, summary: source.summary, desktop_alt: source.desktop_alt, mobile_alt: source.mobile_alt, sections: source.sections }, media: Object.entries(source.media).map(([slot]) => ({ slot, digest: `sha256:${"a".repeat(64)}`, href: `/api/overview/media/${companyID}/${projectID}/1/${slot}` })) }; }
-function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+function landingRead(companyID: string, projectID: string) { return { state: "available", company_id: companyID, project_id: projectID, revision: "f".repeat(40), inventory_digest: `sha256:${"b".repeat(64)}`, entry_url: `/api/landing/file/${companyID}/${projectID}/3/${"f".repeat(40)}/${"b".repeat(64)}/files/design/landing/index.html` }; }
+function mockFetch(documents: { path: string; url: string }[] = [], documentResponse?: { ok: boolean; body?: string; fingerprint?: string }, todoResponse = todoMarkdown, landingResponse?: { state: "available" | "not_authored" | "invalid"; entry_url?: string; teach?: string; revision?: string; inventory_digest?: string }) { const fetcher = vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
+  if (url.pathname === "/api/landing") return { ok: true, json: async () => landingResponse || landingRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/knowledge") return { ok: true, json: async () => ({ project_id: url.searchParams.get("project_id"), active: false, state: "pending", documents: [] }) };
   if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
@@ -70,9 +76,11 @@ function mockFetch(documents: { path: string; url: string }[] = [], documentResp
   if (url.pathname.startsWith("/snapshot/") && url.pathname.includes("/todos/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), text: async (): Promise<string> => todoResponse };
   if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
   return { ok: true, json: async () => url.searchParams.has("project_id") ? detail(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!, documents) : { companies, projects } };
-})); }
+}); vi.stubGlobal("fetch", fetcher); return fetcher; }
 function mockProjectDetail(saved: ReturnType<typeof detail>, todoResponse = todoMarkdown) { vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
   const url = new URL(String(input), location.origin);
+  if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
+  if (url.pathname === "/api/landing") return { ok: true, json: async () => landingRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead(url.searchParams.get("company_id")!, url.searchParams.get("project_id")!) };
   if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
   if (url.pathname === "/api/local-todo-source") return { ok: true, json: async () => ({ todo_id: url.searchParams.get("todo_id"), fingerprint, markdown: todoResponse }) };
@@ -85,6 +93,17 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("loads the directory through the Registry catalog route only", async () => {
+    const fetcher = mockFetch();
+    render(<Projects />);
+    expect(await screen.findByRole("button", { name: /Belluga/ })).toBeInTheDocument();
+    const catalogCalls = fetcher.mock.calls.filter(([input]) => new URL(String(input), location.origin).pathname === "/api/catalog");
+    expect(catalogCalls).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => {
+      const path = new URL(String(input), location.origin).pathname;
+      return path === "/api/local-preview" || path.startsWith("/snapshot/");
+    })).toBe(false);
+  });
   it("renders Mongo Overview for an unbound registered Project without reading snapshots", async () => {
     const unbound = { id: "accountzz", name: "Accountzz", company_id: "belluga", source_bound: false };
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
@@ -119,21 +138,110 @@ describe("single root Project experience", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/roadmap?"))).toBe(true);
   });
 
-  it("distinguishes administrative completion and non-delivery dispositions in a Release", async () => {
+  it("presents administrative completion like other completed work while preserving dispositions", async () => {
     const registryRoadmap = roadmap("builder");
-    registryRoadmap.epics[0].releases[0].todos.push({ id: "accepted-complete", title: "Accepted historical delivery", kind: "executable", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Completed", delivery_stage: "Completed", delivery_stage_state: "administrative", delivery_stage_basis: "administrative-acceptance", administrative_acceptance: { accepted_stage: "Completed", owner_reference: "APROVADO", reason: "Already delivered", permission_decision: "pre-iam-private-api-allow-all", accepted_at: "2026-11-07T00:00:00Z", content_digest: "sha256:old" }, blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    registryRoadmap.epics[0].releases[0].todos.push({ ...completedTodo("accepted-complete", "Accepted historical delivery", "administrative"), todo_revision: 0 } as never);
     registryRoadmap.epics[0].releases[0].todos.push({ id: "discarded", title: "Discarded historical obligation", kind: "non-delivery", todo_revision: 0, record_state: "active", objective_state: "complete", next_step_state: "complete", authored_delivery_stage: "Planning", delivery_stage_state: "unverified", disposition: { kind: "Discarded", reason: "No longer required" }, disposition_state: "valid", blocked: false, qualifier_state: "verified", work_state: "unknown" } as never);
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"c".repeat(64)}`, todo: { id: "accepted-complete", project_id: "builder", revision: 0, title: "Accepted historical delivery", objective: "Accepted objective", next_exact_step: "Review historical acceptance", stage: "Completed", sections: [], content: { schema_version: 2, context: "Historical context", scope: { included: ["One approved path"] }, references: [{ kind: "historical-foundation-source", ref: "todos/completed/example.md" }] } } };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByText("Concluída")).toBeInTheDocument();
+    const acceptedRow = screen.getByText("Accepted historical delivery").closest("article");
+    expect(acceptedRow).not.toBeNull();
+    expect(within(acceptedRow!).getByText("Concluído")).toHaveClass("done");
+    expect(screen.getByText("Histórico não entregue")).toBeInTheDocument();
+    expect(screen.getByText("Descartado")).toBeInTheDocument();
+    fireEvent.click(within(acceptedRow!).getByRole("button", { name: /Accepted historical delivery/ }));
+    expect(await screen.findByRole("dialog", { name: "Prévia do TODO" })).toBeInTheDocument();
+    expect(screen.queryByText(/Aceite administrativo/)).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByText("Accepted objective")).toBeInTheDocument();
+    expect(screen.getByText("Aceite administrativo de APROVADO: Already delivered. Não é uma promoção verificada.")).toBeInTheDocument();
+    expect(screen.getByText("One approved path")).toBeInTheDocument();
+    const exactRead = vi.mocked(fetch).mock.calls.map(([input]) => new URL(String(input), location.origin)).find((url) => url.searchParams.has("todo_id"));
+    expect(exactRead?.searchParams.get("todo_id")).toBe("accepted-complete");
+    expect(exactRead?.searchParams.get("todo_revision")).toBe("0");
+  });
+
+  it.each([
+    { name: "all administrative", bases: ["administrative", "administrative"] as const },
+    { name: "mixed verified and administrative", bases: ["verified", "administrative"] as const },
+  ])("shows $name completion consistently on Roadmap and Release detail", async ({ bases }) => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.epics[0].releases[0].todos = [
+      completedTodo("basis-one", "Basis one", bases[0]),
+      completedTodo("basis-two", "Basis two", bases[1]),
+    ] as never;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
       return { ok: true, json: async () => ({ companies, projects }) };
     }));
+
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-01");
+    const roadmapView = render(<Projects />);
+    const releaseToggle = await screen.findByRole("button", { name: /First local viewer/ });
+    expect(releaseToggle.querySelector(".roadmap-release-status")).toHaveClass("completed");
+    expect(releaseToggle).toHaveTextContent("2 / 2 TODOs concluídos");
+    expect(screen.getByText("Concluída")).toHaveClass("completed");
+    if (!releaseToggle.closest(".roadmap-release")?.classList.contains("focused")) {
+      fireEvent.click(releaseToggle);
+      await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ }).closest(".roadmap-release")).toHaveClass("focused"));
+    }
+    await act(async () => { await Promise.resolve(); });
+    fireEvent.click(screen.getByRole("button", { name: /First local viewer/ }));
+    await waitFor(() => expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "true"));
+    for (const title of ["Basis one", "Basis two"]) {
+      const row = (await screen.findByText(new RegExp(title))).closest("tr");
+      expect(row).not.toBeNull();
+      expect(within(row!).getByText("Concluído")).toHaveClass("done");
+    }
+    roadmapView.unmount();
+
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
-    expect(await screen.findByText("Concluída por aceite administrativo")).toBeInTheDocument();
-    expect(screen.getByText("Concluído · aceite administrativo")).toBeInTheDocument();
-    expect(screen.getByText("Histórico não entregue")).toBeInTheDocument();
-    expect(screen.getByText("Descartado")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
+    expect(document.querySelector(".release-badge")).toHaveClass("completed");
+    expect(document.querySelector(".release-hero")).toHaveTextContent("2 / 2 TODOs concluídos");
+    for (const title of ["Basis one", "Basis two"]) {
+      const row = screen.getByText(new RegExp(title)).closest("article");
+      expect(row).not.toBeNull();
+      expect(within(row!).getByText("Concluído")).toHaveClass("done");
+    }
+  });
+
+  it.each([
+    { name: "partially completed", incomplete: true, count: "1 / 2 TODOs concluídos", status: "Em andamento" },
+    { name: "empty", incomplete: false, count: "0 / 0 TODOs concluídos", status: "Status indisponível" },
+  ])("keeps $name Release counts aligned across Roadmap and detail", async ({ incomplete, count, status }) => {
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.epics[0].releases[0].todos = incomplete ? [
+      completedTodo("completed-one", "Completed one", "administrative"),
+      { ...completedTodo("open-two", "Open two", "verified"), authored_delivery_stage: "In-Progress", delivery_stage: "In-Progress" },
+    ] as never : [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => registryRoadmap };
+      return { ok: true, json: async () => ({ companies, projects }) };
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap&epic_id=e-01&release_id=r-01");
+    const roadmapView = render(<Projects />);
+    const releaseToggle = await screen.findByRole("button", { name: /First local viewer/ });
+    expect(releaseToggle).toHaveTextContent(count);
+    expect(releaseToggle).toHaveTextContent(status);
+    roadmapView.unmount();
+
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
+    render(<Projects />);
+    expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
+    expect(document.querySelector(".release-hero")).toHaveTextContent(count);
+    expect(document.querySelector(".release-badge")).toHaveTextContent(status);
   });
 
   it("loads the Mongo Overview independently when the Foundation Reader fails", async () => {
@@ -243,92 +351,78 @@ describe("single root Project experience", () => {
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("local-todo-source"))).toBe(false);
   });
 
-  it("does not start another detail request on tab return or elapsed time", async () => {
+  it("loads Overview without a Project snapshot request or a refresh timer", async () => {
     const interval = vi.spyOn(window, "setInterval");
-    let resolveDetail!: (value: unknown) => void;
-    const pendingDetail = new Promise<unknown>((resolve) => { resolveDetail = resolve; });
-    const detailCalls = vi.fn();
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", url.searchParams.get("project_id")!) };
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") };
-      if (url.pathname.startsWith("/snapshot/")) return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme };
-      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) { detailCalls(); return pendingDetail as Promise<never>; }
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("Overview requested a Project snapshot");
       return { ok: true, json: async () => ({ companies, projects }) };
     });
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
-    await waitFor(() => expect(detailCalls).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
     for (let index = 0; index < 10; index++) fireEvent(document, new Event("visibilitychange"));
-    expect(detailCalls).toHaveBeenCalledTimes(1);
-    resolveDetail({ ok: true, json: async () => detail("belluga", "builder") });
-    expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    fireEvent(document, new Event("visibilitychange"));
-    expect(detailCalls).toHaveBeenCalledTimes(1);
+    expect(fetcher.mock.calls.filter(([input]) => new URL(String(input), location.origin).pathname === "/api/catalog")).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/local-preview")).toBe(false);
     expect(interval.mock.calls.some(([, delay]) => delay === 30_000)).toBe(false);
     interval.mockRestore();
   });
-  it("restarts elapsed time for each retry and Project selection", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
-    const requests = new Map<string, ((value: unknown) => void)[]>();
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+  it("opens Prototype independently of the Project detail reader", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => roadmap(url.searchParams.get("project_id") || "builder") });
-      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
-      if (url.pathname === "/api/local-preview") return new Promise((resolve) => {
-        const projectID = url.searchParams.get("project_id")!;
-        requests.set(projectID, [...(requests.get(projectID) || []), resolve]);
-      });
-      return Promise.resolve({ ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": fingerprint }), json: async () => theme });
-    }));
+      if (url.pathname === "/api/prototypes") return new Response(JSON.stringify({ revision: "a".repeat(40), inventory_digest: `sha256:${"b".repeat(64)}`, items: [] }), { status: 200 });
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("Prototype requested Project detail");
+      return { ok: true, json: async () => ({ companies, projects }) };
+    });
+    vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
     render(<Projects />);
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("builder")).toHaveLength(1);
-    await act(async () => { vi.advanceTimersByTime(5_000); });
-    expect(screen.getByText("Aguardando há 5 s")).toBeInTheDocument();
-    await act(async () => { requests.get("builder")![0]({ ok: false, status: 500 }); await Promise.resolve(); });
-    expect(screen.getByRole("alert")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Tentar novamente" }));
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("builder")).toHaveLength(2);
-    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
-    await act(async () => { vi.advanceTimersByTime(2_000); });
-    expect(screen.getByText("Aguardando há 2 s")).toBeInTheDocument();
-    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=prototypes"); window.dispatchEvent(new PopStateEvent("popstate")); });
-    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
-    expect(requests.get("boora")).toHaveLength(1);
-    expect(screen.getByRole("region", { name: "Abrindo projeto" })).toHaveTextContent("Belluga / Bóora!");
-    expect(screen.getByText("Aguardando há 0 s")).toBeInTheDocument();
-    await act(async () => { vi.advanceTimersByTime(1_000); });
-    expect(screen.getByText("Aguardando há 1 s")).toBeInTheDocument();
-    expect(screen.queryByRole("progressbar")).not.toBeInTheDocument();
-    expect(screen.queryByText(/\d+%/)).not.toBeInTheDocument();
-    cleanup();
-    vi.useRealTimers();
+    await waitFor(() => expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/prototypes?company_id=belluga&project_id=builder"))).toBe(true));
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/local-preview?company_id=belluga&project_id=builder"))).toBe(false);
   });
-  it("keeps the loaded Project detail through page, brand and invalid-link recovery navigation", async () => {
+  it("loads API-owned pages through navigation without requesting Project detail", async () => {
     const fetcher = vi.mocked(fetch);
-    const detailCalls = () => fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/local-preview?company_id=")).length;
+    const projectDetailCalls = () => fetcher.mock.calls.filter(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === "/api/local-preview" && url.searchParams.has("project_id");
+    }).length;
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
     expect(await screen.findByRole("button", { name: /First local viewer/ })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
     expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("link", { name: "Project Builder" }));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&page=missing"); window.dispatchEvent(new PopStateEvent("popstate")); });
     fireEvent.click(screen.getByRole("link", { name: "Back to Overview" }));
     expect(await screen.findByRole("heading", { name: "The problem" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
     act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=builder&artifact=prototype%3Ademo"); window.dispatchEvent(new PopStateEvent("popstate")); });
     fireEvent.click(screen.getByRole("link", { name: "Open Prototype" }));
     expect(await screen.findByRole("heading", { name: "Prototypes" })).toBeInTheDocument();
-    expect(detailCalls()).toBe(1);
+    expect(projectDetailCalls()).toBe(0);
+  });
+  it.each([
+    ["overview", "/api/overview"], ["roadmap", "/api/roadmap"], ["backlog", "/api/roadmap"],
+    ["release&epic_id=e-01&release_id=r-04", "/api/roadmap"], ["todo&todo_id=roadmap-runtime", "/api/roadmap"],
+    ["documents", "/api/knowledge"], ["design-system", "/api/design-system"], ["prototypes", "/api/prototypes"],
+  ])("opens %s from its owning API without Project detail", async (routeQuery, endpoint) => {
+    const fetcher = vi.mocked(fetch);
+    history.replaceState({}, "", `/?company_id=belluga&project_id=builder&page=${routeQuery}`);
+    render(<Projects />);
+    await waitFor(() => expect(fetcher.mock.calls.some(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === endpoint && url.searchParams.get("company_id") === "belluga" && url.searchParams.get("project_id") === "builder";
+    })).toBe(true));
+    expect(fetcher.mock.calls.some(([input]) => {
+      const url = new URL(String(input), location.origin);
+      return url.pathname === "/api/local-preview" && url.searchParams.has("project_id");
+    })).toBe(false);
   });
   it("does not treat Foundation snapshot observations as current Overview state", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -360,6 +454,7 @@ describe("single root Project experience", () => {
     const calls: URL[] = [];
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) {
         calls.push(url);
@@ -403,6 +498,7 @@ describe("single root Project experience", () => {
     mongoRoadmap.epics[0].releases[0].todos.push({ id: "mongo-late", title: "Delayed Mongo TODO", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Delayed objective", objective_state: "complete", next_step: "Review", next_step_state: "complete", ...verifiedStage("Planning") } as typeof mongoRoadmap.backlog.todos[number]);
     const fetcher = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
       if (url.pathname === "/api/overview") return Promise.resolve({ ok: true, json: async () => overviewRead("belluga", url.searchParams.get("project_id")!) });
       if (url.pathname === "/api/roadmap" && url.searchParams.has("todo_id")) return new Promise((resolve) => { resolveTODO = resolve; });
       if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => mongoRoadmap });
@@ -425,6 +521,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=backlog");
     const fetchSpy = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
       if (url.pathname === "/api/design-system") return Promise.resolve({ ok: true, json: async () => designSystemRead("belluga", "builder") });
       if (url.pathname === "/api/roadmap") return Promise.resolve({ ok: true, json: async () => detail("belluga", url.searchParams.get("project_id") || "builder").roadmap });
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return Promise.resolve({ ok: true, json: async () => ({ companies, projects }) });
@@ -595,7 +692,8 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 }, { timeout: 5000 })).toBeInTheDocument();
-    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
+    expect(document.querySelector(".release-hero")).toHaveTextContent("3 / 3 TODOs concluídos");
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Builder genesis ledger");
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-02&release_id=r-01");
     window.dispatchEvent(new PopStateEvent("popstate"));
@@ -610,7 +708,7 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=release&epic_id=e-01&release_id=r-01");
     render(<Projects />);
     expect(await screen.findByRole("heading", { name: "First local viewer", level: 1 })).toBeInTheDocument();
-    expect(document.querySelector(".release-badge")).toHaveTextContent("Entregue");
+    expect(document.querySelector(".release-badge")).toHaveTextContent("Concluída");
     expect(screen.getByRole("region", { name: "Histórico não entregue" })).toHaveTextContent("Replaced historical plan");
     expect(screen.getByRole("region", { name: "TODOs executáveis" })).not.toHaveTextContent("Replaced historical plan");
   });
@@ -627,6 +725,24 @@ describe("single root Project experience", () => {
     expect(await screen.findByLabelText("Switch Project")).toHaveValue("builder");
     expect(location.pathname).toBe("/");
     expect(screen.getByRole("navigation", { name: "Project pages" })).toBeInTheDocument();
+  });
+  it("loads portfolio cards in one Company request without fetching a Project snapshot per card", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/portfolios") return { ok: true, json: async () => ({ company_id: "belluga", projects: [
+        { company_id: "belluga", project_id: "builder", state: "available", summary: "Builder from Git", files: [] },
+        { company_id: "belluga", project_id: "boora", state: "not_authored", files: [] },
+      ] }) };
+      if (url.pathname === "/api/local-preview" && url.searchParams.has("project_id")) throw new Error("portfolio card requested a Project snapshot");
+      return previousFetch(input);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<Projects />);
+    fireEvent.click(await screen.findByRole("button", { name: /Belluga/ }));
+    expect(await screen.findByText("Builder from Git")).toBeInTheDocument();
+    expect(fetcher.mock.calls.filter(([input]) => String(input).startsWith("/api/portfolios?company_id=belluga"))).toHaveLength(1);
+    expect(fetcher.mock.calls.some(([input]) => String(input).includes("/api/local-preview?company_id="))).toBe(false);
   });
   it("applies Project Design System roles to the whole Project page", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -675,7 +791,9 @@ describe("single root Project experience", () => {
     expect(narrative).toBeInTheDocument();
     expect(document.querySelector(".overview-status")).not.toBeInTheDocument();
     expect(screen.queryByText(/Saved snapshot:/)).not.toBeInTheDocument();
-    expect(await screen.findByRole("link", { name: /Ver landing independente/ })).toHaveAttribute("target", "_blank");
+    const landingLink = await screen.findByRole("link", { name: /Ver landing independente/ });
+    expect(landingLink).toHaveAttribute("target", "_blank");
+    expect(landingLink).toHaveAttribute("href", `/api/landing/file/belluga/builder/3/${"f".repeat(40)}/${"b".repeat(64)}/files/design/landing/index.html`);
     expect(screen.queryByRole("region", { name: "Executive Landing artifact" })).not.toBeInTheDocument();
     expect(screen.queryByText("MVP")).not.toBeInTheDocument();
     const hero = document.querySelector(".project-hero");
@@ -685,6 +803,15 @@ describe("single root Project experience", () => {
     expect(screen.getByAltText("Mobile Project view")).toBeInTheDocument();
     expect(screen.getByText("CONCEITO · DADOS ILUSTRATIVOS")).toBeInTheDocument();
     expect(screen.getByAltText("Admitted Builder document view")).toHaveAttribute("src", "/api/overview/media/belluga/builder/1/proposal");
+  });
+  it("reports missing canonical Landing as not-authored without consulting snapshot or Markdown", async () => {
+    const fetcher = mockFetch([], undefined, todoMarkdown, { state: "not_authored", teach: "TEACH: Publish Landing v2 in the bound artifact Git repository." });
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText(/Publish Landing v2/)).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("link", { name: /Ver landing independente/ })).not.toBeInTheDocument();
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/snapshot/"))).toBe(false);
+    expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/landing")).toBe(true);
   });
   it("keeps Overview editorial separate from an empty Documents state", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -723,6 +850,7 @@ describe("single root Project experience", () => {
   it("renders stale Mongo Overview TEACH without Foundation review metadata", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => ({ ...overviewRead("belluga", "builder"), state: "stale", teach: "TEACH: Review the current source parity." }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/roadmap") return { ok: true, json: async () => roadmap("builder") };
@@ -746,7 +874,7 @@ describe("single root Project experience", () => {
     expect(screen.getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
     expect(document.querySelector(".roadmap-context")).toHaveTextContent("Project UI and real Roadmap");
     expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(screen.getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Concluída");
     expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(screen.getByRole("group", { name: "Releases for selected Epic" })).getByText("Project UI and real Roadmap")).toBeInTheDocument();
@@ -824,7 +952,7 @@ describe("single root Project experience", () => {
     expect(within(overview).getByRole("group", { name: "Select Epic" })).toHaveTextContent("builder Local projects");
     expect(within(overview).getByRole("group", { name: "Releases for selected Epic" })).toHaveTextContent("Project UI and real Roadmap");
     const releaseRail = within(overview).getByRole("group", { name: "Releases for selected Epic" });
-    expect(within(releaseRail).getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Entregue");
+    expect(within(releaseRail).getByRole("button", { name: /First local viewer/ })).toHaveTextContent("Concluída");
     expect(within(releaseRail).getByRole("button", { name: /Project UI and real Roadmap/ })).toHaveTextContent("Bloqueada");
     expect(within(overview).queryByText("1 / 5")).not.toBeInTheDocument();
     fireEvent.click(within(overview).getByRole("button", { name: "Next Epic" }));
@@ -849,7 +977,10 @@ describe("single root Project experience", () => {
     { name: "planning-only", todos: [{ kind: "planning", ...verifiedStage("Completed") }], expected: "Status indisponível" },
     { name: "blocked ready", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true) }], expected: "Bloqueada" },
     { name: "invalid blocked qualifier remains unknown", todos: [{ kind: "executable", ...verifiedStage("Completed", "Completed", true), qualifier_state: "unverified", qualifier_teach: "TEACH: correct the qualifier" }], expected: "Status indisponível" },
-    { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Entregue" },
+    { name: "work note does not impersonate blocked qualifier", todos: [{ kind: "executable", ...verifiedStage("Completed"), work_state: "blocked" }], expected: "Concluída" },
+    { name: "documentary completion uses the shared completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }], expected: "Concluída" },
+    { name: "mixed completed bases use the shared completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only", documentary_completion: true }, { kind: "executable", ...verifiedStage("Completed") }], expected: "Concluída" },
+    { name: "documentary basis does not alter completed status", todos: [{ kind: "executable", ...verifiedStage("Completed"), delivery_kind: "knowledge-only" }], expected: "Concluída" },
   ])("derives $name Release status without a second delivery field", async ({ todos, expected }) => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
@@ -959,7 +1090,7 @@ describe("single root Project experience", () => {
     mockProjectDetail(saved);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
     render(<Projects />);
-    expect(await screen.findByText("Project Roadmap data is not available in this saved snapshot.")).toBeInTheDocument();
+    expect(await screen.findByText(/TEACH: Mongo Roadmap indisponível/)).toBeInTheDocument();
     fireEvent.click(within(screen.getByRole("navigation", { name: "Project pages" })).getByRole("button", { name: "Overview" }));
     expect(await screen.findByText("Product direction")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Ver landing independente/ })).toHaveAttribute("target", "_blank");
@@ -1064,24 +1195,24 @@ describe("single root Project experience", () => {
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#cc99ee");
   });
   it("replaces Prototype evidence and presentation identity when switching Projects", async () => {
-    const booraFingerprint = "b".repeat(64);
-    const registered = projects.map((item) => item.id === "boora" ? { ...item, snapshot_fingerprint: booraFingerprint } : item);
+    const revision = "b".repeat(40);
+    const digest = `sha256:${"c".repeat(64)}`;
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", url.searchParams.get("project_id") || "builder") };
-      if (url.pathname.startsWith("/snapshot/")) {
-        const boora = url.pathname.includes("/boora/");
-        return { ok: true, headers: new Headers({ "X-Builder-Snapshot-Fingerprint": boora ? booraFingerprint : fingerprint }), json: async () => theme };
+      if (url.pathname === "/api/prototypes") {
+        const id = url.searchParams.get("project_id")!;
+        return new Response(JSON.stringify({ revision, inventory_digest: digest, items: [{ id: `${id}-prototype`, name: `${id} Prototype`, status: "active", detail_url: `/api/prototypes/${revision}/${id}-prototype?company_id=belluga&project_id=${id}` }] }), { status: 200 });
       }
-      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects: registered }) };
-      const id = url.searchParams.get("project_id")!;
-      const saved = detail("belluga", id);
-      const prototype = { id: `${id}-prototype`, name: `${id} Prototype`, root: `prototypes/${id}`, status: "active", authoring_mode: "design_system_first", entry_point: "home.html",
+      if (url.pathname.startsWith(`/api/prototypes/${revision}/`)) {
+        const id = url.searchParams.get("project_id")!;
+        const prototype = { id: `${id}-prototype`, name: `${id} Prototype`, root: `prototypes/${id}`, status: "active", authoring_mode: "design_system_first", entry_point: "home.html",
         screens: [{ id: `${id}-screen`, name: `${id} Screen`, path: "home.html", default_state_id: "default", states: [{ id: "default", name: "Default", identifier_image: "home.png", approved_references: [] }] }],
         scenarios: [], transitions: [] };
-      return { ok: true, json: async () => ({ ...saved, snapshot_fingerprint: id === "boora" ? booraFingerprint : fingerprint,
-        artifacts: [...saved.artifacts, { id: prototype.id, kind: "prototype", name: prototype.name, state: "available", entry_point: `${prototype.root}/home.html` }],
-        snapshot_observations: { prototype_status: { outcome: "go", items: [prototype] } } }) };
+        return new Response(JSON.stringify({ revision, inventory_digest: digest, item: prototype, file_urls: [{ path: `${prototype.root}/home.html`, url: `/api/prototypes/file/belluga/${id}/${revision}/${digest.slice(7)}/files/${prototype.root}/home.html` }] }), { status: 200 });
+      }
+      if (!url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
+      return { ok: true, json: async () => detail("belluga", url.searchParams.get("project_id")!) };
     });
     vi.stubGlobal("fetch", fetcher);
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=prototypes");
@@ -1093,7 +1224,8 @@ describe("single root Project experience", () => {
     expect(await screen.findByRole("heading", { name: "boora Screen / Default" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "builder Screen / Default" })).not.toBeInTheDocument();
     expect(screen.getAllByLabelText("Prototype inspector")).toHaveLength(1);
-    expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(booraFingerprint);
+    expect(screen.getByRole("link", { name: /Abrir apresentação/ }).getAttribute("href")).toContain(revision);
+    expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/snapshot/"))).toBe(false);
     expect(fetcher.mock.calls.some(([input]) => new URL(String(input), location.origin).pathname === "/api/design-system")).toBe(true);
   });
   it("restores the visual catalogue and opens the rendered presentation at the selected SHA", async () => {
@@ -1109,6 +1241,7 @@ describe("single root Project experience", () => {
   it("does not apply the Foundation snapshot theme as the Design System page theme", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead("belluga", "builder") };
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
@@ -1124,6 +1257,7 @@ describe("single root Project experience", () => {
   it("uses the selected Design System for Project theming when raw snapshot reads fail", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") return { ok: true, json: async () => designSystemRead(url.searchParams.get("company_id") || "", url.searchParams.get("project_id") || "") };
       if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
@@ -1146,6 +1280,7 @@ describe("single root Project experience", () => {
   it("uses a valid inherited Company Design System without a Project selection", async () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") {
         const inherited = designSystemRead("belluga", "builder");
@@ -1168,6 +1303,7 @@ describe("single root Project experience", () => {
   it("refuses a Design System response from a different selected revision", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
       if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
       if (url.pathname === "/api/design-system") {
         const selected = designSystemRead("belluga", "builder");

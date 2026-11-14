@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -21,76 +20,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == ac.TargetDesignSystem {
 		return runDesignSystem(args[1:], stdout, stderr)
 	}
-	if len(args) == 0 || args[0] != ac.TargetPrototypes {
-		fmt.Fprintln(stderr, "usage: artifact-status prototypes --mode working-tree|committed [--revision SHA]")
+	if len(args) > 0 && args[0] == "prototypes" {
+		fmt.Fprintln(stderr, "artifact-status: prototypes is unsupported; Prototype validation is owned by PACED")
 		return 64
 	}
-	flags := flag.NewFlagSet("prototypes", flag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	workspaceDefault, rootErr := findWorkspaceRoot()
-	if rootErr != nil {
-		workspaceDefault = "."
-	}
-	project := flags.String("project-root", workspaceDefault, "Builder project root inside workspace")
-	foundationDefault := filepath.Join(workspaceDefault, "belluga_builder_foundation_documentation")
-	foundation := flags.String("foundation-root", foundationDefault, "dedicated Builder Foundation Git checkout")
-	mode := flags.String("mode", "", "working-tree or committed")
-	stdoutOnly := flags.Bool("stdout-only", false, "write only the fresh response to stdout")
-	revision := flags.String("revision", "", "full committed Foundation SHA (committed mode only)")
-	if err := flags.Parse(args[1:]); err != nil || flags.NArg() != 0 {
-		fmt.Fprintln(stderr, "artifact-status: invalid arguments")
-		return 64
-	}
-	if *mode != "working-tree" && *mode != "committed" {
-		fmt.Fprintln(stderr, "artifact-status: --mode must be working-tree or committed")
-		return 64
-	}
-	if *mode == "working-tree" && *revision != "" {
-		fmt.Fprintln(stderr, "artifact-status: --revision is only valid in committed mode")
-		return 64
-	}
-	if *mode == "committed" && *revision != "" && !isFullRevision(*revision) {
-		fmt.Fprintln(stderr, "artifact-status: --revision must be a full hexadecimal commit SHA")
-		return 64
-	}
-	workspaceRoot, err := filepath.Abs(workspaceDefault)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	projectRoot, err := trustedRoot(workspaceRoot, *project)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	foundationRoot, err := trustedRoot(workspaceRoot, *foundation)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	var source ac.Source
-	if *mode == "working-tree" {
-		source, err = ac.NewWorkingTree(foundationRoot)
-	} else {
-		var gitSource *ac.GitTree
-		gitSource, err = ac.NewGitTree(foundationRoot, *revision)
-		source = gitSource
-	}
-	if err != nil {
-		if errors.Is(err, ac.ErrRevisionUnavailable) {
-			response := unavailableResponse(*mode, ac.DefaultProjectID, *revision)
-			if outputErr := emitResponseMode(response, projectRoot, stdout, []string{foundationRoot}, *stdoutOnly); outputErr != nil {
-				return fail(stderr, outputErr)
-			}
-			return 2
-		}
-		return fail(stderr, err)
-	}
-	response := ac.Evaluate(source, ac.DefaultProjectID)
-	if err := emitResponseMode(response, projectRoot, stdout, []string{foundationRoot}, *stdoutOnly); err != nil {
-		return fail(stderr, err)
-	}
-	if response.Outcome == "go" {
-		return 0
-	}
-	return 2
+	fmt.Fprintln(stderr, "usage: artifact-status design-system [options]")
+	return 64
 }
 
 func fail(stderr io.Writer, err error) int {
@@ -98,33 +33,7 @@ func fail(stderr io.Writer, err error) int {
 	return 70
 }
 
-func unavailableResponse(mode, projectID, revision string) ac.Response {
-	var revisionPointer *string
-	if isFullRevision(revision) {
-		revisionPointer = &revision
-	}
-	return ac.Response{
-		SchemaVersion: ac.SchemaVersion, ProjectID: projectID, Target: ac.TargetPrototypes,
-		AuthorityScope: ac.AuthorityScope, Mode: mode, Revision: revisionPointer,
-		Outcome: "no_go", Items: []ac.Item{},
-		Diagnostics:            []ac.Diagnostic{{Code: "revision_unavailable", SourceID: stringPointer(projectID), Path: stringPointer("prototypes/catalog.json"), Message: "the requested Foundation commit is unavailable", Resolution: "Provide a full commit SHA present in the bound Foundation Git repository."}},
-		DesignSystemValidation: ac.DesignSystemPending,
-	}
-}
-
 func stringPointer(value string) *string { return &value }
-
-func isFullRevision(value string) bool {
-	if len(value) != 40 && len(value) != 64 {
-		return false
-	}
-	for _, char := range value {
-		if !((char >= '0' && char <= '9') || (char >= 'a' && char <= 'f')) {
-			return false
-		}
-	}
-	return true
-}
 
 func emitResponse(response any, projectRoot string, stdout io.Writer, protectedRoots []string) error {
 	return emitResponseMode(response, projectRoot, stdout, protectedRoots, false)

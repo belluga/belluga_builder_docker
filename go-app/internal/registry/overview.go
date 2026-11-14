@@ -417,29 +417,155 @@ func (m *MongoStore) publishOverviewVersion(ctx context.Context, db *mongo.Datab
 	return nil
 }
 
+type overviewIndexSpec struct {
+	collection string
+	keys       bson.D
+	name       string
+}
+
 func (m *MongoStore) ensureOverviewIndexes(ctx context.Context, db *mongo.Database) error {
-	// Existing registered Projects predate the Overview collections. These named
-	// indexes match the tenant indexes installed at registration and are safe to
-	// create again before the first Overview write.
-	indexes := []struct {
-		collection string
-		keys       bson.D
-		name       string
-	}{
+	indexes := []overviewIndexSpec{
 		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "revision", Value: 1}}, "overview_project_revision_unique"},
 		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}}, "overview_project_operation_unique"},
 		{overviewMediaCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "slot", Value: 1}}, "overview_project_operation_slot_unique"},
 	}
+	byCollection := make(map[string][]overviewIndexSpec, 2)
 	for _, item := range indexes {
-		// Match ensureTenantIndexes exactly, including its empty partial filter.
-		// MongoDB rejects a same-named index with otherwise identical keys when
-		// one definition omits that option.
-		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true).SetPartialFilterExpression(bson.M{})}
-		if _, err := db.Collection(item.collection).Indexes().CreateOne(ctx, model); err != nil {
+		byCollection[item.collection] = append(byCollection[item.collection], item)
+		model := mongo.IndexModel{Keys: item.keys, Options: options.Index().SetName(item.name).SetUnique(true)}
+		if _, err := db.Collection(item.collection).Indexes().CreateOne(ctx, model); err != nil && !overviewIndexConflict(err) {
+			return err
+		}
+	}
+	// Inspect each affected collection once, after CreateOne succeeds or reports
+	// a name/spec conflict. This also catches options inherited from collection
+	// defaults and makes persisted BSON, rather than the attempted request, the
+	// compatibility authority.
+	for collection, expected := range byCollection {
+		if err := verifyOverviewIndexSpecs(ctx, db.Collection(collection), expected); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func overviewIndexConflict(err error) bool {
+	var command mongo.CommandError
+	if errors.As(err, &command) && (command.Code == 85 || command.Code == 86) {
+		return true
+	}
+	var write mongo.WriteException
+	if errors.As(err, &write) {
+		for _, item := range write.WriteErrors {
+			if item.Code == 85 || item.Code == 86 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func verifyOverviewIndexSpecs(ctx context.Context, collection *mongo.Collection, expected []overviewIndexSpec) error {
+	cursor, err := collection.Indexes().List(ctx)
+	if err != nil {
+		return err
+	}
+	defer cursor.Close(ctx)
+	found := make(map[string]bson.Raw, len(expected))
+	for cursor.Next(ctx) {
+		raw := cursor.Current
+		nameValue := raw.Lookup("name")
+		if nameValue.Type != bson.TypeString {
+			continue
+		}
+		name := nameValue.StringValue()
+		for _, item := range expected {
+			if name == item.name {
+				found[name] = append(bson.Raw(nil), raw...)
+			}
+		}
+	}
+	if err := cursor.Err(); err != nil {
+		return err
+	}
+	for _, item := range expected {
+		raw, ok := found[item.name]
+		if !ok || !validOverviewIndexSpec(raw, collection.Database().Name()+"."+collection.Name(), item.name, item.keys) {
+			return fmt.Errorf("Overview index %q has an incompatible persisted specification", item.name)
+		}
+	}
+	return nil
+}
+
+func validOverviewIndexSpec(raw bson.Raw, namespace, name string, keys bson.D) bool {
+	allowed := map[string]bool{"v": true, "key": true, "name": true, "ns": true, "unique": true, "partialFilterExpression": true, "collation": true}
+	elements, err := raw.Elements()
+	if err != nil {
+		return false
+	}
+	for _, element := range elements {
+		if !allowed[element.Key()] {
+			return false
+		}
+	}
+	if value := raw.Lookup("name"); value.Type != bson.TypeString || value.StringValue() != name {
+		return false
+	}
+	if value := raw.Lookup("unique"); value.Type != bson.TypeBoolean || !value.Boolean() {
+		return false
+	}
+	version := raw.Lookup("v")
+	if version.Type != bson.TypeInt32 && version.Type != bson.TypeInt64 {
+		return false
+	}
+	if version.Type == bson.TypeInt32 && version.Int32() != 1 && version.Int32() != 2 || version.Type == bson.TypeInt64 && version.Int64() != 1 && version.Int64() != 2 {
+		return false
+	}
+	if value := raw.Lookup("ns"); value.Type != 0 && (value.Type != bson.TypeString || value.StringValue() != namespace) {
+		return false
+	}
+	keyValue := raw.Lookup("key")
+	if keyValue.Type != bson.TypeEmbeddedDocument {
+		return false
+	}
+	keyDoc, err := keyValue.Document().Elements()
+	if err != nil || len(keyDoc) != len(keys) {
+		return false
+	}
+	for i, expected := range keys {
+		value := keyDoc[i].Value()
+		var direction int64
+		switch value.Type {
+		case bson.TypeInt32:
+			direction = int64(value.Int32())
+		case bson.TypeInt64:
+			direction = value.Int64()
+		default:
+			return false
+		}
+		if keyDoc[i].Key() != expected.Key || direction != 1 {
+			return false
+		}
+	}
+	if filter := raw.Lookup("partialFilterExpression"); filter.Type != 0 {
+		if filter.Type != bson.TypeEmbeddedDocument {
+			return false
+		}
+		filterElements, err := filter.Document().Elements()
+		if err != nil || len(filterElements) != 0 {
+			return false
+		}
+	}
+	if collation := raw.Lookup("collation"); collation.Type != 0 {
+		if collation.Type != bson.TypeEmbeddedDocument {
+			return false
+		}
+		collationElements, err := collation.Document().Elements()
+		if err != nil || len(collationElements) != 1 || collationElements[0].Key() != "locale" || collationElements[0].Value().Type != bson.TypeString || collationElements[0].Value().StringValue() != "simple" {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *MongoStore) ReadOverview(ctx context.Context, companyID, projectID string, requestedRevision int64) (OverviewReadResponse, error) {

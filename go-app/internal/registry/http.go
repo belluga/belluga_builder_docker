@@ -4,17 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
-const maxRequestBody = maxSnapshotReferenceBytes
+const maxRequestBody = maxProjectDocumentBytes
 const maxTODOImportRequestBytes = 4 << 20
 const maxDesignSystemMutationRequestBytes = 8 << 10
 const designSystemRecoveryTimeout = 15 * time.Second
@@ -134,10 +138,35 @@ type overviewService interface {
 	ReadOverviewMedia(context.Context, string, string, int64, string) ([]byte, string, error)
 }
 
+type prototypeReader interface {
+	ReadPrototypes(context.Context, string, string) (PrototypeCatalogResponse, error)
+	ReadPrototype(context.Context, string, string, string, string) (PrototypeReadResponse, error)
+	ReadPrototypeFile(context.Context, string, string, string, string) (prototypeFileResponse, error)
+}
+
+type landingService interface {
+	ReadLanding(context.Context, string, string) (LandingCatalogResponse, error)
+	ReadLandingFile(context.Context, string, string, int64, string, string) (landingFileResponse, error)
+}
+
+type portfolioReader interface {
+	ReadPortfolioCatalog(context.Context, string) (PortfolioCatalogResponse, error)
+	ReadProjectPortfolioFile(context.Context, string, string, int64, string, string, string) (portfolioFileResponse, error)
+}
+
+type sessionService interface {
+	BindSession(context.Context, SessionBindingRequest) (Session, error)
+	ReadSession(context.Context, string, string) (Session, error)
+	ListProjectSessions(context.Context, string, string, bson.ObjectID, int) (SessionList, error)
+}
+
 func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
+	mux.HandleFunc("POST /internal/v1/sessions/bind", h.bindSession)
+	mux.HandleFunc("GET /internal/v1/sessions/{provider}/{externalID}", h.readSession)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/sessions", h.listProjectSessions)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template", h.canonicalTemplate)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest", h.canonicalManifest)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index", h.canonicalIndex)
@@ -160,6 +189,8 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.readImplementationRepositories)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.changeImplementationRepository)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state", h.readDesignSystemState)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview", h.readOverview)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}", h.readOverview)
@@ -171,11 +202,17 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system", h.readDesignSystem)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}", h.readDesignSystem)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}/assets/{path...}", h.readDesignSystemAsset)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes", h.readPrototypes)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}", h.readPrototype)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/files/{path...}", h.readPrototypeFile)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/landing", h.readLanding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/landing/{bindingRevision}/{revision}/files/{path...}", h.readLandingFile)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/portfolios", h.readPortfolioCatalog)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/portfolio/{bindingRevision}/{revision}/{inventoryDigest}/files/{path...}", h.readPortfolioFile)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations", h.beginDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover", h.recoverDesignSystemMutation)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/decline", h.decline)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/preference", h.preference)
-	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/snapshot-reference", h.snapshotReference)
 	mux.HandleFunc("GET /internal/v1/lifecycle-control", h.lifecycleControl)
 	mux.HandleFunc("PUT /internal/v1/lifecycle-control", h.updateLifecycleControl)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap", h.roadmap)
@@ -185,6 +222,7 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}", h.roadmapChange("delete-epic"))
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases", h.roadmapChange("create-release"))
 	mux.HandleFunc("PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("edit-release"))
+	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/delivery-branches", h.roadmapChange("confirm-release-branch"))
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order", h.roadmapChange("order-releases"))
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}", h.roadmapChange("delete-release"))
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template", h.releaseInvestigationTemplate)
@@ -212,7 +250,76 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
-	return mux
+	return sessionScopeGuard(mux, h.service)
+}
+
+const (
+	sessionLaneHeader       = "X-Delphi-Request-Lane"
+	sessionTypeHeader       = "X-Delphi-Session-Type"
+	sessionExternalIDHeader = "X-Delphi-Session-ID"
+)
+
+func writeSessionGuardError(w http.ResponseWriter, status int, code, teach string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Teach: teach})
+}
+
+func sessionScopeGuard(next http.Handler, service Service) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(sessionLaneHeader) != "conversation" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		companyID, projectID, ok := projectPathIdentity(r.URL.EscapedPath())
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		sessions, ok := service.(sessionService)
+		if !ok {
+			writeSessionGuardError(w, http.StatusServiceUnavailable, "service_unavailable", "Session binding service is unavailable; retry after the private Registry is restored.")
+			return
+		}
+		provider, externalID := r.Header.Get(sessionTypeHeader), r.Header.Get(sessionExternalIDHeader)
+		if provider == "" || externalID == "" {
+			writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Bind this conversation explicitly with builder-project session-bind --company-id <company> --project-id <project> --operation-id <stable-id> --owner-reference <owner-confirmation>.")
+			return
+		}
+		session, err := sessions.ReadSession(r.Context(), provider, externalID)
+		if err != nil {
+			status := http.StatusUnauthorized
+			if errors.Is(err, ErrUnavailable) {
+				status = http.StatusServiceUnavailable
+			}
+			writeSessionGuardError(w, status, "session_unavailable_or_unknown", "The conversation is not bound; run builder-project session-bind with explicit Company and Project selection, or restore the private Registry and retry.")
+			return
+		}
+		if session.Binding.CompanyID != companyID || session.Binding.ProjectID != projectID {
+			writeSessionGuardError(w, http.StatusForbidden, "session_project_mismatch", "This conversation is permanently bound to another Company/Project; use a distinct explicitly bound conversation for the requested Project.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func projectPathIdentity(escapedPath string) (string, string, bool) {
+	segments := strings.Split(escapedPath, "/")
+	if len(segments) < 7 {
+		return "", "", false
+	}
+	decoded := make([]string, 7)
+	for index := 1; index < 7; index++ {
+		value, err := url.PathUnescape(segments[index])
+		if err != nil {
+			return "", "", true
+		}
+		decoded[index] = value
+	}
+	if decoded[1] != "internal" || decoded[2] != "v1" || decoded[3] != "companies" || decoded[5] != "projects" {
+		return "", "", false
+	}
+	return decoded[4], decoded[6], true
 }
 
 func (h *Handler) roadmapChange(action string) http.HandlerFunc {
@@ -264,6 +371,19 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 				return
 			}
 			input.ID = releaseID
+		}
+		if action == "confirm-release-branch" {
+			switch {
+			case !validGitRepositoryID(input.RepositoryID):
+				h.writeError(w, todoTeach("repository_id", "select the exact repository from this Project's confirmed implementation repository set", ErrInvalid))
+				return
+			case !validDeliveryBranch(input.Branch):
+				h.writeError(w, todoTeach("branch", "provide the dedicated Release branch; historical TODO delivery_branch is not authoritative", ErrInvalid))
+				return
+			case !validSummaryField(input.OwnerReference, 512):
+				h.writeError(w, todoTeach("owner_reference", "provide the owner confirmation reference for this Release branch", ErrInvalid))
+				return
+			}
 		}
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
 		h.respond(w, value, err)
@@ -430,6 +550,93 @@ type errorResponse struct {
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Catalog(r.Context())
 	h.respond(w, value, err)
+}
+
+func (h *Handler) bindSession(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	var request SessionBindingRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		h.writeError(w, todoTeach("request", "provide one valid session binding object within 8 KiB", ErrInvalid))
+		return
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		h.writeError(w, todoTeach("request", "contain exactly one JSON object", ErrInvalid))
+		return
+	}
+	if r.Header.Get(sessionTypeHeader) != request.Type || r.Header.Get(sessionExternalIDHeader) != request.ExternalID {
+		writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Bind only the current CODEX_SESSION_ID; use explicit Company/Project flags and owner confirmation.")
+		return
+	}
+	session, err := service.BindSession(r.Context(), request)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusCreated, session)
+}
+
+func (h *Handler) readSession(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	provider, externalID := r.PathValue("provider"), r.PathValue("externalID")
+	if r.Header.Get(sessionTypeHeader) != provider || r.Header.Get(sessionExternalIDHeader) != externalID {
+		writeSessionGuardError(w, http.StatusUnauthorized, "session_required", "Read only the session identified by CODEX_SESSION_ID; another conversation identity is not accepted.")
+		return
+	}
+	session, err := service.ReadSession(r.Context(), provider, externalID)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusOK, session)
+}
+
+func (h *Handler) listProjectSessions(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(sessionService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	limit := 100
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 1 || parsed > maxProjectSessions {
+			h.writeError(w, todoTeach("limit", "be an integer between 1 and 100", ErrInvalid))
+			return
+		}
+		limit = parsed
+	}
+	var after bson.ObjectID
+	if raw := r.URL.Query().Get("after"); raw != "" {
+		parsed, err := bson.ObjectIDFromHex(raw)
+		if err != nil {
+			h.writeError(w, todoTeach("after", "be a session ObjectId cursor returned by this endpoint", ErrInvalid))
+			return
+		}
+		after = parsed
+	}
+	result, err := service.ListProjectSessions(r.Context(), r.PathValue("companyID"), r.PathValue("projectID"), after, limit)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeSessionJSON(w, http.StatusOK, result)
+}
+
+func writeSessionJSON(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(value)
 }
 func (h *Handler) project(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Project(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
@@ -702,14 +909,6 @@ func (h *Handler) preference(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.Preference(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
 	h.respond(w, value, err)
 }
-func (h *Handler) snapshotReference(w http.ResponseWriter, r *http.Request) {
-	var input SnapshotReference
-	if !h.decode(w, r, &input) {
-		return
-	}
-	value, err := h.service.UpdateSnapshotReference(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
-	h.respond(w, value, err)
-}
 func (h *Handler) lifecycleControl(w http.ResponseWriter, r *http.Request) {
 	value, err := h.service.LifecycleControl(r.Context())
 	h.respond(w, value, err)
@@ -751,7 +950,7 @@ func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOAdmissionRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	value, err := admitter.AdmitTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
@@ -837,7 +1036,7 @@ func (h *Handler) transitionTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOActionRequest
-	if !h.decode(w, r, &input) {
+	if !h.decodeTODOLimit(w, r, &input, maxRequestBody) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -932,7 +1131,7 @@ func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOContentEditRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -986,7 +1185,7 @@ func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input TODOEvidenceEditRequest
-	if !h.decodeLimit(w, r, &input, maxTODOImportRequestBytes) {
+	if !h.decodeTODOLimit(w, r, &input, maxTODOImportRequestBytes) {
 		return
 	}
 	if input.ProjectID != strings.TrimSpace(r.PathValue("projectID")) || input.TODOID != strings.TrimSpace(r.PathValue("todoID")) {
@@ -1310,18 +1509,88 @@ func (h *Handler) decode(w http.ResponseWriter, r *http.Request, target any) boo
 }
 
 func (h *Handler) decodeLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	return h.decodeBounded(w, r, target, limit, false)
+}
+
+func (h *Handler) decodeTODOLimit(w http.ResponseWriter, r *http.Request, target any, limit int64) bool {
+	return h.decodeBounded(w, r, target, limit, true)
+}
+
+func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target any, limit int64, todo bool) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	decoder := json.NewDecoder(r.Body)
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
+		if todo && h.writeTODOBodyLimit(w, err, limit) {
+			return false
+		}
+		if todo && h.writeTODOUnknownField(w, err, target) {
+			return false
+		}
+		if _, ok := target.(*RoadmapChange); ok && h.writeRoadmapUnknownField(w, err) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if todo && h.writeTODOBodyLimit(w, err, limit) {
+			return false
+		}
 		h.writeError(w, ErrInvalid)
 		return false
 	}
+	return true
+}
+
+func (h *Handler) writeRoadmapUnknownField(w http.ResponseWriter, err error) bool {
+	const prefix = "json: unknown field "
+	quoted, ok := strings.CutPrefix(err.Error(), prefix)
+	if !ok {
+		return false
+	}
+	field, unquoteErr := strconv.Unquote(quoted)
+	if unquoteErr != nil || field == "" {
+		return false
+	}
+	resolution := "remove this field and use only the typed fields for the selected Roadmap action"
+	if field == "delivery_branch" {
+		resolution = "use the dedicated branch field only in explicit Release confirmation; TODO delivery_branch text is historical and non-authoritative"
+	}
+	h.writeError(w, todoTeach("request."+field, resolution, ErrInvalid))
+	return true
+}
+
+func (h *Handler) writeTODOUnknownField(w http.ResponseWriter, err error, target any) bool {
+	const prefix = "json: unknown field "
+	quoted, ok := strings.CutPrefix(err.Error(), prefix)
+	if !ok {
+		return false
+	}
+	field, unquoteErr := strconv.Unquote(quoted)
+	if unquoteErr != nil || field == "" {
+		return false
+	}
+	resolution := "remove this unknown field and use the typed request envelope documented for this TODO operation"
+	if _, ok := target.(*TODOContentEditRequest); ok {
+		resolution = "remove this unknown field; use content for the authored TODO fields, with project_id, todo_id, expected_revision, operation_id, and reason in the request envelope"
+	}
+	h.writeError(w, todoTeach("request."+field, resolution, ErrInvalid))
+	return true
+}
+
+func (h *Handler) writeTODOBodyLimit(w http.ResponseWriter, err error, limit int64) bool {
+	var tooLarge *http.MaxBytesError
+	if !errors.As(err, &tooLarge) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusRequestEntityTooLarge)
+	_ = json.NewEncoder(w).Encode(errorResponse{
+		Error: "request_too_large",
+		Teach: fmt.Sprintf("TEACH: request.body exceeds this TODO route's %d-byte limit; reduce the JSON payload and retry the same operation only after it fits", limit),
+	})
 	return true
 }
 func (h *Handler) respond(w http.ResponseWriter, value any, err error) {

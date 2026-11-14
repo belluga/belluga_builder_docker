@@ -10,9 +10,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	ac "belluga-builder-viewer/artifact_catalog"
 )
+
+type snapshotResponseValue struct {
+	SchemaVersion string `json:"schema_version"`
+	ProjectID     string `json:"project_id"`
+	Target        string `json:"target"`
+	Mode          string `json:"mode"`
+	Outcome       string `json:"outcome"`
+	Payload       string `json:"payload,omitempty"`
+}
 
 func TestAtomicSnapshotConcurrentWritersKeepWholeLastWrite(t *testing.T) {
 	root := t.TempDir()
@@ -26,12 +33,12 @@ func TestAtomicSnapshotConcurrentWritersKeepWholeLastWrite(t *testing.T) {
 				defer writers.Done()
 				<-start
 				stdout := &strings.Builder{}
-				response := ac.Response{SchemaVersion: ac.SchemaVersion, ProjectID: ac.DefaultProjectID, Target: ac.TargetPrototypes, AuthorityScope: ac.AuthorityScope, Mode: fmt.Sprintf("writer-%d-batch-%d", writer, batch), Outcome: "go", Items: []ac.Item{}, Diagnostics: []ac.Diagnostic{}, DesignSystemValidation: ac.DesignSystemPending}
+				response := snapshotResponseValue{SchemaVersion: "1", ProjectID: "builder", Target: "design-system", Mode: fmt.Sprintf("writer-%d-batch-%d", writer, batch), Outcome: "go"}
 				if err := emitResponse(response, root, stdout, nil); err != nil {
 					errorsFound <- err
 					return
 				}
-				var echoed ac.Response
+				var echoed snapshotResponseValue
 				if err := json.Unmarshal([]byte(stdout.String()), &echoed); err != nil || echoed.Mode != response.Mode || echoed.Target != response.Target || echoed.ProjectID != response.ProjectID {
 					errorsFound <- fmt.Errorf("writer %d batch %d received another writer's response: %s", writer, batch, stdout.String())
 				}
@@ -56,7 +63,7 @@ func TestAtomicSnapshotConcurrentWritersKeepWholeLastWrite(t *testing.T) {
 		if err := json.Unmarshal(data, &result); err != nil {
 			t.Fatalf("concurrent snapshot is partial JSON: %v; bytes=%q", err, data)
 		}
-		if result.SchemaVersion != "1" || result.ProjectID != "builder" || result.Target != "prototypes" || !strings.HasPrefix(result.Mode, "writer-") || !strings.HasSuffix(result.Mode, fmt.Sprintf("batch-%d", batch)) {
+		if result.SchemaVersion != "1" || result.ProjectID != "builder" || result.Target != "design-system" || !strings.HasPrefix(result.Mode, "writer-") || !strings.HasSuffix(result.Mode, fmt.Sprintf("batch-%d", batch)) {
 			t.Fatalf("snapshot is not one complete last-writer result: %#v", result)
 		}
 	}
@@ -64,7 +71,7 @@ func TestAtomicSnapshotConcurrentWritersKeepWholeLastWrite(t *testing.T) {
 
 func TestAtomicSnapshotObserverSeesCompleteResponsesDuringOverlappingWrites(t *testing.T) {
 	root := t.TempDir()
-	seed := ac.Response{SchemaVersion: ac.SchemaVersion, ProjectID: ac.DefaultProjectID, Target: ac.TargetPrototypes, AuthorityScope: ac.AuthorityScope, Mode: "seed", Outcome: "go", Items: []ac.Item{}, Diagnostics: []ac.Diagnostic{}, DesignSystemValidation: ac.DesignSystemPending}
+	seed := snapshotResponseValue{SchemaVersion: "1", ProjectID: "builder", Target: "design-system", Mode: "seed", Outcome: "go"}
 	if err := emitResponse(seed, root, &strings.Builder{}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +140,11 @@ func (writer blockingWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-func snapshotResponse(mode, payload string) ac.Response {
-	return ac.Response{SchemaVersion: ac.SchemaVersion, ProjectID: ac.DefaultProjectID, Target: ac.TargetPrototypes, AuthorityScope: ac.AuthorityScope, Mode: mode, Outcome: "go", Items: []ac.Item{{ID: "payload", Name: strings.Repeat(payload, 256*1024)}}, Diagnostics: []ac.Diagnostic{}, DesignSystemValidation: ac.DesignSystemPending}
+func snapshotResponse(mode, payload string) snapshotResponseValue {
+	return snapshotResponseValue{SchemaVersion: "1", ProjectID: "builder", Target: "design-system", Mode: mode, Outcome: "go", Payload: strings.Repeat(payload, 256*1024)}
 }
 
-func serializedResponse(t *testing.T, response ac.Response) []byte {
+func serializedResponse(t *testing.T, response snapshotResponseValue) []byte {
 	t.Helper()
 	data, err := json.MarshalIndent(response, "", "  ")
 	if err != nil {
@@ -148,7 +155,7 @@ func serializedResponse(t *testing.T, response ac.Response) []byte {
 
 func TestEmitResponseWriterFailureLeavesNoSnapshot(t *testing.T) {
 	root := t.TempDir()
-	err := emitResponse(ac.Response{SchemaVersion: ac.SchemaVersion, ProjectID: ac.DefaultProjectID, Target: ac.TargetPrototypes, AuthorityScope: ac.AuthorityScope, Mode: "working-tree", Outcome: "go", Items: []ac.Item{}, Diagnostics: []ac.Diagnostic{}, DesignSystemValidation: ac.DesignSystemPending}, root, failingWriter{}, nil)
+	err := emitResponse(snapshotResponseValue{SchemaVersion: "1", ProjectID: "builder", Target: "design-system", Mode: "working-tree", Outcome: "go"}, root, failingWriter{}, nil)
 	if err == nil {
 		t.Fatal("expected injected stdout failure")
 	}
@@ -163,7 +170,7 @@ func TestEmitResponseRejectsSnapshotInsideReadOnlySourceBeforeOutput(t *testing.
 	if err := os.MkdirAll(foundation, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	response := ac.Response{SchemaVersion: ac.SchemaVersion, ProjectID: ac.DefaultProjectID, Target: ac.TargetPrototypes, AuthorityScope: ac.AuthorityScope, Mode: "working-tree", Outcome: "go", Items: []ac.Item{}, Diagnostics: []ac.Diagnostic{}, DesignSystemValidation: ac.DesignSystemPending}
+	response := snapshotResponseValue{SchemaVersion: "1", ProjectID: "builder", Target: "design-system", Mode: "working-tree", Outcome: "go"}
 	for _, projectRoot := range []string{foundation, filepath.Join(foundation, "nested-project")} {
 		if err := os.MkdirAll(projectRoot, 0o755); err != nil {
 			t.Fatal(err)
@@ -231,15 +238,12 @@ func TestInvalidCommandUsesUsageExitWithoutSnapshot(t *testing.T) {
 	}
 }
 
-func TestMalformedCommittedRevisionIsUsageAndNeverEchoed(t *testing.T) {
-	for _, revision := range []string{"main", "deadbee", "DEADBEEF"} {
+func TestPrototypeCommandIsDeterministicallyUnsupported(t *testing.T) {
+	for _, args := range [][]string{{"prototypes"}, {"prototypes", "--mode", "working-tree"}, {"prototypes", "--mode", "committed"}} {
 		stdout, stderr := &strings.Builder{}, &strings.Builder{}
-		status := run([]string{"prototypes", "--mode", "committed", "--revision", revision}, stdout, stderr)
-		if status != 64 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "full hexadecimal commit SHA") {
-			t.Fatalf("malformed revision %q was not a usage error: status=%d stdout=%q stderr=%q", revision, status, stdout.String(), stderr.String())
-		}
-		if response := unavailableResponse("committed", ac.DefaultProjectID, revision); response.Revision != nil {
-			t.Fatalf("unavailable response echoed invalid revision %q", *response.Revision)
+		status := run(args, stdout, stderr)
+		if status != 64 || stdout.Len() != 0 || !strings.Contains(stderr.String(), "unsupported") || !strings.Contains(stderr.String(), "PACED") {
+			t.Fatalf("Prototype command was not deterministically unsupported: args=%v status=%d stdout=%q stderr=%q", args, status, stdout.String(), stderr.String())
 		}
 	}
 }
@@ -255,7 +259,7 @@ func TestEmitResponseStdoutOnlyDoesNotWriteSnapshot(t *testing.T) {
 	if err := emitResponseMode(response, root, &stdout, nil, true); err != nil {
 		t.Fatal(err)
 	}
-	var got ac.Response
+	var got snapshotResponseValue
 	if err := json.Unmarshal([]byte(stdout.String()), &got); err != nil || got.Mode != response.Mode {
 		t.Fatalf("fresh stdout response invalid: %v", err)
 	}

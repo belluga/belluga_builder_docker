@@ -16,6 +16,34 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
+func TestTODOEvidenceEditGivesFieldSpecificProofReferenceGuidance(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	cases := []struct {
+		name  string
+		ref   TODOProofReference
+		field string
+		teach string
+	}{
+		{"missing source", TODOProofReference{Kind: "criterion:build", Reference: "G-TEST", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.criterion:build.source", "external-evidence"},
+		{"missing ref", TODOProofReference{Kind: "scenario:build", Source: "paced-local-runner", SourceDigest: digest, VerificationState: "unverified"}, "proof_refs.scenario:build.ref", "attributable evidence reference"},
+		{"invalid state", TODOProofReference{Kind: "criterion:build", Source: "paced-local-runner", Reference: "G-TEST", SourceDigest: digest, VerificationState: "pending"}, "proof_refs.criterion:build.verification_state", "unverified"},
+	}
+	store := &MongoStore{}
+	revision := int64(1)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := store.EditTODOEvidence(context.Background(), "company-a", TODOEvidenceEditRequest{
+				ProjectID: "builder", TODOID: "todo-a", ExpectedRevision: &revision, OperationID: "edit-" + strings.ReplaceAll(tc.name, " ", "-"),
+				ProofReferences: []TODOProofReference{tc.ref}, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{}, RecordSections: []TODOSection{}, Reason: "Exercise precise proof-ref correction",
+			})
+			var teach *TODOValidationError
+			if !errors.As(err, &teach) || teach.Field != tc.field || !strings.Contains(teach.Expected, tc.teach) {
+				t.Fatalf("evidence edit guidance = %#v (%v), want field %q with %q", teach, err, tc.field, tc.teach)
+			}
+		})
+	}
+}
+
 func TestSectionOwnershipNormalizationRequiresExactTextAndExplicitClassification(t *testing.T) {
 	legacy := []TODOSection{
 		{Key: "contract-boundary", Title: "Contract Boundary", BodyMarkdown: "Keep this authored contract.", Position: 0},
