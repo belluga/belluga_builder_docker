@@ -3,6 +3,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -36,6 +37,32 @@ func TestTODOCompletionRequiresActiveConstitutionMode(t *testing.T) {
 	}
 	if err := requireTODOCompletionMode("mvp"); err != nil {
 		t.Fatalf("MVP completion behavior changed: %v", err)
+	}
+}
+
+func TestMVPConstitutionMismatchTeachExplainsGovernedRecovery(t *testing.T) {
+	local := todoConstitutionPin{Mode: "mvp", Revision: 5, ContentDigest: sourceHash([]byte("local constitution"))}
+	active := todoConstitutionPin{Mode: "mvp", Revision: 7, ContentDigest: sourceHash([]byte("active constitution"))}
+	err := mvpConstitutionMismatchTeach(local, active)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("constitution drift did not remain a conflict: %v", err)
+	}
+	for _, expected := range []string{
+		"local_proof.constitution",
+		fmt.Sprintf("revision 5 (%s)", local.ContentDigest),
+		fmt.Sprintf("revision 7 (%s)", active.ContentDigest),
+		"Preserve the historical proof",
+		"If compatible",
+		"if incompatible",
+		"builder-project update-todo",
+		"reopens Planning",
+		"owner APROVADO",
+		"new Local-Implemented proof",
+		"identical content update is a no-op",
+	} {
+		if !strings.Contains(err.Error(), expected) {
+			t.Fatalf("mismatch TEACH omits %q: %v", expected, err)
+		}
 	}
 }
 
