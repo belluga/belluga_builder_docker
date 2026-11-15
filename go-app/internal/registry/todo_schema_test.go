@@ -156,6 +156,7 @@ func TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := genericTODOAdmissionFixture()
+	migrateCompanyFixture(t, ctx, store)
 	if _, err := store.AdmitTODO(ctx, "company-a", "builder", request); err != nil {
 		t.Fatal(err)
 	}

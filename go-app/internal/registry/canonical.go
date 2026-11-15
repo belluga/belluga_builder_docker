@@ -636,13 +636,9 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 		if err != nil {
 			return err
 		}
-		validator := bson.M{"$jsonSchema": bson.M{"bsonType": "object", "required": bson.A{"_id", "id", "project_id", "generation_id", "revision", "content_digest", "updated_at", "payload"}, "properties": bson.M{
-			"_id": bson.M{"bsonType": "objectId"}, "id": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 128},
-			"project_id": bson.M{"bsonType": "string"}, "generation_id": bson.M{"bsonType": "string"}, "revision": bson.M{"bsonType": "long", "minimum": 1},
-			"content_digest": bson.M{"bsonType": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "updated_at": bson.M{"bsonType": "date"}, "payload": bson.M{"bsonType": "object"},
-		}}}
+		validator := canonicalDocumentValidator()
 		if len(exists) == 0 {
-			if err := db.CreateCollection(ctx, item.name, options.CreateCollection().SetValidator(validator)); err != nil && !namespaceExists(err) {
+			if err := db.CreateCollection(ctx, item.name, options.CreateCollection().SetValidator(validator).SetValidationLevel("strict").SetValidationAction("error")); err != nil && !namespaceExists(err) {
 				return err
 			}
 		} else {
@@ -687,6 +683,14 @@ func (m *MongoStore) ensureCanonicalCollections(ctx context.Context, database st
 		}
 	}
 	return nil
+}
+
+func canonicalDocumentValidator() bson.M {
+	return bson.M{"$jsonSchema": bson.M{"bsonType": "object", "required": bson.A{"_id", "id", "project_id", "generation_id", "revision", "content_digest", "updated_at", "payload"}, "properties": bson.M{
+		"_id": bson.M{"bsonType": "objectId"}, "id": bson.M{"bsonType": "string", "minLength": 1, "maxLength": 128},
+		"project_id": bson.M{"bsonType": "string"}, "generation_id": bson.M{"bsonType": "string"}, "revision": bson.M{"bsonType": "long", "minimum": 1},
+		"content_digest": bson.M{"bsonType": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "updated_at": bson.M{"bsonType": "date"}, "payload": bson.M{"bsonType": "object"},
+	}}}
 }
 
 func (m *MongoStore) ImportCanonicalDraft(ctx context.Context, companyID string, input CanonicalImport) (CanonicalManifest, error) {

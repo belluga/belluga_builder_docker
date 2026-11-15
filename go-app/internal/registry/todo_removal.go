@@ -55,10 +55,10 @@ func (m *MongoStore) RemoveTODO(ctx context.Context, companyID string, request T
 	if err != nil {
 		return TODORemovalResponse{}, err
 	}
-	if err := upgradeTODOCollectionForHistory(ctx, collection.Database()); err != nil {
+	if err := verifyTODOCollection(ctx, collection.Database()); err != nil {
 		return TODORemovalResponse{}, err
 	}
-	if err := m.ProvisionTODOHistory(ctx, companyID); err != nil {
+	if err := verifyTODOHistoryCollections(ctx, collection.Database()); err != nil {
 		return TODORemovalResponse{}, err
 	}
 	record, err := readSelectedTODO(ctx, collection, request.ProjectID, request.TODOID)

@@ -165,14 +165,20 @@ func TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A tenant created before this TODO may lack the proof index. The first
-	// documentary transition must add it before issuing a hinted query.
+	// A missing proof index is an operator migration concern. Ordinary
+	// documentary transitions only inspect the schema.
 	indexDB := store.client.Database(store.tenantDatabase("company-knowledge"))
 	if err := indexDB.Collection(canonicalEvents).Indexes().DropOne(ctx, "canonical_events_record_revision"); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.ensureKnowledgeProofIndex(ctx, store.tenantDatabase("company-knowledge")); err == nil {
+		t.Fatal("ordinary proof lookup accepted a missing migration index")
+	}
+	if err := store.ensureCanonicalCollections(ctx, store.tenantDatabase("company-knowledge")); err != nil {
+		t.Fatalf("operator schema repair: %v", err)
+	}
 	if err := store.ensureKnowledgeProofIndex(ctx, store.tenantDatabase("company-knowledge")); err != nil {
-		t.Fatalf("existing Company proof index migration: %v", err)
+		t.Fatalf("read-only proof index preflight after repair: %v", err)
 	}
 	// A long-lived record must not make a narrow proof scan its entire event
 	// timeline just because no temporal offender exists.

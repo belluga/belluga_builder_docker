@@ -351,6 +351,12 @@ func TestMongoEvidenceEditUpgradesPriorCapacityAndPersistsHistory(t *testing.T) 
 	}
 	zero := int64(0)
 	request := TODOEvidenceEditRequest{ProjectID: "builder", TODOID: record.ID, ExpectedRevision: &zero, OperationID: "evidence-capacity-1", ProofReferences: proofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{}, RecordSections: []TODOSection{}, Reason: "Preserve bounded multi-revision proof"}
+	if _, err := store.EditTODOEvidence(ctx, "company-a", request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ordinary evidence edit must reject stale validator without DDL: %v", err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, "company-a"); err != nil {
+		t.Fatalf("operator schema repair: %v", err)
+	}
 	result, err := store.EditTODOEvidence(ctx, "company-a", request)
 	if err != nil || result.Revision != 1 || result.NoOp {
 		t.Fatalf("evidence edit after validator upgrade = %+v, %v", result, err)

@@ -344,8 +344,8 @@ func (m *MongoStore) WriteOverview(ctx context.Context, companyID, projectID str
 	if project.OverviewRevision != input.ExpectedRevision {
 		return OverviewReadResponse{}, todoTeach("expected_revision", "reload the current Overview revision before changing it", ErrConflict)
 	}
-	if err := m.ensureOverviewIndexes(ctx, db); err != nil {
-		return OverviewReadResponse{}, ErrUnavailable
+	if err := preflightOverviewIndexes(ctx, db); err != nil {
+		return OverviewReadResponse{}, err
 	}
 	if !recoverExisting {
 		manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
@@ -424,11 +424,7 @@ type overviewIndexSpec struct {
 }
 
 func (m *MongoStore) ensureOverviewIndexes(ctx context.Context, db *mongo.Database) error {
-	indexes := []overviewIndexSpec{
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "revision", Value: 1}}, "overview_project_revision_unique"},
-		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}}, "overview_project_operation_unique"},
-		{overviewMediaCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "slot", Value: 1}}, "overview_project_operation_slot_unique"},
-	}
+	indexes := overviewIndexSpecs()
 	byCollection := make(map[string][]overviewIndexSpec, 2)
 	for _, item := range indexes {
 		byCollection[item.collection] = append(byCollection[item.collection], item)
@@ -441,6 +437,28 @@ func (m *MongoStore) ensureOverviewIndexes(ctx context.Context, db *mongo.Databa
 	// a name/spec conflict. This also catches options inherited from collection
 	// defaults and makes persisted BSON, rather than the attempted request, the
 	// compatibility authority.
+	for collection, expected := range byCollection {
+		if err := verifyOverviewIndexSpecs(ctx, db.Collection(collection), expected); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func overviewIndexSpecs() []overviewIndexSpec {
+	return []overviewIndexSpec{
+		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "revision", Value: 1}}, "overview_project_revision_unique"},
+		{overviewVersionsCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}}, "overview_project_operation_unique"},
+		{overviewMediaCollection, bson.D{{Key: "project_id", Value: 1}, {Key: "operation_id", Value: 1}, {Key: "slot", Value: 1}}, "overview_project_operation_slot_unique"},
+	}
+
+}
+
+func preflightOverviewIndexes(ctx context.Context, db *mongo.Database) error {
+	byCollection := make(map[string][]overviewIndexSpec, 2)
+	for _, item := range overviewIndexSpecs() {
+		byCollection[item.collection] = append(byCollection[item.collection], item)
+	}
 	for collection, expected := range byCollection {
 		if err := verifyOverviewIndexSpecs(ctx, db.Collection(collection), expected); err != nil {
 			return err

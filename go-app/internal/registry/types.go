@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -40,14 +41,24 @@ type Artifact struct {
 }
 
 type Company struct {
-	ObjectID     bson.ObjectID   `json:"-" bson:"_id,omitempty"`
-	ID           string          `json:"id" bson:"id"`
-	Name         string          `json:"name" bson:"name"`
-	DatabaseName string          `json:"database_name,omitempty" bson:"database_name,omitempty"`
-	Domains      []string        `json:"domains,omitempty" bson:"domains,omitempty"`
-	AppIDs       []AppIdentifier `json:"app_ids,omitempty" bson:"app_ids,omitempty"`
-	DomainKeys   []string        `json:"-" bson:"domain_keys,omitempty"`
-	AppKeys      []string        `json:"-" bson:"app_keys,omitempty"`
+	ObjectID         bson.ObjectID            `json:"-" bson:"_id,omitempty"`
+	ID               string                   `json:"id" bson:"id"`
+	Name             string                   `json:"name" bson:"name"`
+	DatabaseName     string                   `json:"database_name,omitempty" bson:"database_name,omitempty"`
+	Domains          []string                 `json:"domains,omitempty" bson:"domains,omitempty"`
+	AppIDs           []AppIdentifier          `json:"app_ids,omitempty" bson:"app_ids,omitempty"`
+	DomainKeys       []string                 `json:"-" bson:"domain_keys,omitempty"`
+	AppKeys          []string                 `json:"-" bson:"app_keys,omitempty"`
+	SchemaState      string                   `json:"-" bson:"schema_state,omitempty"`
+	SchemaMigrations []CompanySchemaMigration `json:"-" bson:"schema_migrations,omitempty"`
+}
+
+// CompanySchemaMigration is the per-Company, append-only equivalent of a
+// Laravel migrations row. The catalog, rather than a Project, owns the work.
+type CompanySchemaMigration struct {
+	Version   int64     `json:"version" bson:"version"`
+	Digest    string    `json:"digest" bson:"digest"`
+	AppliedAt time.Time `json:"applied_at" bson:"applied_at"`
 }
 
 type AppIdentifier struct {

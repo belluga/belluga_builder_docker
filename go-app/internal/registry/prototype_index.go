@@ -85,28 +85,13 @@ func (m *MongoStore) prototypeCollections(ctx context.Context, companyID string)
 		return nil, nil, nil, err
 	}
 	db := m.client.Database(company.DatabaseName)
-	if _, ready := m.prototypeReady.Load(company.DatabaseName); !ready {
-		existing, err := db.ListCollectionNames(ctx, bson.D{})
-		if err != nil {
-			log.Printf("prototype collections listing failed (%T)", err)
-			return nil, nil, nil, ErrUnavailable
-		}
-		available := make(map[string]bool, len(existing))
-		for _, name := range existing {
-			available[name] = true
-		}
-		if !available[prototypeGenerationsCollection] || !available[prototypeItemsCollection] || !available[prototypeActiveCollection] {
-			if err := m.ensurePrototypeCollections(ctx, company.DatabaseName); err != nil {
-				var commandErr mongo.CommandError
-				if errors.As(err, &commandErr) {
-					log.Printf("prototype collections unavailable (Mongo code=%d name=%s)", commandErr.Code, commandErr.Name)
-				} else {
-					log.Printf("prototype collections unavailable (%T, deadline=%t)", err, errors.Is(err, context.DeadlineExceeded))
-				}
-				return nil, nil, nil, normalizeMongoError(err)
-			}
-		}
-		m.prototypeReady.Store(company.DatabaseName, true)
+	existing, err := db.ListCollectionNames(ctx, bson.D{{Key: "name", Value: bson.D{{Key: "$in", Value: bson.A{prototypeGenerationsCollection, prototypeItemsCollection, prototypeActiveCollection}}}}})
+	if err != nil {
+		log.Printf("prototype collections listing failed (%T)", err)
+		return nil, nil, nil, ErrUnavailable
+	}
+	if len(existing) != 3 {
+		return nil, nil, nil, todoTeach("company.schema_migrations", "run Registry migrate-all to provision Prototype collections", ErrConflict)
 	}
 	return db.Collection(prototypeGenerationsCollection), db.Collection(prototypeItemsCollection), db.Collection(prototypeActiveCollection), nil
 }
@@ -277,11 +262,48 @@ func prototypeActiveFromGeneration(generation prototypeGenerationDocument) proto
 
 func (m *MongoStore) ensurePrototypeCollections(ctx context.Context, database string) error {
 	db := m.client.Database(database)
-	collections := []struct {
-		name       string
-		required   bson.A
-		properties bson.M
-	}{
+	collections := prototypeCollectionSpecs()
+	indexes := []mongo.IndexModel{
+		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}, {Key: "generation_key", Value: 1}}, Options: options.Index().SetName("prototype_generation_identity_unique").SetUnique(true)},
+		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}, {Key: "generation_key", Value: 1}, {Key: "prototype_id", Value: 1}}, Options: options.Index().SetName("prototype_item_identity_unique").SetUnique(true)},
+		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}}, Options: options.Index().SetName("prototype_active_project_unique").SetUnique(true)},
+	}
+	for index, item := range collections {
+		validator := prototypeCollectionValidator(item)
+		exists, err := db.ListCollectionNames(ctx, bson.D{{Key: "name", Value: item.name}})
+		if err != nil {
+			log.Printf("prototype provision failed listing %s", item.name)
+			return err
+		}
+		if len(exists) == 0 {
+			if err := db.CreateCollection(ctx, item.name, options.CreateCollection().SetValidator(validator).SetValidationLevel("strict").SetValidationAction("error")); err != nil && !namespaceExists(err) {
+				log.Printf("prototype provision failed creating %s", item.name)
+				return err
+			}
+		} else if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: item.name}, {Key: "validator", Value: validator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+			log.Printf("prototype provision failed validating %s", item.name)
+			return err
+		}
+		if _, err := db.Collection(item.name).Indexes().CreateOne(ctx, indexes[index]); err != nil {
+			log.Printf("prototype provision failed indexing %s", item.name)
+			return err
+		}
+	}
+	return nil
+}
+
+type prototypeCollectionSpec struct {
+	name       string
+	required   bson.A
+	properties bson.M
+}
+
+func prototypeCollectionValidator(item prototypeCollectionSpec) bson.M {
+	return bson.M{"$jsonSchema": bson.M{"bsonType": "object", "required": item.required, "properties": item.properties}}
+}
+
+func prototypeCollectionSpecs() []prototypeCollectionSpec {
+	return []prototypeCollectionSpec{
 		{prototypeGenerationsCollection, bson.A{"company_id", "project_id", "generation_key", "repository_id", "publication_branch", "binding_revision", "revision", "evaluator_version", "inventory_digest", "knowledge_digest", "prototype_ids", "complete", "created_at"}, bson.M{
 			"company_id": bson.M{"bsonType": "string"}, "project_id": bson.M{"bsonType": "string"}, "generation_key": bson.M{"bsonType": "string", "pattern": "^[a-f0-9]{64}$"},
 			"repository_id": bson.M{"bsonType": "string"}, "publication_branch": bson.M{"bsonType": "string"}, "binding_revision": bson.M{"bsonType": "long", "minimum": 0},
@@ -302,33 +324,6 @@ func (m *MongoStore) ensurePrototypeCollections(ctx context.Context, database st
 			"knowledge_digest": bson.M{"bsonType": "string", "pattern": "^[a-f0-9]{64}$"}, "updated_at": bson.M{"bsonType": "date"},
 		}},
 	}
-	indexes := []mongo.IndexModel{
-		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}, {Key: "generation_key", Value: 1}}, Options: options.Index().SetName("prototype_generation_identity_unique").SetUnique(true)},
-		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}, {Key: "generation_key", Value: 1}, {Key: "prototype_id", Value: 1}}, Options: options.Index().SetName("prototype_item_identity_unique").SetUnique(true)},
-		{Keys: bson.D{{Key: "company_id", Value: 1}, {Key: "project_id", Value: 1}}, Options: options.Index().SetName("prototype_active_project_unique").SetUnique(true)},
-	}
-	for index, item := range collections {
-		validator := bson.M{"$jsonSchema": bson.M{"bsonType": "object", "required": item.required, "properties": item.properties}}
-		exists, err := db.ListCollectionNames(ctx, bson.D{{Key: "name", Value: item.name}})
-		if err != nil {
-			log.Printf("prototype provision failed listing %s", item.name)
-			return err
-		}
-		if len(exists) == 0 {
-			if err := db.CreateCollection(ctx, item.name, options.CreateCollection().SetValidator(validator)); err != nil && !namespaceExists(err) {
-				log.Printf("prototype provision failed creating %s", item.name)
-				return err
-			}
-		} else if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: item.name}, {Key: "validator", Value: validator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
-			log.Printf("prototype provision failed validating %s", item.name)
-			return err
-		}
-		if _, err := db.Collection(item.name).Indexes().CreateOne(ctx, indexes[index]); err != nil {
-			log.Printf("prototype provision failed indexing %s", item.name)
-			return err
-		}
-	}
-	return nil
 }
 
 const (

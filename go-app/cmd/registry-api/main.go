@@ -36,6 +36,11 @@ func main() {
 				log.Fatal(err)
 			}
 			return
+		case "migrate-all":
+			if err := runMigrateAll(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "provision-todo-history":
 			if err := runProvisionTODOHistory(os.Args[2:]); err != nil {
 				log.Fatal(err)
@@ -97,6 +102,26 @@ func main() {
 			log.Fatal("registry API failed")
 		}
 	}
+}
+
+func runMigrateAll(args []string) error {
+	if len(args) != 0 {
+		return errors.New("migrate-all accepts no Company or Project arguments; the Registry discovers every Company")
+	}
+	uri := strings.TrimSpace(os.Getenv("REGISTRY_MONGODB_URI"))
+	if uri == "" {
+		return errors.New("REGISTRY_MONGODB_URI is required")
+	}
+	store, err := registry.OpenMongo(context.Background(), uri, strings.TrimSpace(os.Getenv("REGISTRY_CONTROL_DATABASE")))
+	if err != nil {
+		return errors.New("MongoDB connection unavailable; no migration rollout was claimed")
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = store.Close(ctx)
+	}()
+	return store.MigrateAllCompanies(context.Background(), os.Stdout)
 }
 
 func newRegistryServer(address string, handler http.Handler) *http.Server {

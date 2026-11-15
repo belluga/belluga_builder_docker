@@ -996,6 +996,7 @@ func TestMongoImportIsRepeatableAndRejectsChangedHierarchy(t *testing.T) {
 	if err != nil || first.NoOp {
 		t.Fatalf("first import = %+v, %v", first, err)
 	}
+	migrateCompanyFixture(t, ctx, store)
 	control, err := store.LifecycleControl(ctx)
 	if err != nil || !sameLifecycleMigration(control.Value, input.LifecycleMigration) {
 		t.Fatalf("stored lifecycle state does not match the canonical readback: stored=%s expected=%+v err=%v", control.Value, input.LifecycleMigration, err)

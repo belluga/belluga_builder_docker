@@ -308,19 +308,11 @@ func knowledgeTemporalOffender(ctx context.Context, db *mongo.Database, projectI
 	return true, nil
 }
 
-// Existing tenant databases may predate the record/revision index. Provision
-// it once before any hinted Knowledge proof query; new tenants receive the
-// same index through ensureCanonicalCollections.
+// Knowledge proof queries require the migration-owned record/revision index.
+// Request paths verify it without creating tenant schema.
 func (m *MongoStore) ensureKnowledgeProofIndex(ctx context.Context, databaseName string) error {
-	if _, ready := m.knowledgeProofIndex.Load(databaseName); ready {
-		return nil
-	}
 	keys := bson.D{{Key: "project_id", Value: 1}, {Key: "generation_id", Value: 1}, {Key: "family", Value: 1}, {Key: "record_id", Value: 1}, {Key: "revision", Value: 1}}
-	if _, err := m.client.Database(databaseName).Collection(canonicalEvents).Indexes().CreateOne(ctx, mongo.IndexModel{Keys: keys, Options: options.Index().SetName("canonical_events_record_revision")}); err != nil {
-		return todoTeach("canonical_events index", "provision the record/revision Knowledge proof index for this Company before documentary transitions", ErrUnavailable)
-	}
-	m.knowledgeProofIndex.Store(databaseName, true)
-	return nil
+	return verifyCompanyIndex(ctx, m.client.Database(databaseName).Collection(canonicalEvents), "canonical_events_record_revision", keys, false)
 }
 
 // A Ready approval must not freeze a nonexistent or foreign Knowledge baseline.
