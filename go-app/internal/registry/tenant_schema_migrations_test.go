@@ -88,6 +88,13 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	if err != nil || len(companyA.SchemaMigrations) != 2 {
 		t.Fatalf("verified Company must retain both versions: %+v, %v", companyA, err)
 	}
+	stale := companyA
+	stale.SchemaMigrations = stale.SchemaMigrations[:1]
+	store.markCompanySchemaFailed(ctx, stale)
+	companyA, err = store.rawCompany(ctx, "company-a")
+	if err != nil || companyA.SchemaState != "ready" {
+		t.Fatalf("stale failure overwrote a winner's ready state: %+v, %v", companyA, err)
+	}
 	companyB, err := store.rawCompany(ctx, "company-b")
 	if err != nil || len(companyB.SchemaMigrations) != 1 {
 		t.Fatalf("partial Company must not record v2: %+v, %v", companyB, err)
@@ -107,6 +114,12 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	companyC, _ := store.rawCompany(ctx, "company-c")
 	if len(companyC.SchemaMigrations) != 2 {
 		t.Fatalf("fresh Company versions = %d", len(companyC.SchemaMigrations))
+	}
+	inventoryCtx, stopInventory := context.WithCancel(ctx)
+	stopInventory()
+	report.Reset()
+	if err := store.MigrateAllCompanies(inventoryCtx, &report); err == nil || !strings.Contains(report.String(), `"inventory_complete":false`) || strings.Contains(report.String(), `"complete":true`) {
+		t.Fatalf("failed inventory claimed completion: %v, %s", err, report.String())
 	}
 }
 

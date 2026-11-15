@@ -403,19 +403,14 @@ func (m *MongoStore) convergeCompanySchema(ctx context.Context, id string, opera
 				return err
 			}
 		} else if err := step.apply(ctx, m, company); err != nil {
-			_, _ = m.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: id}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_state", Value: "failed"}}}})
+			m.markCompanySchemaFailed(ctx, company)
 			return err
 		}
 		if err := step.verify(ctx, m, company); err != nil {
-			_, _ = m.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: id}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_state", Value: "failed"}}}})
+			m.markCompanySchemaFailed(ctx, company)
 			return err
 		}
-		filter := bson.D{{Key: "id", Value: id}}
-		if len(company.SchemaMigrations) == 0 {
-			filter = append(filter, bson.E{Key: "schema_migrations", Value: bson.D{{Key: "$exists", Value: false}}})
-		} else {
-			filter = append(filter, bson.E{Key: "schema_migrations", Value: company.SchemaMigrations})
-		}
+		filter := companySchemaPrefixFilter(company)
 		state := "pending"
 		if len(company.SchemaMigrations)+1 == len(steps) {
 			state = "ready"
@@ -431,6 +426,20 @@ func (m *MongoStore) convergeCompanySchema(ctx context.Context, id string, opera
 			continue
 		}
 	}
+}
+
+func companySchemaPrefixFilter(company Company) bson.D {
+	filter := bson.D{{Key: "id", Value: company.ID}}
+	if len(company.SchemaMigrations) == 0 {
+		return append(filter, bson.E{Key: "schema_migrations", Value: bson.D{{Key: "$exists", Value: false}}})
+	}
+	return append(filter, bson.E{Key: "schema_migrations", Value: company.SchemaMigrations})
+}
+
+func (m *MongoStore) markCompanySchemaFailed(ctx context.Context, company Company) {
+	// A concurrent migrator may already have accepted the next version. A
+	// stale attempt must never replace its ready state with failed.
+	_, _ = m.control.Collection(companiesCollection).UpdateOne(ctx, companySchemaPrefixFilter(company), bson.D{{Key: "$set", Value: bson.D{{Key: "schema_state", Value: "failed"}}}})
 }
 
 type companyMigrationResult struct {
