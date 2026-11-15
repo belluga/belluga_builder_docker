@@ -85,15 +85,28 @@ func (m *MongoStore) prototypeCollections(ctx context.Context, companyID string)
 		return nil, nil, nil, err
 	}
 	db := m.client.Database(company.DatabaseName)
-	existing, err := db.ListCollectionNames(ctx, bson.D{{Key: "name", Value: bson.D{{Key: "$in", Value: bson.A{prototypeGenerationsCollection, prototypeItemsCollection, prototypeActiveCollection}}}}})
+	existing, err := db.ListCollectionNames(ctx, bson.D{})
 	if err != nil {
 		log.Printf("prototype collections listing failed (%T)", err)
 		return nil, nil, nil, ErrUnavailable
 	}
-	if len(existing) != 3 {
+	if !prototypeCollectionsReady(existing) {
 		return nil, nil, nil, todoTeach("company.schema_migrations", "run Registry migrate-all to provision Prototype collections", ErrConflict)
 	}
 	return db.Collection(prototypeGenerationsCollection), db.Collection(prototypeItemsCollection), db.Collection(prototypeActiveCollection), nil
+}
+
+func prototypeCollectionsReady(existing []string) bool {
+	available := make(map[string]struct{}, len(existing))
+	for _, name := range existing {
+		available[name] = struct{}{}
+	}
+	for _, required := range []string{prototypeGenerationsCollection, prototypeItemsCollection, prototypeActiveCollection} {
+		if _, ok := available[required]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func prototypeGenerationToCatalog(generation prototypeGenerationDocument, items []ac.Item, companyID, projectID string) PrototypeCatalogResponse {
