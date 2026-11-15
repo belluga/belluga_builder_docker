@@ -1143,7 +1143,7 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 		return TODOActionResponse{}, ErrInvalid
 	}
 	if len(identityPins) != 0 {
-		if err := ensureImplementationRepositoryIdentityIndex(ctx, database); err != nil {
+		if err := verifyCompanyIndex(ctx, database.Collection(implementationRepositoryIdentityCollection), "project_repository_identity_unique", bson.D{{Key: "project_id", Value: 1}, {Key: "repository_id", Value: 1}}, true); err != nil {
 			return TODOActionResponse{}, err
 		}
 	}

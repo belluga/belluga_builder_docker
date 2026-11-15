@@ -358,6 +358,7 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 	if _, err := store.control.Collection(companiesCollection).InsertOne(ctx, company); err != nil {
 		t.Fatal(err)
 	}
+	migrateCompanyFixture(t, ctx, store)
 	database := store.client.Database(databaseName)
 	for _, id := range []string{"boora", "builder"} {
 		project := Project{ID: id, CompanyID: "belluga-solutions", Name: id, Binding: ptrTestBinding(validTestBinding()), RegisteredAt: "2026-10-31T00:00:00Z", PreparationState: "not_ready"}

@@ -50,8 +50,7 @@ type MongoStore struct {
 	prototypeGit                     prototypeGitReader
 	prototypeFileCache               *prototypeFileCache
 	prototypeHot                     *prototypeHotCache
-	prototypeReady                   sync.Map
-	knowledgeProofIndex              sync.Map
+	schemaMigrations                 []companySchemaStep
 	landingMu                        sync.Mutex
 	landingCatalogs                  map[string]LandingCatalogResponse
 	landingOrder                     []string
@@ -281,6 +280,9 @@ func (m *MongoStore) Catalog(ctx context.Context) (Catalog, error) {
 	}
 	publicCompanies := make([]Company, len(companies))
 	for i, company := range companies {
+		if err := m.companySchemaReady(company); err != nil {
+			return Catalog{}, err
+		}
 		publicCompanies[i] = sanitizeCompany(company)
 	}
 	catalog := Catalog{SchemaVersion: "1", Companies: publicCompanies, Projects: []Project{}, Preferences: []Preference{}}
@@ -372,12 +374,10 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 	if err != nil {
 		return Project{}, err
 	}
+	company.SchemaState = "initializing"
 	project := Project{ID: input.ProjectID, Name: input.ProjectName, CompanyID: input.CompanyID, RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
-	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	ctx, cancel := context.WithTimeout(ctx, companyRegistrationTimeout)
 	defer cancel()
-	if err := m.ensureTenantIndexes(ctx, company.DatabaseName); err != nil {
-		return Project{}, ErrUnavailable
-	}
 	companies := m.control.Collection(companiesCollection)
 	var existing Company
 	companyErr := companies.FindOne(ctx, bson.D{{Key: "id", Value: company.ID}}).Decode(&existing)
@@ -385,16 +385,22 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 		if existing.Name != company.Name || existing.DatabaseName != company.DatabaseName {
 			return Project{}, ErrConflict
 		}
+		if existing.SchemaState == "" {
+			return Project{}, todoTeach("company.schema_migrations", "run the Registry migrate-all command to adopt this existing Company before registration", ErrConflict)
+		}
 	} else if !errors.Is(companyErr, mongo.ErrNoDocuments) {
 		return Project{}, ErrUnavailable
 	} else if _, err := companies.InsertOne(ctx, company); err != nil {
 		if !errors.Is(normalizeMongoError(err), ErrConflict) {
 			return Project{}, normalizeMongoError(err)
 		}
-		current, readErr := m.company(ctx, company.ID)
+		current, readErr := m.rawCompany(ctx, company.ID)
 		if readErr != nil || current.Name != company.Name {
 			return Project{}, ErrConflict
 		}
+	}
+	if err := m.convergeCompanySchema(ctx, company.ID, false); err != nil {
+		return Project{}, err
 	}
 	prior, readErr := m.readProject(ctx, company, project.ID)
 	if readErr == nil {
@@ -852,6 +858,9 @@ func (m *MongoStore) ResolveTenant(ctx context.Context, request TenantRequest) (
 	if company.DatabaseName != m.tenantDatabase(company.ID) {
 		return TenantResolution{}, ErrUnavailable
 	}
+	if err := m.companySchemaReady(company); err != nil {
+		return TenantResolution{}, err
+	}
 	return TenantResolution{CompanyID: company.ID, Company: sanitizeCompany(company)}, nil
 }
 
@@ -876,7 +885,7 @@ func (m *MongoStore) readCompanies(ctx context.Context) ([]Company, error) {
 	return items, nil
 }
 
-func (m *MongoStore) company(ctx context.Context, id string) (Company, error) {
+func (m *MongoStore) rawCompany(ctx context.Context, id string) (Company, error) {
 	var item Company
 	if err := m.control.Collection(companiesCollection).FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&item); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
@@ -886,6 +895,17 @@ func (m *MongoStore) company(ctx context.Context, id string) (Company, error) {
 	}
 	if item.ObjectID.IsZero() || item.DatabaseName != m.tenantDatabase(id) {
 		return Company{}, ErrUnavailable
+	}
+	return item, nil
+}
+
+func (m *MongoStore) company(ctx context.Context, id string) (Company, error) {
+	item, err := m.rawCompany(ctx, id)
+	if err != nil {
+		return Company{}, err
+	}
+	if err := m.companySchemaReady(item); err != nil {
+		return Company{}, err
 	}
 	return item, nil
 }

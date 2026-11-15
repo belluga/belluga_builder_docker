@@ -103,16 +103,7 @@ func (m *MongoStore) AdoptHistoricalTODOStages(ctx context.Context, companyID st
 		return HistoricalTODOAdoptionResponse{}, err
 	}
 	database := m.client.Database(company.DatabaseName)
-	if err := upgradeTODOCollectionForHistory(ctx, database); err != nil {
-		return HistoricalTODOAdoptionResponse{}, err
-	}
 	if err := verifyTODOCollection(ctx, database); err != nil {
-		return HistoricalTODOAdoptionResponse{}, err
-	}
-	if err := provisionHistoryCollection(ctx, database, todoContentVersionsCollection, TODOContentVersionsValidator(), todoContentVersionIndexes()); err != nil {
-		return HistoricalTODOAdoptionResponse{}, err
-	}
-	if err := provisionHistoryCollection(ctx, database, todoEventsCollection, TODOEventsValidator(), todoEventIndexes()); err != nil {
 		return HistoricalTODOAdoptionResponse{}, err
 	}
 	if err := verifyTODOHistoryCollections(ctx, database); err != nil {

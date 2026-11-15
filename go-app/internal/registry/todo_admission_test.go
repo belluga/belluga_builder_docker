@@ -306,6 +306,7 @@ func TestMongoImportedEditedTODOStageFlow(t *testing.T) {
 	if _, err := store.control.Collection(companiesCollection).InsertOne(ctx, company); err != nil {
 		t.Fatal(err)
 	}
+	migrateCompanyFixture(t, ctx, store)
 	project := Project{ID: "builder", CompanyID: "company-a", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
 	projectRecord, err := projectToDocument(project, bson.NewObjectID())
 	if err != nil {
@@ -948,6 +949,7 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	database := store.client.Database(databaseName)
+	migrateCompanyFixture(t, ctx, store)
 	project := Project{ID: "builder", CompanyID: "company-a", Name: "Builder", Binding: ptrTestBinding(validTestBinding()), RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready"}
 	projectRecord, err := projectToDocument(project, bson.NewObjectID())
 	if err != nil {
@@ -1164,6 +1166,12 @@ func TestMongoIndividualTODOAdmissionReadRoadmapAndGovernedStart(t *testing.T) {
 	}
 	if err := database.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoEventsCollection}, {Key: "validator", Value: historyValidatorBeforeClearPlacement(TODOEventsValidator())}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatalf("set pre-creation event validator: %v", err)
+	}
+	if _, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: creationTemplate.SchemaVersion, OperationID: "mongo-born-backlog-create", TODO: mongoBorn}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ordinary admission must reject stale Company schema without DDL: %v", err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, "company-a"); err != nil {
+		t.Fatalf("operator schema repair before admission: %v", err)
 	}
 	mongoAdmission, err := store.AdmitTODO(ctx, "company-a", "builder", TODOAdmissionRequest{SchemaVersion: creationTemplate.SchemaVersion, OperationID: "mongo-born-backlog-create", TODO: mongoBorn})
 	if err != nil || mongoAdmission.TODOID != mongoBorn.ID || mongoAdmission.ReleaseID != "" || mongoAdmission.ContentRevision != 0 || !validSourceDigest(mongoAdmission.ContentDigest) {

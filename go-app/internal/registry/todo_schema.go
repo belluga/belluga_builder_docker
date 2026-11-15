@@ -175,7 +175,7 @@ func (m *MongoStore) ProvisionTODOCollection(ctx context.Context, companyID stri
 	if !validID(companyID) {
 		return todoTeach("company_id", "name an existing Company tenant", ErrInvalid)
 	}
-	company, err := m.company(ctx, companyID)
+	company, err := m.rawCompany(ctx, companyID)
 	if err != nil {
 		return err
 	}
@@ -518,7 +518,7 @@ func bsonValidatorEqual(actual bson.Raw, expected bson.D) bool {
 // stays outside ordinary admission errors so schema internals are not exposed
 // through API TEACH responses.
 func (m *MongoStore) DiagnoseTODOCollectionSchema(ctx context.Context, companyID string) (TODOCollectionSchemaDiagnostic, error) {
-	company, err := m.company(ctx, companyID)
+	company, err := m.rawCompany(ctx, companyID)
 	if err != nil {
 		return TODOCollectionSchemaDiagnostic{}, err
 	}

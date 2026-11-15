@@ -288,6 +288,7 @@ func TestMongoProvisionTODOHistoryUpgradesCombinedEventValidatorPredecessor(t *t
 	if _, err := store.control.Collection(companiesCollection).InsertOne(ctx, company); err != nil {
 		t.Fatal(err)
 	}
+	migrateCompanyFixture(t, ctx, store)
 	if err := store.ProvisionTODOCollection(ctx, company.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -417,6 +418,12 @@ func TestMongoHistoricalAdoptionPilotIsAtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("fixture is not a valid stored imported TODO: %v (%+v)", err, admitted)
 	}
 	request := HistoricalTODOAdoptionRequest{ProjectID: "boora", OperationID: "pilot-adopt-001", Reason: "Accept the exact source-recorded Local-Implemented stage as historical state; this is not fresh proof.", HistoricalAcceptance: true, Items: []HistoricalTODOAdoptionItem{{TODOID: record.ID, ExpectedRevision: 0, RequestedStage: "Local-Implemented", SourceReference: todoHistoricalSourceReference(source), SourceDigest: source.Digest}}}
+	if _, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request); !errors.Is(err, ErrConflict) {
+		t.Fatalf("ordinary adoption must reject stale Company schema without DDL: %v", err)
+	}
+	if err := store.ProvisionTODOHistory(ctx, "belluga-solutions"); err != nil {
+		t.Fatalf("operator schema repair before adoption: %v", err)
+	}
 	if _, err := store.AdoptHistoricalTODOStages(ctx, "belluga-solutions", request); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "source/content_revision") {
 		t.Fatalf("v1 Foundation subject was accepted for historical stage adoption: %v", err)
 	}

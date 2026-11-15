@@ -365,7 +365,7 @@ func (m *MongoStore) ProvisionTODOHistory(ctx context.Context, companyID string)
 	if !validID(companyID) {
 		return todoTeach("company_id", "name an existing Company tenant", ErrInvalid)
 	}
-	company, err := m.company(ctx, companyID)
+	company, err := m.rawCompany(ctx, companyID)
 	if err != nil {
 		return err
 	}
@@ -416,10 +416,11 @@ func (m *MongoStore) ProvisionTODOHistory(ctx context.Context, companyID string)
 // PreflightTODOHistory is read-only. It verifies the server-resolved tenant,
 // current TODO schema and any existing history collections before migration.
 func (m *MongoStore) PreflightTODOHistory(ctx context.Context, companyID string) (TODOHistoryPreflightReport, error) {
-	database, err := m.todoTenantDatabase(ctx, companyID)
+	company, err := m.rawCompany(ctx, companyID)
 	if err != nil {
 		return TODOHistoryPreflightReport{}, err
 	}
+	database := m.client.Database(company.DatabaseName)
 	ctx, cancel := context.WithTimeout(ctx, todoHistoryPhaseTimeout)
 	defer cancel()
 	if err := verifyTODOCollection(ctx, database); err != nil {
