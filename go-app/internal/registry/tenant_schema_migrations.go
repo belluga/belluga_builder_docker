@@ -443,13 +443,17 @@ func (m *MongoStore) markCompanySchemaFailed(ctx context.Context, company Compan
 }
 
 type companyMigrationResult struct {
-	Type      string `json:"type"`
-	CompanyID string `json:"company_id"`
-	Applied   int    `json:"applied"`
-	Skipped   int    `json:"skipped"`
-	Failed    bool   `json:"failed"`
-	Pending   int    `json:"pending"`
-	Error     string `json:"error,omitempty"`
+	Type            string  `json:"type"`
+	CompanyID       string  `json:"company_id"`
+	Applied         int     `json:"applied"`
+	AppliedVersions []int64 `json:"applied_versions"`
+	Skipped         int     `json:"skipped"`
+	SkippedVersions []int64 `json:"skipped_versions"`
+	Failed          bool    `json:"failed"`
+	FailedVersion   int64   `json:"failed_version,omitempty"`
+	Pending         int     `json:"pending"`
+	PendingVersions []int64 `json:"pending_versions"`
+	Error           string  `json:"error,omitempty"`
 }
 
 type companyMigrationSummary struct {
@@ -484,7 +488,7 @@ func (m *MongoStore) MigrateAllCompanies(ctx context.Context, output io.Writer) 
 			return incomplete()
 		}
 		before := len(company.SchemaMigrations)
-		result := companyMigrationResult{Type: "company", CompanyID: company.ID}
+		result := companyMigrationResult{Type: "company", CompanyID: company.ID, AppliedVersions: []int64{}, SkippedVersions: []int64{}, PendingVersions: []int64{}}
 		if err := m.convergeCompanySchema(ctx, company.ID, true); err != nil {
 			result.Failed = true
 			result.Error = err.Error()
@@ -494,9 +498,27 @@ func (m *MongoStore) MigrateAllCompanies(ctx context.Context, output io.Writer) 
 		if err != nil {
 			return incomplete()
 		}
+		if before > len(after.SchemaMigrations) {
+			before = len(after.SchemaMigrations)
+		}
 		result.Applied = len(after.SchemaMigrations) - before
 		result.Skipped = before
-		result.Pending = len(m.schemaCatalog()) - len(after.SchemaMigrations)
+		catalog := m.schemaCatalog()
+		if len(after.SchemaMigrations) < len(catalog) {
+			result.Pending = len(catalog) - len(after.SchemaMigrations)
+			for _, step := range catalog[len(after.SchemaMigrations):] {
+				result.PendingVersions = append(result.PendingVersions, step.version)
+			}
+		}
+		for _, entry := range after.SchemaMigrations[:before] {
+			result.SkippedVersions = append(result.SkippedVersions, entry.Version)
+		}
+		for _, entry := range after.SchemaMigrations[before:] {
+			result.AppliedVersions = append(result.AppliedVersions, entry.Version)
+		}
+		if result.Failed && len(result.PendingVersions) > 0 {
+			result.FailedVersion = result.PendingVersions[0]
+		}
 		summary.Companies++
 		summary.Applied += result.Applied
 		summary.Skipped += result.Skipped

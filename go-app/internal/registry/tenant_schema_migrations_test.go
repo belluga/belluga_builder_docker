@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,10 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	}
 	if len(lines) != 3 || lines[2]["complete"] != false || lines[2]["failed"] != float64(1) {
 		t.Fatalf("incomplete report = %s", report.String())
+	}
+	if lines[0]["company_id"] != "company-a" || !reflect.DeepEqual(lines[0]["applied_versions"], []any{float64(2)}) ||
+		lines[1]["company_id"] != "company-b" || lines[1]["failed_version"] != float64(2) || !reflect.DeepEqual(lines[1]["pending_versions"], []any{float64(2)}) {
+		t.Fatalf("per-Company version report = %s", report.String())
 	}
 	companyA, err := store.rawCompany(ctx, "company-a")
 	if err != nil || len(companyA.SchemaMigrations) != 2 {
