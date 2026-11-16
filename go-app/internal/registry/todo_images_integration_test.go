@@ -24,13 +24,14 @@ type storedTODOImage struct {
 type storedTODOImagePublisher struct {
 	image   *storedTODOImage
 	publish bool
+	publishErr error
 }
 
 func (p storedTODOImagePublisher) Publish(_ context.Context, _ RepositoryBinding, path string, data []byte) error {
 	if p.publish {
 		p.image.path, p.image.data = path, append([]byte(nil), data...)
 	}
-	return nil
+	return p.publishErr
 }
 
 type storedTODOImageSource struct {
@@ -124,7 +125,8 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	if err != nil || len(before.TODO.Content.ImageAttachments) != 0 || before.TODORevision != 0 {
 		t.Fatalf("unpublished image changed TODO: %+v %v", before, err)
 	}
-	store.todoImagePublisher = storedTODOImagePublisher{image: imageStore, publish: true}
+	// A lost GitHub response must be resolved by reading the published bytes.
+	store.todoImagePublisher = storedTODOImagePublisher{image: imageStore, publish: true, publishErr: ErrUnavailable}
 	attached, err := store.AttachTODOImage(ctx, "company-a", request)
 	if err != nil {
 		t.Fatal(err)
