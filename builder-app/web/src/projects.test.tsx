@@ -93,24 +93,46 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
-  it("offers a direct HTML administration link from the shared project header", async () => {
+  it("opens the company administration HTML from another project and carries its return context", async () => {
     const baseFetch = mockFetch();
     const revision = "a".repeat(40);
     const entryURL = `/api/prototypes/file/belluga/builder/${revision}/${"b".repeat(64)}/files/prototypes/builder-admin/screens/companies.html`;
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const path = new URL(String(input), location.origin).pathname;
-      if (path === "/api/prototypes") return { ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: `/api/prototypes/${revision}/builder-admin?company_id=belluga&project_id=builder` }] }) };
-      if (path === `/api/prototypes/${revision}/builder-admin`) return { ok: true, json: async () => ({ entry_url: entryURL }) };
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/prototypes") {
+        expect(url.searchParams.get("company_id")).toBe("belluga");
+        expect(url.searchParams.get("project_id")).toBe("builder");
+        return { ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: `/api/prototypes/${revision}/builder-admin?company_id=belluga&project_id=builder` }] }) };
+      }
+      if (url.pathname === `/api/prototypes/${revision}/builder-admin`) return { ok: true, json: async () => ({ entry_url: entryURL }) };
       return baseFetch(input);
-    }));
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    });
+    vi.stubGlobal("fetch", fetcher);
+    history.replaceState({}, "", "/?company_id=belluga&project_id=boora&page=overview");
     render(<Projects />);
     const menu = await screen.findByLabelText("Abrir menu da conta");
     fireEvent.click(menu);
     const adminLink = await screen.findByRole("link", { name: /Administração/ });
-    expect(adminLink).toHaveAttribute("href", entryURL);
-    expect(screen.getByRole("button", { name: "Minha conta" })).toBeDisabled();
+    expect(adminLink).toHaveAttribute("href", `${entryURL}#origin_company_id=belluga&origin_project_id=boora`);
+    expect(fetcher).toHaveBeenCalledWith(`/api/prototypes/${revision}/builder-admin?company_id=belluga&project_id=builder`);
+    for (const name of ["Minha conta", "Perfil", "Preferências", "Sair"]) expect(screen.getByRole("button", { name })).toBeDisabled();
     expect(location.search).toContain("page=overview");
+  });
+  it("keeps administration disabled when the registered entry cannot be loaded", async () => {
+    const baseFetch = mockFetch();
+    const revision = "a".repeat(40);
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/prototypes") return { ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: `/api/prototypes/${revision}/builder-admin?company_id=belluga&project_id=builder` }] }) };
+      if (url.pathname === `/api/prototypes/${revision}/builder-admin`) return { ok: false };
+      return baseFetch(input);
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    fireEvent.click(await screen.findByLabelText("Abrir menu da conta"));
+    await screen.findByRole("alert", { name: "" });
+    expect(screen.queryByRole("link", { name: /Administração/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
   });
   it("loads the directory through the Registry catalog route only", async () => {
     const fetcher = mockFetch();

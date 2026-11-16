@@ -559,12 +559,15 @@ export function Projects() {
   const [adminEntryError, setAdminEntryError] = useState("");
   const [adminEntryURL, setAdminEntryURL] = useState("");
   const [adminEntryLoading, setAdminEntryLoading] = useState(false);
+  const adminLookupID = useRef(0);
   const loadAdminEntry = async () => {
     if (adminEntryURL || adminEntryLoading) return;
+    const lookupID = ++adminLookupID.current;
     setAdminEntryError("");
     setAdminEntryLoading(true);
     try {
-      const query = new URLSearchParams({ company_id: selection.companyID, project_id: selection.projectID });
+      const artifactProjectID = "builder";
+      const query = new URLSearchParams({ company_id: selection.companyID, project_id: artifactProjectID });
       const response = await fetch(`/api/prototypes?${query}`);
       if (!response.ok) throw new Error("Administração indisponível.");
       const result = await response.json() as { revision?: string; items?: { id: string; detail_url: string }[] };
@@ -573,18 +576,22 @@ export function Projects() {
       const detailResponse = await fetch(detailURL);
       if (!detailResponse.ok) throw new Error("Administração indisponível.");
       const detail = await detailResponse.json() as { entry_url?: string };
-      const expectedPrefix = `/api/prototypes/file/${encodeURIComponent(selection.companyID)}/${encodeURIComponent(selection.projectID)}/${result.revision}/`;
+      const expectedPrefix = `/api/prototypes/file/${encodeURIComponent(selection.companyID)}/${artifactProjectID}/${result.revision}/`;
       if (!detail.entry_url?.startsWith(expectedPrefix) || !detail.entry_url.endsWith("/files/prototypes/builder-admin/screens/companies.html")) throw new Error("Entrada de Administração inválida.");
       const currentRoute = route();
-      if (currentRoute.companyID === selection.companyID && currentRoute.projectID === selection.projectID) setAdminEntryURL(detail.entry_url);
+      if (lookupID === adminLookupID.current && currentRoute.companyID === selection.companyID && currentRoute.projectID === selection.projectID) {
+        const entry = new URL(detail.entry_url, window.location.origin);
+        entry.hash = new URLSearchParams({ origin_company_id: selection.companyID, origin_project_id: selection.projectID }).toString();
+        setAdminEntryURL(`${entry.pathname}${entry.hash}`);
+      }
     } catch (error) {
-      setAdminEntryError(error instanceof Error ? error.message : "Administração indisponível.");
+      if (lookupID === adminLookupID.current) setAdminEntryError(error instanceof Error ? error.message : "Administração indisponível.");
     } finally {
-      setAdminEntryLoading(false);
+      if (lookupID === adminLookupID.current) setAdminEntryLoading(false);
     }
   };
   useEffect(() => {
-    const update = () => { setSelection(route()); setPendingCompanyID(""); setAdminEntryURL(""); };
+    const update = () => { adminLookupID.current++; setSelection(route()); setPendingCompanyID(""); setAdminEntryURL(""); setAdminEntryError(""); setAdminEntryLoading(false); };
     addEventListener("popstate", update);
     return () => removeEventListener("popstate", update);
   }, []);
