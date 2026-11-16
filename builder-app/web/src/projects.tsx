@@ -557,21 +557,34 @@ export function Projects() {
   const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
   const [adminEntryError, setAdminEntryError] = useState("");
-  const openAdminPrototype = async () => {
+  const [adminEntryURL, setAdminEntryURL] = useState("");
+  const [adminEntryLoading, setAdminEntryLoading] = useState(false);
+  const loadAdminEntry = async () => {
+    if (adminEntryURL || adminEntryLoading) return;
     setAdminEntryError("");
+    setAdminEntryLoading(true);
     try {
       const query = new URLSearchParams({ company_id: selection.companyID, project_id: selection.projectID });
       const response = await fetch(`/api/prototypes?${query}`);
-      if (!response.ok) throw new Error("Protótipo de Administração indisponível.");
-      const result = await response.json() as { revision?: string; items?: { id: string }[] };
-      if (!/^[a-f0-9]{40}$/.test(result.revision || "") || !result.items?.some((item) => item.id === "builder-admin")) throw new Error("Protótipo de Administração indisponível.");
-      navigate({ page: "prototypes", mode: "presentation", artifact: "prototype:builder-admin", prototype_id: "builder-admin", screen_id: "companies", state_id: "default", revision: result.revision!, device: window.innerWidth <= 760 ? "mobile" : "desktop", scale: "fit" });
+      if (!response.ok) throw new Error("Administração indisponível.");
+      const result = await response.json() as { revision?: string; items?: { id: string; detail_url: string }[] };
+      const detailURL = result.items?.find((item) => item.id === "builder-admin")?.detail_url || "";
+      if (!/^[a-f0-9]{40}$/.test(result.revision || "") || !detailURL.startsWith(`/api/prototypes/${result.revision}/builder-admin?`)) throw new Error("Administração indisponível.");
+      const detailResponse = await fetch(detailURL);
+      if (!detailResponse.ok) throw new Error("Administração indisponível.");
+      const detail = await detailResponse.json() as { entry_url?: string };
+      const expectedPrefix = `/api/prototypes/file/${encodeURIComponent(selection.companyID)}/${encodeURIComponent(selection.projectID)}/${result.revision}/`;
+      if (!detail.entry_url?.startsWith(expectedPrefix) || !detail.entry_url.endsWith("/files/prototypes/builder-admin/screens/companies.html")) throw new Error("Entrada de Administração inválida.");
+      const currentRoute = route();
+      if (currentRoute.companyID === selection.companyID && currentRoute.projectID === selection.projectID) setAdminEntryURL(detail.entry_url);
     } catch (error) {
-      setAdminEntryError(error instanceof Error ? error.message : "Protótipo de Administração indisponível.");
+      setAdminEntryError(error instanceof Error ? error.message : "Administração indisponível.");
+    } finally {
+      setAdminEntryLoading(false);
     }
   };
   useEffect(() => {
-    const update = () => { setSelection(route()); setPendingCompanyID(""); };
+    const update = () => { setSelection(route()); setPendingCompanyID(""); setAdminEntryURL(""); };
     addEventListener("popstate", update);
     return () => removeEventListener("popstate", update);
   }, []);
@@ -681,7 +694,7 @@ export function Projects() {
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
     </div>
-    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a><details className="project-account-menu"><summary aria-label="Abrir menu da conta">{(company?.name || "B").split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</summary><div className="project-account-popover"><div className="project-account-context"><strong>{company?.name}</strong><small>{project?.name}</small></div><button className="project-account-admin" type="button" onClick={() => void openAdminPrototype()}><strong>⚙ Administração</strong><small>Gerenciar empresas e projetos</small></button>{adminEntryError && <p role="alert">{adminEntryError}</p>}<div className="project-account-disabled"><button disabled>Minha conta</button><button disabled>Perfil</button><button disabled>Preferências</button><button disabled>Sair</button></div></div></details></header>
+    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a><details className="project-account-menu"><summary aria-label="Abrir menu da conta" onClick={() => void loadAdminEntry()}>{(company?.name || "B").split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()}</summary><div className="project-account-popover"><div className="project-account-context"><strong>{company?.name}</strong><small>{project?.name}</small></div>{adminEntryURL ? <a className="project-account-admin" href={adminEntryURL}><strong>⚙ Administração</strong><small>Gerenciar empresas e projetos</small></a> : <button className="project-account-admin" type="button" disabled><strong>⚙ Administração</strong><small>{adminEntryLoading ? "Carregando Administração…" : "Gerenciar empresas e projetos"}</small></button>}{adminEntryError && <p role="alert">{adminEntryError}</p>}<div className="project-account-disabled"><button disabled>Minha conta</button><button disabled>Perfil</button><button disabled>Preferências</button><button disabled>Sair</button></div></div></details></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
       <section className="project-content">{page !== "design-system" && themeDiagnostic && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial read={overviewRead.key === viewKey ? overviewRead : { key: viewKey, state: "loading" }} projectName={project?.name || "Project"} companyID={selection.companyID} projectID={selection.projectID} />
