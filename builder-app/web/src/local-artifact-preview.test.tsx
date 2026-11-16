@@ -64,6 +64,18 @@ describe("revision-bound Prototype viewer", () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
+  it("returns to the real project when the active prototype frame requests Overview", async () => {
+    mockAPI();
+    const onNavigate = vi.fn();
+    render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", revision, device: "desktop", scale: "fit" }} />);
+    const frame = await screen.findByTitle("Demo · Home · Default") as HTMLIFrameElement;
+    fireEvent(window, new MessageEvent("message", { source: window, data: { type: "builder-prototype:navigate", page: "overview" } }));
+    fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "roadmap" } }));
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "overview" } }));
+    expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ page: "overview" });
+  });
+
   it("rejects a stale revision URL before requesting presentation HTML", async () => {
     const fetcher = mockAPI();
     render(<LocalArtifactPreview {...base} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", revision: "c".repeat(40), device: "mobile", scale: "fit" }} />);
