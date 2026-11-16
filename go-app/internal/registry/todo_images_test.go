@@ -4,13 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -37,36 +34,6 @@ func (g testTODOImageGit) BranchHead(context.Context, RepositoryBinding) (string
 }
 func (g testTODOImageGit) OpenRevision(context.Context, string, string, RepositoryBinding, string) (prototypeGitSource, error) {
 	return prototypeGitSource{source: testTODOImageSource{data: g.data}}, nil
-}
-
-type testTODOImageTransport func(*http.Request) (*http.Response, error)
-
-func (f testTODOImageTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-
-func TestTODOImagePublisherWritesBoundRepositoryBranch(t *testing.T) {
-	t.Setenv("DELPHI_GITHUB_WRITE_TOKEN", "test-token")
-	data := []byte("image bytes")
-	path := "todo-reference-images/company-a/project-a/todo-a/" + strings.Repeat("a", 64) + ".png"
-	client := &http.Client{Transport: testTODOImageTransport(func(r *http.Request) (*http.Response, error) {
-		if r.Method != http.MethodPut || r.URL.Host != "api.github.com" || r.URL.Path != "/repos/owner/repo/contents/"+path || r.Header.Get("Authorization") != "Bearer test-token" {
-			t.Fatalf("unexpected GitHub request: %s %s", r.Method, r.URL)
-		}
-		var body struct {
-			Content string `json:"content"`
-			Branch  string `json:"branch"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatal(err)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(body.Content)
-		if err != nil || !bytes.Equal(decoded, data) || body.Branch != "main" {
-			t.Fatalf("wrong publication payload: branch=%q data=%q err=%v", body.Branch, decoded, err)
-		}
-		return &http.Response{StatusCode: http.StatusCreated, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
-	})}
-	if err := (githubTODOImagePublisher{client: client}).Publish(context.Background(), RepositoryBinding{State: "configured", RepositoryID: "owner/repo", PublicationBranch: "main"}, path, data); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func TestTODOImageGitReadbackRequiresExactDigest(t *testing.T) {

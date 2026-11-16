@@ -3,6 +3,8 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"image"
 	"image/png"
@@ -19,19 +21,6 @@ type storedTODOImage struct {
 	path  string
 	data  []byte
 	reads int
-}
-
-type storedTODOImagePublisher struct {
-	image      *storedTODOImage
-	publish    bool
-	publishErr error
-}
-
-func (p storedTODOImagePublisher) Publish(_ context.Context, _ RepositoryBinding, path string, data []byte) error {
-	if p.publish {
-		p.image.path, p.image.data = path, append([]byte(nil), data...)
-	}
-	return p.publishErr
 }
 
 type storedTODOImageSource struct {
@@ -117,16 +106,17 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	}
 	store.prototypeGit = storedTODOImageGit{image: imageStore, binding: binding}
 	request := TODOImageUploadRequest{ProjectID: "builder", TODOID: record.ID, ExpectedRevision: 0, OperationID: "upload-image-reference", Description: "AccessScope selector", Data: encoded.Bytes()}
-	store.todoImagePublisher = storedTODOImagePublisher{image: imageStore}
-	if _, err := store.AttachTODOImage(ctx, "company-a", request); !errors.Is(err, ErrUnavailable) {
+	if _, err := store.AttachTODOImage(ctx, "company-a", request); !errors.Is(err, ErrConflict) {
 		t.Fatalf("unpublished image linked: %v", err)
 	}
 	before, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)
 	if err != nil || len(before.TODO.Content.ImageAttachments) != 0 || before.TODORevision != 0 {
 		t.Fatalf("unpublished image changed TODO: %+v %v", before, err)
 	}
-	// A lost GitHub response must be resolved by reading the published bytes.
-	store.todoImagePublisher = storedTODOImagePublisher{image: imageStore, publish: true, publishErr: ErrUnavailable}
+	// The agent publishes the exact file on the bound Git branch before POST.
+	sum := sha256.Sum256(request.Data)
+	imageStore.path = "todo-reference-images/company-a/builder/" + record.ID + "/" + hex.EncodeToString(sum[:]) + ".png"
+	imageStore.data = append([]byte(nil), request.Data...)
 	attached, err := store.AttachTODOImage(ctx, "company-a", request)
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +128,7 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	if err != nil || len(read.TODO.Content.ImageAttachments) != 1 || read.TODO.Content.ImageAttachments[0] != attached.Attachment {
 		t.Fatalf("metadata missing: %+v %v", read, err)
 	}
-	if !strings.Contains(read.ImageUploadTeach, "--network builder-registry-private") || !strings.Contains(read.ImageUploadTeach, "realpath -e") || !strings.Contains(read.ImageUploadTeach, "-F \"image=@/todo-image\"") || strings.Contains(read.ImageUploadTeach, "local-api/run") {
+	if !strings.Contains(read.ImageUploadTeach, "--network builder-registry-private") || !strings.Contains(read.ImageUploadTeach, "realpath -e") || !strings.Contains(read.ImageUploadTeach, "-F \"image=@/todo-image\"") || !strings.Contains(read.ImageUploadTeach, "first publish its exact bytes") || strings.Contains(read.ImageUploadTeach, "local-api/run") {
 		t.Fatalf("agent upload instructions missing from TODO readback: %q", read.ImageUploadTeach)
 	}
 	file, err := store.ReadTODOImage(ctx, "company-a", "builder", record.ID, attached.Attachment.ID)

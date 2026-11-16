@@ -4,19 +4,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
 	_ "image/png"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -26,10 +20,12 @@ import (
 
 const maxTODOImageBytes = 2 << 20
 
-const todoImageTeach = "If this TODO defines a Prototype screen, assess whether its text reference depends on visual details, especially specific screen elements and widgets. A description, file path or URL alone does not attach an image. If an image would help, consider POSTing it as multipart image with expected_revision and operation_id to this TODO's /images API. This is optional; the text reference remains valid."
+const todoImageTeach = "If this TODO defines a Prototype screen, assess whether its text reference depends on visual details, especially specific screen elements and widgets. A description, file path or URL alone does not attach an image. If an image would help, consider publishing it to the bound artifact Git branch and linking it through this TODO's multipart /images API with expected_revision and operation_id. This is optional; the text reference remains valid."
 const todoImageAttachedTeach = "The image is attached to this TODO for study; it is not approved for Prototype use. To use it in a Prototype, follow the study and approval workflow, add it to Prototype assets, and record approved_references with approval_evidence also listed in related."
 
-const todoImageUploadTeach = `To attach an optional local image, use the private Go Registry API from the Builder host with Docker access. Set IMAGE_ABS to the image's absolute path, COMPANY_ID, PROJECT_ID and TODO_ID to this TODO's exact IDs, TODO_REVISION to the current todo_revision, and OPERATION_ID to a stable ID. Use the current bound CODEX_SESSION_ID. The file must be a readable regular PNG, JPEG or GIF of 1 to 2097152 bytes; at most 16 images can be attached.
+const todoImageUploadTeach = `To attach an optional local image, first publish its exact bytes to this Project's bound artifact Git repository and publication branch using the existing Project Git write workflow. Use the path todo-reference-images/<company_id>/<project_id>/<todo_id>/<sha256-of-file>.<png|jpg|gif>, with the extension matching the decoded image format. Verify the bound repository, branch, remote commit and path before calling the API. The Registry reads Git and links the verified file; it does not push to GitHub or need a GitHub write token.
+
+Then use the private Go Registry API from the Builder host with Docker access. Set IMAGE_ABS to the same published image's absolute local path, COMPANY_ID, PROJECT_ID and TODO_ID to this TODO's exact IDs, TODO_REVISION to the current todo_revision, and OPERATION_ID to a stable ID. Use the current bound CODEX_SESSION_ID. The file must be a readable regular PNG, JPEG or GIF of 1 to 2097152 bytes; at most 16 images can be attached.
 
 Run this host preflight before Docker:
 case "$IMAGE_ABS" in /*) ;; *) printf 'image: use an absolute canonical path\n' >&2; exit 64;; esac
@@ -77,61 +73,6 @@ type todoImageFile struct {
 	Data        []byte
 	ContentType string
 	Digest      string
-}
-
-type todoImagePublisher interface {
-	Publish(context.Context, RepositoryBinding, string, []byte) error
-}
-
-// The Registry receives a Contents:write token through its private runtime
-// environment. The URL is constructed only from the validated binding.
-type githubTODOImagePublisher struct{ client *http.Client }
-
-func (p githubTODOImagePublisher) Publish(ctx context.Context, binding RepositoryBinding, filePath string, data []byte) error {
-	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || !validTODOImagePath(filePath) {
-		return ErrInvalid
-	}
-	token := strings.TrimSpace(os.Getenv("DELPHI_GITHUB_WRITE_TOKEN"))
-	if token == "" || strings.ContainsAny(token, "\r\n") {
-		return ErrUnavailable
-	}
-	segments := strings.Split(filePath, "/")
-	for i := range segments {
-		segments[i] = url.PathEscape(segments[i])
-	}
-	body, err := json.Marshal(struct {
-		Message string `json:"message"`
-		Content string `json:"content"`
-		Branch  string `json:"branch"`
-	}{"Add TODO reference image", base64.StdEncoding.EncodeToString(data), binding.PublicationBranch})
-	if err != nil {
-		return ErrUnavailable
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPut, "https://api.github.com/repos/"+binding.RepositoryID+"/contents/"+strings.Join(segments, "/"), bytes.NewReader(body))
-	if err != nil {
-		return ErrUnavailable
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Accept", "application/vnd.github+json")
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
-	client := p.client
-	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return ErrUnavailable
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
-	if response.StatusCode == http.StatusCreated {
-		return nil
-	}
-	if response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusUnprocessableEntity {
-		return ErrConflict
-	}
-	return ErrUnavailable
 }
 
 func todoImageData(data []byte) (digest, extension, contentType string, err error) {
@@ -230,12 +171,8 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 	if err != nil || binding.State != "configured" {
 		return TODOImageUploadResponse{}, todoTeach("repository_binding", "configure the same Project artifact Git binding before upload", ErrConflict)
 	}
-	publisher := m.todoImagePublisher
-	if publisher == nil {
-		publisher = githubTODOImagePublisher{}
-	}
+	var lastVerifyErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		_ = publisher.Publish(ctx, binding, filePath, request.Data)
 		revision, verifyErr := m.verifyTODOImageGit(ctx, companyID, request.ProjectID, binding, filePath, digest)
 		if verifyErr == nil {
 			currentBinding, bindingErr := m.ReadRepositoryBinding(ctx, companyID, request.ProjectID)
@@ -272,8 +209,9 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, attachment.ID), Teach: todoImageAttachedTeach}, nil
 		}
 		if errors.Is(verifyErr, ErrConflict) {
-			return TODOImageUploadResponse{}, todoTeach("image", "not overwrite a conflicting Git image path", ErrConflict)
+			return TODOImageUploadResponse{}, todoTeach("image", "match the bytes already published at the required Git path", ErrConflict)
 		}
+		lastVerifyErr = verifyErr
 		if ctx.Err() != nil {
 			return TODOImageUploadResponse{}, ErrUnavailable
 		}
@@ -287,7 +225,10 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			}
 		}
 	}
-	return TODOImageUploadResponse{}, todoTeach("image", "publish the image to the bound Git branch and verify its digest before linking the TODO", ErrUnavailable)
+	if errors.Is(lastVerifyErr, ErrNotFound) {
+		return TODOImageUploadResponse{}, todoTeach("image", "be published at the required path on the bound Git branch before linking the TODO", ErrConflict)
+	}
+	return TODOImageUploadResponse{}, todoTeach("image", "be readable from the bound Git branch before linking the TODO", ErrUnavailable)
 }
 
 func (m *MongoStore) ReadTODOImage(ctx context.Context, companyID, projectID, todoID, imageID string) (todoImageFile, error) {
