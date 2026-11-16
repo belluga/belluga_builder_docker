@@ -256,6 +256,15 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 		if ctx.Err() != nil {
 			return TODOImageUploadResponse{}, ErrUnavailable
 		}
+		if attempt < 2 {
+			pause := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+			select {
+			case <-pause.C:
+			case <-ctx.Done():
+				pause.Stop()
+				return TODOImageUploadResponse{}, ErrUnavailable
+			}
+		}
 	}
 	return TODOImageUploadResponse{}, todoTeach("image", "publish the image to the bound Git branch and verify its digest before linking the TODO", ErrUnavailable)
 }
@@ -285,6 +294,13 @@ func (m *MongoStore) ReadTODOImage(ctx context.Context, companyID, projectID, to
 	if err != nil || binding.State != "configured" || m.prototypeGit == nil {
 		return todoImageFile{}, ErrUnavailable
 	}
+	key := binding.RepositoryID + "\x00" + binding.PublicationBranch + "\x00" + attachment.Path + "\x00" + attachment.Digest
+	return m.todoImages.load(ctx, key, func() (todoImageFile, error) {
+		return m.readTODOImageFromGit(ctx, companyID, projectID, binding, *attachment)
+	})
+}
+
+func (m *MongoStore) readTODOImageFromGit(ctx context.Context, companyID, projectID string, binding RepositoryBinding, attachment TODOImageAttachment) (todoImageFile, error) {
 	revision, err := m.prototypeGit.BranchHead(ctx, binding)
 	if err != nil {
 		return todoImageFile{}, err

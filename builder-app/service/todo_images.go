@@ -64,7 +64,7 @@ func (p *registeredPreview) todoImageAPIHandler(w http.ResponseWriter, r *http.R
 	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.FormatInt(contentLength, 10))
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Cache-Control", "public, max-age=30")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if etag := response.Header.Get("ETag"); strings.HasPrefix(etag, `"sha256:`) && len(etag) == len(`"sha256:`)+64+1 {
 		w.Header().Set("ETag", etag)

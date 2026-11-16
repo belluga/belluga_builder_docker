@@ -49,6 +49,7 @@ type MongoStore struct {
 	designSystemVerifier             designSystemRemoteVerifier
 	prototypeGit                     prototypeGitReader
 	todoImagePublisher               todoImagePublisher
+	todoImages                       todoImageCache
 	prototypeFileCache               *prototypeFileCache
 	prototypeHot                     *prototypeHotCache
 	schemaMigrations                 []companySchemaStep

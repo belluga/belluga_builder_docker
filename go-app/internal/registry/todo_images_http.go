@@ -76,7 +76,7 @@ func (h *Handler) readTODOImage(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", file.ContentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(file.Data)))
 	w.Header().Set("ETag", `"`+file.Digest+`"`)
-	w.Header().Set("Cache-Control", "public, max-age=300")
+	w.Header().Set("Cache-Control", "public, max-age=30")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(file.Data)

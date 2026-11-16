@@ -140,6 +140,10 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	if err != nil || !bytes.Equal(file.Data, request.Data) || file.ContentType != "image/png" {
 		t.Fatalf("image readback failed: %+v %v", file, err)
 	}
+	reads := imageStore.reads
+	if _, err := store.ReadTODOImage(ctx, "company-a", "builder", record.ID, attached.Attachment.ID); err != nil || imageStore.reads != reads {
+		t.Fatalf("repeated image read did not use bounded Git cache: reads=%d before=%d err=%v", imageStore.reads, reads, err)
+	}
 	if _, err := store.ReadTODOImage(ctx, "company-a", "builder", "other-todo", attached.Attachment.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross-TODO read: %v", err)
 	}
