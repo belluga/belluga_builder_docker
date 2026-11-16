@@ -58,6 +58,8 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/local-preview", retiredSnapshotHandler)
 	mux.HandleFunc("/api/local-todo-source", retiredTODOSourceHandler)
 	mux.HandleFunc("/api/roadmap", consumer.roadmapAPIHandler)
+	mux.HandleFunc("GET /api/todo-images/{companyID}/{projectID}/{todoID}/{imageID}", consumer.todoImageAPIHandler)
+	mux.HandleFunc("HEAD /api/todo-images/{companyID}/{projectID}/{todoID}/{imageID}", consumer.todoImageAPIHandler)
 	mux.HandleFunc("/api/overview", consumer.overviewAPIHandler)
 	mux.HandleFunc("/api/overview/media/", consumer.overviewAPIHandler)
 	mux.HandleFunc("/api/knowledge", consumer.knowledgeAPIHandler)

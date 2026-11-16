@@ -338,6 +338,9 @@ func validateMongoTODOCreationRequest(request TODOAdmissionRequest) error {
 	if record.Content == nil {
 		return todoTeach("todo.content", "provide a schema-v2 typed content object", ErrInvalid)
 	}
+	if len(record.Content.ImageAttachments) != 0 {
+		return todoTeach("todo.content.image_attachments", "use the bound TODO image upload API after creating the TODO", ErrInvalid)
+	}
 	if len(record.Content.LocalChecks) != 0 {
 		return todoTeach("todo.content.local_checks", "omit executable checks; Project delivery records remote code and external citations through the API", ErrInvalid)
 	}
@@ -416,6 +419,9 @@ func validateMongoTODOCreation(record TODORecord) error {
 	}
 	if record.Content == nil {
 		return todoTeach("todo.content", "provide a schema-v2 typed content object", ErrInvalid)
+	}
+	if len(record.Content.ImageAttachments) != 0 {
+		return todoTeach("todo.content.image_attachments", "use the bound TODO image upload API after creating the TODO", ErrInvalid)
 	}
 	if err := ValidateTODOContentDraft(*record.Content); err != nil {
 		return err

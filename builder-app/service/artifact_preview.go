@@ -309,7 +309,14 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 			Title         string `json:"title"`
 			Objective     string `json:"objective"`
 			NextExactStep string `json:"next_exact_step"`
-			Sections      []struct {
+			Content       struct {
+				ImageAttachments []struct {
+					ID     string `json:"id"`
+					Path   string `json:"path"`
+					Digest string `json:"digest"`
+				} `json:"image_attachments"`
+			} `json:"content"`
+			Sections []struct {
 				Key          string `json:"key"`
 				Title        string `json:"title"`
 				BodyMarkdown string `json:"body_markdown"`
@@ -319,6 +326,29 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 	}
 	requestedRevision, _ := strconv.ParseInt(todoRevision, 10, 64)
 	if json.Unmarshal(body, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.TODO.ID != todoID || result.TODO.ProjectID != projectID || result.TODO.Revision != requestedRevision || result.TODORevision != requestedRevision || strings.TrimSpace(result.TODO.Title) == "" || result.TODO.Sections == nil || result.ContentRevision != nil && (*result.ContentRevision < 0 || !strings.HasPrefix(result.ContentDigest, "sha256:") || !validSHA256(strings.TrimPrefix(result.ContentDigest, "sha256:"))) || result.ContentRevision == nil && result.ContentDigest != "" {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
+		return
+	}
+	fileURLs := make([]todoImageFileURL, 0, len(result.TODO.Content.ImageAttachments))
+	for _, attachment := range result.TODO.Content.ImageAttachments {
+		if !validRegistrationID(attachment.ID) || !validDigest(attachment.Digest) || !validTODOImageAttachmentPath(companyID, projectID, todoID, attachment.Path, attachment.Digest) {
+			writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
+			return
+		}
+		fileURLs = append(fileURLs, todoImageFileURL{attachment.Path, "/api/todo-images/" + url.PathEscape(companyID) + "/" + url.PathEscape(projectID) + "/" + url.PathEscape(todoID) + "/" + url.PathEscape(attachment.ID)})
+	}
+	var projected map[string]json.RawMessage
+	if json.Unmarshal(body, &projected) != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
+		return
+	}
+	projected["file_urls"], err = json.Marshal(fileURLs)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
+		return
+	}
+	body, err = json.Marshal(projected)
+	if err != nil {
 		writeError(w, http.StatusServiceUnavailable, "roadmap_todo_response_invalid")
 		return
 	}

@@ -1,0 +1,306 @@
+package registry
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"net/http"
+	"net/url"
+	"os"
+	"regexp"
+	"strings"
+	"time"
+
+	ac "delphi-local-api/artifactcatalog"
+)
+
+const maxTODOImageBytes = 2 << 20
+
+const todoImageTeach = "If this TODO defines a Prototype screen, assess whether its text reference depends on visual details, especially specific screen elements and widgets. A description, file path or URL alone does not attach an image. If an image would help, consider POSTing it as multipart image with expected_revision and operation_id to this TODO's /images API. This is optional; the text reference remains valid."
+const todoImageAttachedTeach = "The image is attached to this TODO for study; it is not approved for Prototype use. To use it in a Prototype, follow the study and approval workflow, add it to Prototype assets, and record approved_references with approval_evidence also listed in related."
+
+var todoImagePathPattern = regexp.MustCompile(`^todo-reference-images/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*/[a-f0-9]{64}\.(png|jpg|gif)$`)
+
+func validTODOImagePath(value string) bool {
+	return len(value) <= 1024 && todoImagePathPattern.MatchString(value)
+}
+
+type TODOImageUploadRequest struct {
+	ProjectID        string
+	TODOID           string
+	ExpectedRevision int64
+	OperationID      string
+	Description      string
+	Data             []byte
+}
+
+type TODOImageUploadResponse struct {
+	CompanyID       string              `json:"company_id"`
+	ProjectID       string              `json:"project_id"`
+	TODOID          string              `json:"todo_id"`
+	TODORevision    int64               `json:"todo_revision"`
+	ContentRevision int64               `json:"content_revision"`
+	ContentDigest   string              `json:"content_digest"`
+	Attachment      TODOImageAttachment `json:"attachment"`
+	NoOp            bool                `json:"no_op"`
+	Teach           string              `json:"teach"`
+}
+
+type todoImageFile struct {
+	Data        []byte
+	ContentType string
+	Digest      string
+}
+
+type todoImagePublisher interface {
+	Publish(context.Context, RepositoryBinding, string, []byte) error
+}
+
+// The Registry receives a Contents:write token through its private runtime
+// environment. The URL is constructed only from the validated binding.
+type githubTODOImagePublisher struct{ client *http.Client }
+
+func (p githubTODOImagePublisher) Publish(ctx context.Context, binding RepositoryBinding, filePath string, data []byte) error {
+	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || !validTODOImagePath(filePath) {
+		return ErrInvalid
+	}
+	token := strings.TrimSpace(os.Getenv("DELPHI_GITHUB_WRITE_TOKEN"))
+	if token == "" || strings.ContainsAny(token, "\r\n") {
+		return ErrUnavailable
+	}
+	segments := strings.Split(filePath, "/")
+	for i := range segments {
+		segments[i] = url.PathEscape(segments[i])
+	}
+	body, err := json.Marshal(struct {
+		Message string `json:"message"`
+		Content string `json:"content"`
+		Branch  string `json:"branch"`
+	}{"Add TODO reference image", base64.StdEncoding.EncodeToString(data), binding.PublicationBranch})
+	if err != nil {
+		return ErrUnavailable
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPut, "https://api.github.com/repos/"+binding.RepositoryID+"/contents/"+strings.Join(segments, "/"), bytes.NewReader(body))
+	if err != nil {
+		return ErrUnavailable
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	client := p.client
+	if client == nil {
+		client = &http.Client{Timeout: 15 * time.Second}
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return ErrUnavailable
+	}
+	defer response.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1024))
+	if response.StatusCode == http.StatusCreated {
+		return nil
+	}
+	if response.StatusCode == http.StatusConflict || response.StatusCode == http.StatusUnprocessableEntity {
+		return ErrConflict
+	}
+	return ErrUnavailable
+}
+
+func todoImageData(data []byte) (digest, extension, contentType string, err error) {
+	if len(data) == 0 || len(data) > maxTODOImageBytes {
+		return "", "", "", todoTeach("image", "provide a nonempty PNG, JPEG or GIF image up to 2 MiB", ErrInvalid)
+	}
+	config, format, decodeErr := image.DecodeConfig(bytes.NewReader(data))
+	if decodeErr != nil || config.Width < 1 || config.Height < 1 || config.Width > 4096 || config.Height > 4096 || int64(config.Width)*int64(config.Height) > 16_000_000 {
+		return "", "", "", todoTeach("image", "provide a valid PNG, JPEG or GIF image within 4096 pixels per side", ErrInvalid)
+	}
+	if _, _, decodeErr = image.Decode(bytes.NewReader(data)); decodeErr != nil {
+		return "", "", "", todoTeach("image", "provide complete decodable image bytes", ErrInvalid)
+	}
+	switch format {
+	case "png":
+		extension, contentType = "png", "image/png"
+	case "jpeg":
+		extension, contentType = "jpg", "image/jpeg"
+	case "gif":
+		extension, contentType = "gif", "image/gif"
+	default:
+		return "", "", "", todoTeach("image", "provide a PNG, JPEG or GIF image", ErrInvalid)
+	}
+	hash := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(hash[:]), extension, contentType, nil
+}
+
+func todoImageID(operationID string) string {
+	hash := sha256.Sum256([]byte(operationID))
+	return "image-" + hex.EncodeToString(hash[:16])
+}
+
+func (m *MongoStore) verifyTODOImageGit(ctx context.Context, companyID, projectID string, binding RepositoryBinding, filePath, digest string) (string, error) {
+	if m.prototypeGit == nil {
+		return "", ErrUnavailable
+	}
+	revision, err := m.prototypeGit.BranchHead(ctx, binding)
+	if err != nil {
+		return "", err
+	}
+	source, err := m.prototypeGit.OpenRevision(ctx, companyID, projectID, binding, revision)
+	if err != nil {
+		return "", err
+	}
+	defer source.close()
+	data, mode, err := source.source.Read(filePath, maxTODOImageBytes)
+	if err != nil || mode != ac.ModeRegular || len(data) > maxTODOImageBytes || source.source.VerifyStable() != nil {
+		return "", ErrNotFound
+	}
+	hash := sha256.Sum256(data)
+	if digest != "sha256:"+hex.EncodeToString(hash[:]) {
+		return "", ErrConflict
+	}
+	return revision, nil
+}
+
+func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, request TODOImageUploadRequest) (TODOImageUploadResponse, error) {
+	if !validID(companyID) || !validID(request.ProjectID) || !validID(request.TODOID) || request.ExpectedRevision < 0 || !todoOperationIDPattern.MatchString(request.OperationID) || request.Description != "" && !validSummaryField(request.Description, 1024) {
+		return TODOImageUploadResponse{}, todoTeach("image_upload", "provide an exact Company/Project/TODO, current revision, stable operation ID and optional UTF-8 description", ErrInvalid)
+	}
+	digest, extension, _, err := todoImageData(request.Data)
+	if err != nil {
+		return TODOImageUploadResponse{}, err
+	}
+	imageID := todoImageID(request.OperationID)
+	filePath := fmt.Sprintf("todo-reference-images/%s/%s/%s/%s.%s", companyID, request.ProjectID, request.TODOID, strings.TrimPrefix(digest, "sha256:"), extension)
+	current, err := m.ReadTODO(ctx, companyID, request.ProjectID, request.TODOID, nil)
+	if err != nil {
+		return TODOImageUploadResponse{}, err
+	}
+	if current.TODO.Content == nil || current.ContentRevision == nil {
+		return TODOImageUploadResponse{}, todoTeach("todo.content", "use a current typed TODO before attaching an image", ErrConflict)
+	}
+	for _, existing := range current.TODO.Content.ImageAttachments {
+		if existing.ID == imageID {
+			if existing.Path != filePath || existing.Digest != digest || existing.Description != request.Description {
+				return TODOImageUploadResponse{}, todoTeach("operation_id", "not be reused for different image bytes or description", ErrConflict)
+			}
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: current.TODORevision, ContentRevision: *current.ContentRevision, ContentDigest: current.ContentDigest, Attachment: existing, NoOp: true, Teach: todoImageAttachedTeach}, nil
+		}
+	}
+	if request.ExpectedRevision != current.TODORevision {
+		return TODOImageUploadResponse{}, &todoRevisionConflict{Revision: current.TODORevision}
+	}
+	if err := requireActiveTODO(current.TODO); err != nil {
+		return TODOImageUploadResponse{}, err
+	}
+	if len(current.TODO.Content.ImageAttachments) >= 16 {
+		return TODOImageUploadResponse{}, todoTeach("content.image_attachments", "contain fewer than 16 images before another upload", ErrConflict)
+	}
+	binding, err := m.ReadRepositoryBinding(ctx, companyID, request.ProjectID)
+	if err != nil || binding.State != "configured" {
+		return TODOImageUploadResponse{}, todoTeach("repository_binding", "configure the same Project artifact Git binding before upload", ErrConflict)
+	}
+	publisher := m.todoImagePublisher
+	if publisher == nil {
+		publisher = githubTODOImagePublisher{}
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		_ = publisher.Publish(ctx, binding, filePath, request.Data)
+		revision, verifyErr := m.verifyTODOImageGit(ctx, companyID, request.ProjectID, binding, filePath, digest)
+		if verifyErr == nil {
+			currentBinding, bindingErr := m.ReadRepositoryBinding(ctx, companyID, request.ProjectID)
+			if bindingErr != nil || currentBinding != binding {
+				return TODOImageUploadResponse{}, todoTeach("repository_binding", "remain unchanged while the image is published and linked", ErrConflict)
+			}
+			attachment := TODOImageAttachment{ID: imageID, Path: filePath, Digest: digest, VerifiedRevision: revision, Description: request.Description}
+			database, dbErr := m.todoTenantDatabase(ctx, companyID)
+			if dbErr != nil {
+				return TODOImageUploadResponse{}, dbErr
+			}
+			project, collection, selectErr := m.selectedTODOCollection(ctx, companyID, request.ProjectID, request.TODOID)
+			if selectErr != nil {
+				return TODOImageUploadResponse{}, selectErr
+			}
+			if selectErr = m.exactTODORelease(ctx, companyID, project, current.TODO); selectErr != nil {
+				return TODOImageUploadResponse{}, selectErr
+			}
+			authored := contentFromTODO(current.TODO)
+			descriptionHash := sha256.Sum256([]byte(request.Description))
+			edit := TODOContentEditRequest{ProjectID: request.ProjectID, TODOID: request.TODOID, ExpectedRevision: &request.ExpectedRevision, OperationID: request.OperationID, Content: authored, Reason: "Attach Git image " + digest + " description " + hex.EncodeToString(descriptionHash[:])}
+			requestDigest, digestErr := todoRequestDigest(edit)
+			if digestErr != nil {
+				return TODOImageUploadResponse{}, ErrInvalid
+			}
+			result, writeErr := m.writeTODOContent(ctx, database, collection, companyID, current.TODO, edit, requestDigest, "content_changed", true, &attachment)
+			if writeErr != nil {
+				return TODOImageUploadResponse{}, writeErr
+			}
+			written, readErr := m.ReadTODO(ctx, companyID, request.ProjectID, request.TODOID, &result.Revision)
+			if readErr != nil || written.ContentRevision == nil || written.ContentDigest == "" {
+				return TODOImageUploadResponse{}, ErrUnavailable
+			}
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, Teach: todoImageAttachedTeach}, nil
+		}
+		if errors.Is(verifyErr, ErrConflict) {
+			return TODOImageUploadResponse{}, todoTeach("image", "not overwrite a conflicting Git image path", ErrConflict)
+		}
+		if ctx.Err() != nil {
+			return TODOImageUploadResponse{}, ErrUnavailable
+		}
+	}
+	return TODOImageUploadResponse{}, todoTeach("image", "publish the image to the bound Git branch and verify its digest before linking the TODO", ErrUnavailable)
+}
+
+func (m *MongoStore) ReadTODOImage(ctx context.Context, companyID, projectID, todoID, imageID string) (todoImageFile, error) {
+	if !validID(imageID) {
+		return todoImageFile{}, ErrInvalid
+	}
+	read, err := m.ReadTODO(ctx, companyID, projectID, todoID, nil)
+	if err != nil {
+		return todoImageFile{}, err
+	}
+	if read.TODO.Content == nil {
+		return todoImageFile{}, ErrNotFound
+	}
+	var attachment *TODOImageAttachment
+	for i := range read.TODO.Content.ImageAttachments {
+		if read.TODO.Content.ImageAttachments[i].ID == imageID {
+			attachment = &read.TODO.Content.ImageAttachments[i]
+			break
+		}
+	}
+	if attachment == nil || !validTODOImagePath(attachment.Path) || !strings.HasPrefix(attachment.Path, "todo-reference-images/"+companyID+"/"+projectID+"/"+todoID+"/") || !strings.HasPrefix(attachment.Path[strings.LastIndex(attachment.Path, "/")+1:], strings.TrimPrefix(attachment.Digest, "sha256:")+".") {
+		return todoImageFile{}, ErrNotFound
+	}
+	binding, err := m.ReadRepositoryBinding(ctx, companyID, projectID)
+	if err != nil || binding.State != "configured" || m.prototypeGit == nil {
+		return todoImageFile{}, ErrUnavailable
+	}
+	revision, err := m.prototypeGit.BranchHead(ctx, binding)
+	if err != nil {
+		return todoImageFile{}, err
+	}
+	source, err := m.prototypeGit.OpenRevision(ctx, companyID, projectID, binding, revision)
+	if err != nil {
+		return todoImageFile{}, err
+	}
+	defer source.close()
+	data, mode, err := source.source.Read(attachment.Path, maxTODOImageBytes)
+	if err != nil || mode != ac.ModeRegular || source.source.VerifyStable() != nil {
+		return todoImageFile{}, ErrNotFound
+	}
+	digest, _, contentType, err := todoImageData(data)
+	if err != nil || digest != attachment.Digest {
+		return todoImageFile{}, ErrConflict
+	}
+	return todoImageFile{Data: data, ContentType: contentType, Digest: digest}, nil
+}

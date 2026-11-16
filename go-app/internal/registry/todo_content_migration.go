@@ -172,6 +172,9 @@ func todoContentMigrationSource(record TODORecord) (string, string) {
 }
 
 func validateTODOContentMigrationTarget(record TODORecord, target TODOAuthoredContent) error {
+	if len(target.ImageAttachments) != 0 {
+		return todoTeach("content.image_attachments", "use the bound TODO image upload API after migrating the TODO", ErrInvalid)
+	}
 	if target.SchemaVersion != todoContentSchemaVersion || target.Sections != nil || !validName(target.Title) || !validSummaryField(target.Objective, 1024) || target.DiffExpectation == nil || target.AffectedFiles == nil {
 		return todoTeach("content", "provide a bounded schema-v2 typed contract without replacing the legacy section stream", ErrInvalid)
 	}

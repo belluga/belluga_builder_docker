@@ -27,6 +27,7 @@ type TODOContent struct {
 	Decisions           []TODOContentItem         `json:"decisions,omitempty" bson:"decisions,omitempty"`
 	Risks               []TODOContentRisk         `json:"risks,omitempty" bson:"risks,omitempty"`
 	References          []TODOContentReference    `json:"references,omitempty" bson:"references,omitempty"`
+	ImageAttachments    []TODOImageAttachment     `json:"image_attachments,omitempty" bson:"image_attachments,omitempty"`
 	LegacyContext       []TODOLegacyContext       `json:"legacy_context,omitempty" bson:"legacy_context,omitempty"`
 	Architecture        *TODOArchitectureDecision `json:"architecture,omitempty" bson:"architecture,omitempty"`
 	Planning            *TODOPlanning             `json:"planning,omitempty" bson:"planning,omitempty"`
@@ -134,6 +135,16 @@ type TODOContentRisk struct {
 type TODOContentReference struct {
 	Kind string `json:"kind" bson:"kind"`
 	Ref  string `json:"ref" bson:"ref"`
+}
+
+// TODOImageAttachment contains only a reference to a Git-published image.
+// It is owned by the upload operation, not by generic content edits.
+type TODOImageAttachment struct {
+	ID               string `json:"id" bson:"id"`
+	Path             string `json:"path" bson:"path"`
+	Digest           string `json:"digest" bson:"digest"`
+	VerifiedRevision string `json:"verified_revision" bson:"verified_revision"`
+	Description      string `json:"description,omitempty" bson:"description,omitempty"`
 }
 
 type TODOLegacyContext struct {
@@ -250,6 +261,16 @@ func validateTODOContent(content TODOContent, allowLegacyContext, requireComplet
 		if !validSummaryField(ref.Kind, 2048) || !validSummaryField(ref.Ref, 2048) {
 			return todoTeach(fmt.Sprintf("content.references[%d]", i), "contain nonblank kind and ref text up to 2048 bytes", ErrInvalid)
 		}
+	}
+	if len(content.ImageAttachments) > 16 {
+		return todoTeach("content.image_attachments", "contain at most 16 Git-backed image references", ErrInvalid)
+	}
+	seenImages := map[string]bool{}
+	for i, attachment := range content.ImageAttachments {
+		if !validID(attachment.ID) || seenImages[attachment.ID] || !validSourceDigest(attachment.Digest) || !validFullGitSHA(attachment.VerifiedRevision) || !validSummaryField(attachment.Description, 1024) && attachment.Description != "" || !validTODOImagePath(attachment.Path) {
+			return todoTeach(fmt.Sprintf("content.image_attachments[%d]", i), "contain a unique ID, managed Git image path, SHA-256 digest, verified Git revision and optional UTF-8 description up to 1024 bytes", ErrInvalid)
+		}
+		seenImages[attachment.ID] = true
 	}
 	if content.LegacyContext != nil {
 		if !allowLegacyContext {

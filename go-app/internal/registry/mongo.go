@@ -48,6 +48,7 @@ type MongoStore struct {
 	proofHTTPClient                  *http.Client
 	designSystemVerifier             designSystemRemoteVerifier
 	prototypeGit                     prototypeGitReader
+	todoImagePublisher               todoImagePublisher
 	prototypeFileCache               *prototypeFileCache
 	prototypeHot                     *prototypeHotCache
 	schemaMigrations                 []companySchemaStep
