@@ -93,6 +93,22 @@ beforeEach(() => { history.replaceState({}, "", "/"); mockFetch(); });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView); else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView; });
 
 describe("single root Project experience", () => {
+  it("offers administration from the shared project header and opens the company directory prototype", async () => {
+    const baseFetch = mockFetch();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      if (new URL(String(input), location.origin).pathname === "/api/prototypes") return { ok: true, json: async () => ({ revision: "a".repeat(40), items: [{ id: "builder-admin" }] }) };
+      return baseFetch(input);
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    const menu = await screen.findByLabelText("Abrir menu da conta");
+    fireEvent.click(menu);
+    expect(screen.getByRole("button", { name: /Administração/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Minha conta" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /Administração/ }));
+    await waitFor(() => expect(location.search).toContain("screen_id=companies"));
+    expect(location.search).toContain("mode=presentation");
+  });
   it("loads the directory through the Registry catalog route only", async () => {
     const fetcher = mockFetch();
     render(<Projects />);

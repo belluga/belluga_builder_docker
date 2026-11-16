@@ -59,8 +59,8 @@ function PrototypePresentation({ props, prototypes, summaries, reader }: { props
   useEffect(() => {
     if (!valid || !entry) return;
     const handleMessage = (event: MessageEvent) => {
-      if (event.source !== iframeRef.current?.contentWindow || event.data?.type !== "builder-prototype:navigate" || event.data.page !== "overview") return;
-      onNavigate({ page: "overview" });
+      if (event.source !== iframeRef.current?.contentWindow || event.data?.type !== "builder-prototype:navigate" || !["overview", "design-system", "prototypes", "roadmap"].includes(event.data.page)) return;
+      onNavigate({ page: event.data.page });
     };
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);

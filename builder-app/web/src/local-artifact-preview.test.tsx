@@ -64,16 +64,19 @@ describe("revision-bound Prototype viewer", () => {
     expect(onNavigate).not.toHaveBeenCalled();
   });
 
-  it("returns to the real project when the active prototype frame requests Overview", async () => {
+  it("navigates to allowed real project pages only from the active prototype frame", async () => {
     mockAPI();
     const onNavigate = vi.fn();
     render(<LocalArtifactPreview {...base} onNavigate={onNavigate} selection={{ ...selection, mode: "presentation", artifact: "prototype:demo", prototypeID: "demo", screenID: "home", stateID: "default", revision, device: "desktop", scale: "fit" }} />);
     const frame = await screen.findByTitle("Demo · Home · Default") as HTMLIFrameElement;
     fireEvent(window, new MessageEvent("message", { source: window, data: { type: "builder-prototype:navigate", page: "overview" } }));
-    fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "roadmap" } }));
+    fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "admin" } }));
     expect(onNavigate).not.toHaveBeenCalled();
     fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "overview" } }));
     expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ page: "overview" });
+    for (const page of ["design-system", "prototypes", "roadmap"]) fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page } }));
+    expect(onNavigate).toHaveBeenCalledTimes(4);
+    expect(onNavigate).toHaveBeenLastCalledWith({ page: "roadmap" });
   });
 
   it("rejects a stale revision URL before requesting presentation HTML", async () => {
