@@ -45,7 +45,7 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	}
 	failedOnce := false
 	store.schemaMigrations = append(append([]companySchemaStep{}, companySchemaCatalog...), companySchemaStep{
-		version: 2, definition: "test-only-safe-project-backfill-v2",
+		version: 3, definition: "test-only-safe-project-backfill-v3",
 		apply: func(ctx context.Context, m *MongoStore, company Company) error {
 			collection := m.client.Database(company.DatabaseName).Collection(projectsCollection)
 			if company.ID == "company-b" && !failedOnce {
@@ -85,23 +85,23 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	if len(lines) != 3 || lines[2]["complete"] != false || lines[2]["failed"] != float64(1) {
 		t.Fatalf("incomplete report = %s", report.String())
 	}
-	if lines[0]["company_id"] != "company-a" || !reflect.DeepEqual(lines[0]["applied_versions"], []any{float64(2)}) ||
-		lines[1]["company_id"] != "company-b" || lines[1]["failed_version"] != float64(2) || !reflect.DeepEqual(lines[1]["pending_versions"], []any{float64(2)}) {
+	if lines[0]["company_id"] != "company-a" || !reflect.DeepEqual(lines[0]["applied_versions"], []any{float64(3)}) ||
+		lines[1]["company_id"] != "company-b" || lines[1]["failed_version"] != float64(3) || !reflect.DeepEqual(lines[1]["pending_versions"], []any{float64(3)}) {
 		t.Fatalf("per-Company version report = %s", report.String())
 	}
 	companyA, err := store.rawCompany(ctx, "company-a")
-	if err != nil || len(companyA.SchemaMigrations) != 2 {
+	if err != nil || len(companyA.SchemaMigrations) != 3 {
 		t.Fatalf("verified Company must retain both versions: %+v, %v", companyA, err)
 	}
 	stale := companyA
-	stale.SchemaMigrations = stale.SchemaMigrations[:1]
+	stale.SchemaMigrations = stale.SchemaMigrations[:2]
 	store.markCompanySchemaFailed(ctx, stale)
 	companyA, err = store.rawCompany(ctx, "company-a")
 	if err != nil || companyA.SchemaState != "ready" {
 		t.Fatalf("stale failure overwrote a winner's ready state: %+v, %v", companyA, err)
 	}
 	companyB, err := store.rawCompany(ctx, "company-b")
-	if err != nil || len(companyB.SchemaMigrations) != 1 {
+	if err != nil || len(companyB.SchemaMigrations) != 2 {
 		t.Fatalf("partial Company must not record v2: %+v, %v", companyB, err)
 	}
 	report.Reset()
@@ -110,14 +110,14 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	}
 	companyA, _ = store.rawCompany(ctx, "company-a")
 	companyB, _ = store.rawCompany(ctx, "company-b")
-	if len(companyA.SchemaMigrations) != 2 || len(companyB.SchemaMigrations) != 2 {
+	if len(companyA.SchemaMigrations) != 3 || len(companyB.SchemaMigrations) != 3 {
 		t.Fatalf("retry duplicated or skipped history: A=%d B=%d", len(companyA.SchemaMigrations), len(companyB.SchemaMigrations))
 	}
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-c", CompanyName: "company-c", ProjectID: "project-a", ProjectName: "project-a"}); err != nil {
 		t.Fatalf("fresh Company must run full catalog: %v", err)
 	}
 	companyC, _ := store.rawCompany(ctx, "company-c")
-	if len(companyC.SchemaMigrations) != 2 {
+	if len(companyC.SchemaMigrations) != 3 {
 		t.Fatalf("fresh Company versions = %d", len(companyC.SchemaMigrations))
 	}
 	inventoryCtx, stopInventory := context.WithCancel(ctx)
@@ -133,6 +133,58 @@ func migrateCompanyFixture(t *testing.T, ctx context.Context, store *MongoStore)
 	var report bytes.Buffer
 	if err := store.MigrateAllCompanies(ctx, &report); err != nil {
 		t.Fatalf("migrate Company fixture: %v; report=%s", err, report.String())
+	}
+}
+
+func TestCompanyImageAttachmentMigrationUpgradesExistingV1Validator(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("requires isolated Mongo integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	control := fmt.Sprintf("builder_image_migration_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close(context.Background())
+	store.tenantPrefix = control
+	defer func() {
+		_ = store.client.Database(store.tenantDatabase("company-a")).Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+	}()
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "project-a", ProjectName: "Project A"}); err != nil {
+		t.Fatal(err)
+	}
+	company, err := store.rawCompany(ctx, "company-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2WithoutImages := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "image_attachments")
+	oldContent := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2WithoutImages}}}
+	oldValidator := replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, oldContent)
+	db := store.client.Database(company.DatabaseName)
+	if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: oldValidator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: company.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_migrations", Value: company.SchemaMigrations[:1]}, {Key: "schema_state", Value: "ready"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Project(ctx, company.ID, "project-a"); err == nil || !strings.Contains(err.Error(), "migrate-all") {
+		t.Fatalf("v1 Company should be gated before migration: %v", err)
+	}
+	migrateCompanyFixture(t, ctx, store)
+	company, err = store.rawCompany(ctx, company.ID)
+	if err != nil || len(company.SchemaMigrations) != 2 || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != companySchemaCatalog[1].digest() {
+		t.Fatalf("migration history: %+v, %v", company, err)
+	}
+	if err := verifyTODOHistoryCollections(ctx, db); err != nil {
+		t.Fatalf("image attachment validator not installed: %v", err)
+	}
+	if _, err := store.Project(ctx, company.ID, "project-a"); err != nil {
+		t.Fatalf("project not readable after migration: %v", err)
 	}
 }
 
@@ -175,7 +227,7 @@ func TestCompanyMigrateAllAdoptsExactLegacySchemaAndRejectsUnknownDrift(t *testi
 		t.Fatalf("exact legacy adoption: %v; report=%s", err, report.String())
 	}
 	company, err := store.rawCompany(ctx, "company-a")
-	if err != nil || len(company.SchemaMigrations) != 1 || company.SchemaState != "ready" {
+	if err != nil || len(company.SchemaMigrations) != 2 || company.SchemaState != "ready" {
 		t.Fatalf("legacy migration history: %+v, %v", company, err)
 	}
 	if _, err := store.Project(ctx, "company-a", "project-a"); err != nil {

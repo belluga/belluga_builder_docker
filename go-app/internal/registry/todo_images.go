@@ -29,6 +29,22 @@ const maxTODOImageBytes = 2 << 20
 const todoImageTeach = "If this TODO defines a Prototype screen, assess whether its text reference depends on visual details, especially specific screen elements and widgets. A description, file path or URL alone does not attach an image. If an image would help, consider POSTing it as multipart image with expected_revision and operation_id to this TODO's /images API. This is optional; the text reference remains valid."
 const todoImageAttachedTeach = "The image is attached to this TODO for study; it is not approved for Prototype use. To use it in a Prototype, follow the study and approval workflow, add it to Prototype assets, and record approved_references with approval_evidence also listed in related."
 
+const todoImageUploadTeach = `To attach an optional local image, use the private Go Registry API from the Builder host with Docker access. Set IMAGE_ABS to the image's absolute path, COMPANY_ID, PROJECT_ID and TODO_ID to this TODO's exact IDs, TODO_REVISION to the current todo_revision, and OPERATION_ID to a stable ID. Use the current bound CODEX_SESSION_ID. The file must be a readable regular PNG, JPEG or GIF of 1 to 2097152 bytes; at most 16 images can be attached.
+
+Run this host preflight before Docker:
+case "$IMAGE_ABS" in /*) ;; *) printf 'image: use an absolute canonical path\n' >&2; exit 64;; esac
+case "$IMAGE_ABS" in *[,:]*) printf 'image: use a path without comma or colon\n' >&2; exit 64;; esac
+IMAGE_REAL=$(realpath -e -- "$IMAGE_ABS") || exit 64
+[ "$IMAGE_ABS" = "$IMAGE_REAL" ] && [ -f "$IMAGE_ABS" ] && [ -r "$IMAGE_ABS" ] || { printf 'image: use a readable regular file without symlinks\n' >&2; exit 64; }
+IMAGE_SIZE=$(stat -c %s -- "$IMAGE_ABS") || exit 64
+[ "$IMAGE_SIZE" -ge 1 ] && [ "$IMAGE_SIZE" -le 2097152 ] || { printf 'image: use a file of 1 to 2097152 bytes\n' >&2; exit 64; }
+[ -n "$CODEX_SESSION_ID" ] || { printf 'session: use the current bound CODEX_SESSION_ID\n' >&2; exit 64; }
+
+Then send the file directly to the existing Go POST (add -F "description=<text>" only if useful):
+docker run --rm --user "$(id -u):$(id -g)" --network builder-registry-private --mount "type=bind,source=${IMAGE_ABS},target=/todo-image,readonly" curlimages/curl:8.15.0 --fail-with-body -X POST -H "X-Delphi-Request-Lane: conversation" -H "X-Delphi-Session-Type: codex" -H "X-Delphi-Session-ID: ${CODEX_SESSION_ID}" -F "image=@/todo-image" -F "expected_revision=${TODO_REVISION}" -F "operation_id=${OPERATION_ID}" "http://builder-registry:8080/internal/v1/companies/${COMPANY_ID}/projects/${PROJECT_ID}/todos/${TODO_ID}/images"
+
+Keep the same operation ID and image bytes when retrying. Open the returned image_url through the Builder viewer to see the pixels, then read this TODO again to confirm its attachment metadata. A text reference remains valid without an image. If the private network or bound session is unavailable, stop and restore access; do not report a completed upload. The public Builder viewer only serves image GET/HEAD.`
+
 var todoImagePathPattern = regexp.MustCompile(`^todo-reference-images/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*/[a-z][a-z0-9-]*/[a-f0-9]{64}\.(png|jpg|gif)$`)
 
 func validTODOImagePath(value string) bool {
@@ -52,6 +68,7 @@ type TODOImageUploadResponse struct {
 	ContentRevision int64               `json:"content_revision"`
 	ContentDigest   string              `json:"content_digest"`
 	Attachment      TODOImageAttachment `json:"attachment"`
+	ImageURL        string              `json:"image_url"`
 	NoOp            bool                `json:"no_op"`
 	Teach           string              `json:"teach"`
 }
@@ -147,6 +164,10 @@ func todoImageID(operationID string) string {
 	return "image-" + hex.EncodeToString(hash[:16])
 }
 
+func todoImageURL(companyID, projectID, todoID, imageID string) string {
+	return "/api/todo-images/" + companyID + "/" + projectID + "/" + todoID + "/" + imageID
+}
+
 func (m *MongoStore) verifyTODOImageGit(ctx context.Context, companyID, projectID string, binding RepositoryBinding, filePath, digest string) (string, error) {
 	if m.prototypeGit == nil {
 		return "", ErrUnavailable
@@ -193,7 +214,7 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			if existing.Path != filePath || existing.Digest != digest || existing.Description != request.Description {
 				return TODOImageUploadResponse{}, todoTeach("operation_id", "not be reused for different image bytes or description", ErrConflict)
 			}
-			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: current.TODORevision, ContentRevision: *current.ContentRevision, ContentDigest: current.ContentDigest, Attachment: existing, NoOp: true, Teach: todoImageAttachedTeach}, nil
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: current.TODORevision, ContentRevision: *current.ContentRevision, ContentDigest: current.ContentDigest, Attachment: existing, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, existing.ID), NoOp: true, Teach: todoImageAttachedTeach}, nil
 		}
 	}
 	if request.ExpectedRevision != current.TODORevision {
@@ -248,7 +269,7 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			if readErr != nil || written.ContentRevision == nil || written.ContentDigest == "" {
 				return TODOImageUploadResponse{}, ErrUnavailable
 			}
-			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, Teach: todoImageAttachedTeach}, nil
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, attachment.ID), Teach: todoImageAttachedTeach}, nil
 		}
 		if errors.Is(verifyErr, ErrConflict) {
 			return TODOImageUploadResponse{}, todoTeach("image", "not overwrite a conflicting Git image path", ErrConflict)

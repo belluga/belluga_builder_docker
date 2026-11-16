@@ -34,6 +34,7 @@ type TODOReadResponse struct {
 	ContentRevision         *int64                  `json:"content_revision,omitempty"`
 	ContentDigest           string                  `json:"content_digest,omitempty"`
 	ImageReferenceTeach     string                  `json:"image_reference_teach,omitempty"`
+	ImageUploadTeach        string                  `json:"image_upload_teach,omitempty"`
 	AuditFloors             map[string]string       `json:"audit_floors,omitempty"`
 }
 
@@ -148,6 +149,7 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 		projected := *response.TODO.Content
 		projected.LegacyContext = nil
 		response.TODO.Content = &projected
+		response.ImageUploadTeach = todoImageUploadTeach
 		if len(projected.ImageAttachments) > 0 {
 			response.ImageReferenceTeach = todoImageAttachedTeach
 		} else if len(projected.References) > 0 {

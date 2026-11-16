@@ -71,6 +71,7 @@ services:
       DELPHI_PROJECT_READER_URL: http://project-reader:8099
       DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set runtime-only Delphi reader bearer token (32+ chars)}
       DELPHI_GITHUB_READ_TOKEN: ${DELPHI_GITHUB_READ_TOKEN:-}
+      DELPHI_GITHUB_WRITE_TOKEN: ${DELPHI_GITHUB_WRITE_TOKEN:-}
       DELPHI_PROJECT_READER_STATE_ROOT: /state
       DELPHI_PROTOTYPE_GIT_CACHE_ROOT: /prototype-cache
     volumes:

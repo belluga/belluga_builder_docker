@@ -22,8 +22,8 @@ type storedTODOImage struct {
 }
 
 type storedTODOImagePublisher struct {
-	image   *storedTODOImage
-	publish bool
+	image      *storedTODOImage
+	publish    bool
 	publishErr error
 }
 
@@ -131,12 +131,15 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attached.NoOp || attached.TODORevision != 1 || attached.ContentRevision != 1 || attached.Attachment.Path != imageStore.path || attached.Attachment.Digest == "" || imageStore.reads < 1 {
+	if attached.NoOp || attached.TODORevision != 1 || attached.ContentRevision != 1 || attached.Attachment.Path != imageStore.path || attached.Attachment.Digest == "" || attached.ImageURL != "/api/todo-images/company-a/builder/image-reference-todo/"+attached.Attachment.ID || imageStore.reads < 1 {
 		t.Fatalf("wrong linked attachment: %+v", attached)
 	}
 	read, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)
 	if err != nil || len(read.TODO.Content.ImageAttachments) != 1 || read.TODO.Content.ImageAttachments[0] != attached.Attachment {
 		t.Fatalf("metadata missing: %+v %v", read, err)
+	}
+	if !strings.Contains(read.ImageUploadTeach, "--network builder-registry-private") || !strings.Contains(read.ImageUploadTeach, "realpath -e") || !strings.Contains(read.ImageUploadTeach, "-F \"image=@/todo-image\"") || strings.Contains(read.ImageUploadTeach, "local-api/run") {
+		t.Fatalf("agent upload instructions missing from TODO readback: %q", read.ImageUploadTeach)
 	}
 	file, err := store.ReadTODOImage(ctx, "company-a", "builder", record.ID, attached.Attachment.ID)
 	if err != nil || !bytes.Equal(file.Data, request.Data) || file.ContentType != "image/png" {
@@ -150,7 +153,7 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 		t.Fatalf("cross-TODO read: %v", err)
 	}
 	noOp, err := store.AttachTODOImage(ctx, "company-a", request)
-	if err != nil || !noOp.NoOp || noOp.TODORevision != 1 {
+	if err != nil || !noOp.NoOp || noOp.TODORevision != 1 || noOp.ImageURL != attached.ImageURL {
 		t.Fatalf("same operation retry: %+v %v", noOp, err)
 	}
 	request.Description = "Changed description"
