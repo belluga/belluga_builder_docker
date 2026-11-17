@@ -137,11 +137,18 @@ describe("single root Project experience", () => {
   it("discards an administration lookup that finishes after the project changes", async () => {
     const baseFetch = mockFetch();
     const revision = "a".repeat(40);
+    const detailURL = `/api/prototypes/${revision}/builder-admin?company_id=belluga&project_id=builder`;
+    const entryURL = `/api/prototypes/file/belluga/builder/${revision}/${"b".repeat(64)}/files/prototypes/builder-admin/screens/companies.html`;
     let resolveCatalog!: (value: unknown) => void;
     const lateCatalog = new Promise<unknown>((resolve) => { resolveCatalog = resolve; });
+    let catalogCalls = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/prototypes") return lateCatalog;
+      if (url.pathname === "/api/prototypes") {
+        catalogCalls++;
+        return catalogCalls === 1 ? lateCatalog : { ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: detailURL }] }) };
+      }
+      if (`${url.pathname}${url.search}` === detailURL) return { ok: true, json: async () => ({ entry_url: entryURL }) };
       return baseFetch(input);
     }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -149,10 +156,12 @@ describe("single root Project experience", () => {
     fireEvent.click(await screen.findByLabelText("Abrir menu da conta"));
     expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
     act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview"); window.dispatchEvent(new PopStateEvent("popstate")); });
-    await act(async () => { resolveCatalog({ ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: `/api/prototypes/${revision}/builder-admin` }] }) }); });
-    fireEvent.click(await screen.findByLabelText("Abrir menu da conta"));
-    expect(screen.queryByRole("link", { name: /Administração/ })).not.toBeInTheDocument();
+    await act(async () => { resolveCatalog({ ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: detailURL }] }) }); });
+    expect(document.querySelector("a.project-account-admin")).toBeNull();
     expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Abrir menu da conta"));
+    await waitFor(() => expect(document.querySelector("a.project-account-admin")?.getAttribute("href")).toBe(`${entryURL}#origin_company_id=belluga&origin_project_id=boora`));
+    expect(catalogCalls).toBe(2);
   });
   it("loads the directory through the Registry catalog route only", async () => {
     const fetcher = mockFetch();
