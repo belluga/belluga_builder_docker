@@ -55,16 +55,6 @@ function PrototypePresentation({ props, prototypes, summaries, reader }: { props
   const entry = valid && prototype && screen && state
     ? (() => { const href = fileURL(prototype, `${prototype.root}/${screen.path}`); if (!href) return ""; const url = new URL(href, location.origin); url.searchParams.set("prototype_state", state.id); return url.pathname + url.search; })() : "";
   const canvasRef = useRef<HTMLElement | null>(null);
-  const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  useEffect(() => {
-    if (!valid || !entry) return;
-    const handleMessage = (event: MessageEvent) => {
-      if (event.source !== iframeRef.current?.contentWindow || event.data?.type !== "builder-prototype:navigate" || !["overview", "design-system", "prototypes", "roadmap"].includes(event.data.page)) return;
-      onNavigate({ page: event.data.page });
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [entry, onNavigate, valid]);
   const [size, setSize] = useState({ width: window.innerWidth - 32, height: window.innerHeight - 96 });
   useEffect(() => {
     if (!canvasRef.current || typeof ResizeObserver === "undefined") return;
@@ -113,7 +103,7 @@ function PrototypePresentation({ props, prototypes, summaries, reader }: { props
           : stale ? <p role="alert">A revisão Git mudou; reabra a apresentação pelo <a href={`/?${inspector}`} onClick={exitPresentation}>inspetor</a>.</p>
           : !valid ? <p role="alert">Seleção inválida. Este link não identifica um Protótipo, Tela, Estado ou Cenário disponível.</p>
             : !entry ? <p role="alert">O HTML desta tela não consta dos arquivos verificados da revisão.</p>
-              : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe ref={iframeRef} key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
+              : <div className="prototype-presentation-frame" style={{ width: dimensions.width * factor, height: dimensions.height * factor }}><iframe key={`${entry}|${selection.scenarioID}|${selection.scenarioStep}`} title={`${prototype?.name} · ${screen?.name} · ${state?.name}`} src={entry} sandbox="allow-scripts" referrerPolicy="no-referrer" style={{ width: dimensions.width, height: dimensions.height, transform: `scale(${factor})`, transformOrigin: "top left" }} /></div>}
     </section>
   </main>;
 }

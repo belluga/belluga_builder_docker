@@ -1503,17 +1503,3 @@
 .design-system-viewer a {
   color: var(--project-accentText, #2457d6);
 }
-/* Shared entry to administration */
-.project-topbar{position:relative}.project-account-menu{margin-left:auto}.project-account-menu summary{display:grid;place-items:center;width:38px;height:38px;border-radius:50%;background:var(--project-accent);color:var(--project-onAccent);font-size:13px;font-weight:800;cursor:pointer;list-style:none}.project-account-menu summary::-webkit-details-marker{display:none}.project-account-menu summary:focus-visible{outline:3px solid var(--project-accent);outline-offset:3px}.project-account-popover{position:absolute;right:15px;top:calc(100% + 8px);z-index:60;width:min(330px,calc(100vw - 24px));padding:14px;background:#fff;color:#071a3b;border:1px solid #dce7ef;border-radius:14px;box-shadow:0 20px 50px rgba(5,24,53,.25)}.project-account-context{display:flex;flex-direction:column;gap:3px;padding:8px 12px 14px;border-bottom:1px solid #dce7ef}.project-account-context small{color:#667a93}.project-account-admin{display:block;width:100%;margin:10px 0;padding:13px 15px;border:0;border-radius:10px;background:#bdf4f7;color:#071a3b;text-align:left;cursor:pointer}.project-account-admin strong,.project-account-admin small{display:block}.project-account-admin small{margin-top:3px}.project-account-popover p[role=alert]{font-size:13px;color:#a13543;padding:0 12px}.project-account-disabled{border-top:1px solid #e5edf2;padding-top:7px}.project-account-disabled button{display:block;width:100%;padding:10px 15px;border:0;background:none;color:#9ba9b9;text-align:left;cursor:default}
-@media(max-width:760px){.project-account-menu summary{width:36px;height:36px}}
-.projects-project a.project-account-admin,
-.projects-project a.project-account-admin:visited,
-.projects-project a.project-account-admin:hover {
-  color: #071a3b;
-  text-decoration: none;
-  background: #bdf4f7;
-}
-.projects-project a.project-account-admin:focus-visible {
-  outline: 3px solid var(--project-focus);
-  outline-offset: 2px;
-}
