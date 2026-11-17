@@ -1527,6 +1527,13 @@ func (h *Handler) decodeBounded(w http.ResponseWriter, r *http.Request, target a
 		if todo && h.writeTODOBodyLimit(w, err, limit) {
 			return false
 		}
+		if todo {
+			var validation *TODOValidationError
+			if errors.As(err, &validation) {
+				h.writeError(w, err)
+				return false
+			}
+		}
 		if todo && h.writeTODOUnknownField(w, err, target) {
 			return false
 		}

@@ -22,8 +22,14 @@ func validateTODODeliveryContract(delivery *TODODeliveryContract) error {
 	if delivery == nil {
 		return nil
 	}
-	if delivery.Kind != "knowledge-only" || len(delivery.Targets) == 0 {
-		return todoTeach("content.delivery", "name knowledge-only and at least one explicit Knowledge target", ErrInvalid)
+	if delivery.Kind == "prototype" {
+		if !validStableArtifactID(delivery.PrototypeID) || len(delivery.Targets) != 0 {
+			return todoTeach("content.delivery.prototype_id/targets", "name one stable prototype_id and omit Knowledge targets", ErrInvalid)
+		}
+		return nil
+	}
+	if delivery.Kind != "knowledge-only" || len(delivery.Targets) == 0 || delivery.PrototypeID != "" {
+		return todoTeach("content.delivery", "use the closed knowledge-only or prototype contract with its exact fields", ErrInvalid)
 	}
 	seen := make(map[string]bool, len(delivery.Targets))
 	for i, target := range delivery.Targets {
@@ -57,7 +63,7 @@ func validateTODODeliveryContract(delivery *TODODeliveryContract) error {
 }
 
 func validateKnowledgeClaimCapacity(content TODOContent) error {
-	if content.Delivery == nil {
+	if content.Delivery == nil || content.Delivery.Kind == "prototype" {
 		return nil
 	}
 	claim := TODOKnowledgeDeliveryClaim{ContentDigest: "sha256:" + sixtyFourHex(), OwnerAttributionReference: strings.Repeat("x", 2048), Retrospective: true, Items: make([]TODOKnowledgeDeliveryItem, len(content.Delivery.Targets))}
@@ -108,6 +114,29 @@ type TODOKnowledgeDeliveryClaim struct {
 }
 
 func todoKnowledgeContractSchema() bson.D {
+	text := func(max int) bson.D {
+		return bson.D{{Key: "bsonType", Value: "string"}, {Key: "maxLength", Value: max}}
+	}
+	digest := bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}
+	target := bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"family", "record_id", "generation_id", "baseline_revision", "change_kind"}}, {Key: "properties", Value: bson.D{
+		{Key: "family", Value: text(32)}, {Key: "record_id", Value: text(128)}, {Key: "generation_id", Value: text(128)},
+		{Key: "baseline_revision", Value: bson.D{{Key: "bsonType", Value: "long"}, {Key: "minimum", Value: 0}}},
+		{Key: "baseline_digest", Value: digest}, {Key: "change_kind", Value: bson.D{{Key: "enum", Value: bson.A{"create", "edit", "restore", "delete"}}}},
+	}}}
+	knowledge := bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"kind", "targets"}}, {Key: "properties", Value: bson.D{
+		{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"knowledge-only"}}}},
+		{Key: "targets", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "items", Value: target}}},
+	}}}
+	prototype := bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"kind", "prototype_id"}}, {Key: "properties", Value: bson.D{
+		{Key: "kind", Value: bson.D{{Key: "enum", Value: bson.A{"prototype"}}}},
+		{Key: "prototype_id", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "maxLength", Value: 64}, {Key: "pattern", Value: "^[a-z][a-z0-9-]*$"}}},
+	}}}
+	return bson.D{{Key: "oneOf", Value: bson.A{knowledge, prototype}}}
+}
+
+// todoKnowledgeContractSchemaBeforePrototype preserves the exact closed union
+// accepted by the deployed schema before prototype delivery was introduced.
+func todoKnowledgeContractSchemaBeforePrototype() bson.D {
 	text := func(max int) bson.D {
 		return bson.D{{Key: "bsonType", Value: "string"}, {Key: "maxLength", Value: max}}
 	}

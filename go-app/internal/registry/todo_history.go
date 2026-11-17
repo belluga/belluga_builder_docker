@@ -987,6 +987,16 @@ func (m *MongoStore) ReadTODOAsOf(ctx context.Context, companyID, projectID, tod
 	if expectedRevision != revision+1 {
 		return TODOAsOfResponse{}, todoTeach("history_unavailable", "contain the complete event sequence through the requested aggregate revision", ErrNotFound)
 	}
+	if content.SchemaVersion == todoContentSchemaVersion {
+		var version TODOContentVersion
+		if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "revision", Value: bson.D{{Key: "$lte", Value: revision}}}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&version); err != nil {
+			return TODOAsOfResponse{}, todoTeach("history.content_version", "have a digest for the authored content snapshot", ErrConflict)
+		}
+		historical := TODORecord{ID: todoID, ProjectID: projectID, Content: &content.TODOContent}
+		if err := validateStoredPrototypeProof(ctx, database, companyID, historical, version.Digest, state.Stage, state.StageVerification, state.VerifiedTransitionRef, revision); err != nil {
+			return TODOAsOfResponse{}, err
+		}
+	}
 	return TODOAsOfResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: revision, Content: content, State: state}, nil
 }
 
@@ -1222,6 +1232,14 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		return TODOContentEditResponse{}, err
 	}
 	requestedContent := withContractOwnership(request.Content)
+	if requestedContent.SchemaVersion == todoContentSchemaVersion && requestedContent.Delivery != nil && requestedContent.Delivery.Kind == "prototype" {
+		prototypeRecord := record
+		prototypeRecord.DiffExpectation = append([]TODORepositoryScope{}, requestedContent.DiffExpectation...)
+		prototypeRecord.AffectedFiles = append([]string{}, requestedContent.AffectedFiles...)
+		if err := validatePrototypeNoCodeFields(&requestedContent.TODOContent, prototypeRecord, record.ImplementationCommits); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
 	if imageAttachment == nil && preserveArchived && len(request.Content.ImageAttachments) > 0 && !reflect.DeepEqual(request.Content.ImageAttachments, current.ImageAttachments) {
 		return TODOContentEditResponse{}, todoTeach("content.image_attachments", "use the bound TODO image upload API to add references", ErrConflict)
 	}
@@ -1376,6 +1394,9 @@ func validateAuthoredContent(content TODOAuthoredContent) error {
 		operationalContent.LegacyContext = nil
 		if err := validateTODOContent(operationalContent, false, false); err != nil {
 			return err
+		}
+		if operationalContent.Delivery != nil && operationalContent.Delivery.Kind == "prototype" && (len(content.DiffExpectation) != 0 || len(content.AffectedFiles) != 0 || len(operationalContent.LocalChecks) != 0) {
+			return todoTeach("content.delivery", "prototype delivery has no code diff, implementation commits, local checks, or affected code files", ErrInvalid)
 		}
 		return validateAuthoredEnvelope(content)
 	}
@@ -1789,6 +1810,10 @@ func TODOContentVersionsValidatorBeforeKnowledgeDelivery() bson.D {
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
 
+func todoAuthoredContentV2ValidatorBeforePrototype() bson.D {
+	return replaceBSONValueAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "delivery"}, todoKnowledgeContractSchemaBeforePrototype())
+}
+
 func TODOEventsValidatorBeforeKnowledgeDelivery() bson.D {
 	prior := withoutBSONFieldsAtPath(TODOEventsValidator(), []string{"$jsonSchema", "properties", "changes", "properties"}, "knowledge_delivery_proof")
 	return withoutBSONFieldsAtPath(prior, []string{"$jsonSchema", "properties", "changes", "properties"}, "clear_knowledge_delivery_proof")
@@ -1799,14 +1824,14 @@ func TODOEventsValidatorBeforeKnowledgeDelivery() bson.D {
 // scan-before-collMod migration; old content bytes remain unchanged.
 func contentVersionsValidatorBeforePlanningAndRepositoryIdentity() bson.D {
 	v1 := withoutBSONFieldsAtPath(TODOAuthoredContentV1Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
 	v2 = withoutBSONFieldsAtPath(v2, []string{"properties"}, "planning")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{v1, v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
 
 func contentVersionsValidatorBeforeAuditTriggers() bson.D {
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "planning", "properties"}, "audit_triggers")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties", "planning", "properties"}, "audit_triggers")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
@@ -1816,7 +1841,7 @@ func contentVersionsValidatorBeforeAuditTriggers() bson.D {
 // added to authored content v2. Only the optional v2 field is absent; v1 and
 // every other history/content constraint remain unchanged.
 func contentVersionsValidatorBeforeLocalChecks() bson.D {
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "local_checks")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties"}, "local_checks")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }

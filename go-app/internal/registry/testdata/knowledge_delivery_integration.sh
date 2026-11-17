@@ -17,6 +17,7 @@ cleanup() {
 trap cleanup EXIT
 
 docker network create "$network" >/dev/null
+docker volume create builder-registry-go-cache >/dev/null
 docker run --detach --name "$mongo_container" --network "$network" --network-alias mongo mongo:7 --replSet rs0 --bind_ip_all >/dev/null
 
 ready=false
@@ -36,9 +37,10 @@ docker exec "$mongo_container" mongosh --quiet --eval 'rs.initiate({_id:"rs0",me
 docker run --rm --network "$network" \
   --env REGISTRY_TEST_MONGODB_URI='mongodb://mongo:27017/?replicaSet=rs0' \
   --env REGISTRY_REQUIRE_MONGO_INTEGRATION=1 \
+  --volume builder-registry-go-cache:/root/.cache/go-build \
   --volume "$repo_root/go-app:/src/go-app:ro" \
   --volume "$repo_root/builder-app/service:/src/builder-app/service:ro" \
   --volume "$(realpath "$repo_root/delphi-ai/local-api"):/src/delphi-ai/local-api:ro" \
   --workdir /src/go-app \
   golang:1.23-bookworm \
-  go test ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoConversationRoadmapMutationStaysWithinBoundProject|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning|TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites|TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit|TestMongoImportedEditedTODOStageFlow|TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies|TestLocalProofHeadMustBePublishedOnReleaseBranchButNeedNotBeBranchTip|TestLocalProofMustMatchExactTypedChecksAndReleaseBranches|TestTODOContentMongoSchemaIncludesStrictLocalCheckShape)$' -count=1
+  go test -v ./internal/registry -run '^(TestMongoKnowledgeDeliveryVerifiesExactImmutableMutation|TestMongoPrototypeDeliveryCompletesDirectlyFromCurrentMain|TestMongoPrototypeProjectionBatchesNearLimit|TestCompanyImageAttachmentMigrationUpgradesExistingV1Validator|TestCompanyPrototypeMigrationUpgradesExistingV2Validator|TestMongoSessionsAreGloballyUniqueImmutableAndProjectListed|TestMongoConversationRoadmapMutationStaysWithinBoundProject|TestMongoImplementationRepositorySetIsProjectOwnedAndGatesPlanning|TestMongoReleaseDeliveryBranchIsImmutableAndRetrySurvivesRoadmapWrites|TestMongoBornLocalDeliveryRejectsUnapprovedContentEdit|TestMongoImportedEditedTODOStageFlow|TestProvisionRegisteredTODOsDiscoversAndReconcilesCompanies|TestLocalProofHeadMustBePublishedOnReleaseBranchButNeedNotBeBranchTip|TestLocalProofMustMatchExactTypedChecksAndReleaseBranches|TestTODOContentMongoSchemaIncludesStrictLocalCheckShape)$' -count=1

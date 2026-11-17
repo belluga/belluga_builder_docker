@@ -42,6 +42,7 @@ type MongoStore struct {
 	client                           *mongo.Client
 	control                          *mongo.Database
 	beforeProjectWrite               func() error
+	afterPrototypeObservation        func()
 	tenantPrefix                     string
 	proofReaderURL                   string
 	proofReaderToken                 string

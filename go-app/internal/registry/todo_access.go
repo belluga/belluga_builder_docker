@@ -1,10 +1,12 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"reflect"
 	"regexp"
@@ -39,17 +41,52 @@ type TODOReadResponse struct {
 }
 
 type TODOActionRequest struct {
-	ProjectID                string                        `json:"project_id"`
-	TODOID                   string                        `json:"todo_id"`
-	ExpectedRevision         *int64                        `json:"expected_revision"`
-	OperationID              string                        `json:"operation_id"`
-	RequestedStage           string                        `json:"requested_stage"`
-	PromotionTargets         map[string]string             `json:"promotion_targets,omitempty"`
-	ProofReferences          []TODOProofReference          `json:"proof_refs"`
-	WaiverReferences         []TODOProofReference          `json:"waiver_refs"`
-	LocalProof               *LocalProofResult             `json:"local_proof,omitempty"`
-	KnowledgeDelivery        *TODOKnowledgeDeliveryClaim   `json:"knowledge_delivery,omitempty"`
-	KnowledgeFinalAcceptance *TODOKnowledgeFinalAcceptance `json:"knowledge_final_acceptance,omitempty"`
+	ProjectID                  string                        `json:"project_id"`
+	TODOID                     string                        `json:"todo_id"`
+	ExpectedRevision           *int64                        `json:"expected_revision"`
+	OperationID                string                        `json:"operation_id"`
+	RequestedStage             string                        `json:"requested_stage"`
+	PromotionTargets           map[string]string             `json:"promotion_targets,omitempty"`
+	ProofReferences            []TODOProofReference          `json:"proof_refs"`
+	WaiverReferences           []TODOProofReference          `json:"waiver_refs"`
+	LocalProof                 *LocalProofResult             `json:"local_proof,omitempty"`
+	KnowledgeDelivery          *TODOKnowledgeDeliveryClaim   `json:"knowledge_delivery,omitempty"`
+	KnowledgeFinalAcceptance   *TODOKnowledgeFinalAcceptance `json:"knowledge_final_acceptance,omitempty"`
+	PrototypeDelivery          *TODOPrototypeDeliveryClaim   `json:"prototype_delivery,omitempty"`
+	proofReferencesPresent     bool                          `json:"-"`
+	waiverReferencesPresent    bool                          `json:"-"`
+	promotionTargetsPresent    bool                          `json:"-"`
+	localProofPresent          bool                          `json:"-"`
+	knowledgeDeliveryPresent   bool                          `json:"-"`
+	knowledgeAcceptancePresent bool                          `json:"-"`
+	prototypeDeliveryPresent   bool                          `json:"-"`
+}
+
+func (request *TODOActionRequest) UnmarshalJSON(data []byte) error {
+	type actionAlias TODOActionRequest
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var decoded actionAlias
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return ErrInvalid
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*request = TODOActionRequest(decoded)
+	_, request.proofReferencesPresent = fields["proof_refs"]
+	_, request.waiverReferencesPresent = fields["waiver_refs"]
+	_, request.promotionTargetsPresent = fields["promotion_targets"]
+	_, request.localProofPresent = fields["local_proof"]
+	_, request.knowledgeDeliveryPresent = fields["knowledge_delivery"]
+	_, request.knowledgeAcceptancePresent = fields["knowledge_final_acceptance"]
+	_, request.prototypeDeliveryPresent = fields["prototype_delivery"]
+	return nil
 }
 
 type VerifyCurrentTODOStageRequest struct {
@@ -167,6 +204,9 @@ func (m *MongoStore) ReadTODO(ctx context.Context, companyID, projectID, todoID 
 	if response.TODO.AdministrativeAcceptance != nil && response.TODO.Disposition == nil && (!validSourceDigest(response.ContentDigest) || response.TODO.AdministrativeAcceptance.ContentDigest != response.ContentDigest) {
 		return TODOReadResponse{}, todoTeach("administrative_acceptance.content_digest", "match the current immutable typed content revision before treating the accepted stage as effective", ErrConflict)
 	}
+	if err := validateStoredPrototypeProof(ctx, database, companyID, response.TODO, response.ContentDigest, response.TODO.Stage, response.TODO.StageVerification, response.TODO.VerifiedTransitionRef, response.TODORevision); err != nil {
+		return TODOReadResponse{}, err
+	}
 	return response, nil
 }
 
@@ -183,6 +223,36 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	record, err := readSelectedTODO(ctx, collection, request.ProjectID, request.TODOID)
 	if err != nil {
 		return TODOActionResponse{}, err
+	}
+	wireSensitive := request.PrototypeDelivery != nil || request.prototypeDeliveryPresent || request.proofReferencesPresent || request.waiverReferencesPresent || request.promotionTargetsPresent || request.localProofPresent || request.knowledgeDeliveryPresent || request.knowledgeAcceptancePresent
+	if wireSensitive {
+		company, companyErr := m.company(ctx, companyID)
+		if companyErr != nil {
+			return TODOActionResponse{}, companyErr
+		}
+		wireContent, contentErr := m.contentAtRevision(ctx, m.client.Database(company.DatabaseName), record.ProjectID, record.ID, record.Revision)
+		if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
+			return TODOActionResponse{}, contentErr
+		}
+		isPrototype := contentErr == nil && wireContent.SchemaVersion == todoContentSchemaVersion && wireContent.Delivery != nil && wireContent.Delivery.Kind == "prototype"
+		if !isPrototype && (request.prototypeDeliveryPresent || request.PrototypeDelivery != nil) {
+			return TODOActionResponse{}, todoTeach("prototype_delivery", "provide this field only for an explicitly approved Prototype contract", ErrConflict)
+		}
+		if isPrototype {
+			// Permit a shape-valid exact retry after persistence has advanced the
+			// stage. The operation digest below still binds the original tuple.
+			directCompletion := (record.Stage == "In-Progress" || record.Stage == "Completed") && request.RequestedStage == "Completed"
+			if directCompletion {
+				if !request.prototypeDeliveryPresent || request.PrototypeDelivery == nil || request.proofReferencesPresent || request.waiverReferencesPresent || request.promotionTargetsPresent || request.localProofPresent || request.knowledgeDeliveryPresent || request.knowledgeAcceptancePresent {
+					return TODOActionResponse{}, todoTeach("prototype_delivery/proof_refs/waiver_refs/local_proof/promotion_targets/knowledge_delivery", "submit only the Prototype observation tuple on direct completion; omit every other proof field", ErrConflict)
+				}
+			} else {
+				approvalEdge := record.Stage == "Implementation-Approval-Pending" && request.RequestedStage == "Ready-for-Implementation"
+				if request.prototypeDeliveryPresent || request.PrototypeDelivery != nil || request.localProofPresent || request.knowledgeDeliveryPresent || request.knowledgeAcceptancePresent || request.promotionTargetsPresent || request.waiverReferencesPresent || request.LocalProof != nil || request.KnowledgeDelivery != nil || request.KnowledgeFinalAcceptance != nil || len(request.PromotionTargets) != 0 || len(request.WaiverReferences) != 0 || (!approvalEdge && (request.proofReferencesPresent || len(request.ProofReferences) != 0)) {
+					return TODOActionResponse{}, todoTeach("prototype_delivery/proof_refs/waiver_refs/local_proof/promotion_targets/knowledge_delivery", "omit foreign proof fields on Prototype transitions; only Ready accepts the APROVADO citation", ErrConflict)
+				}
+			}
+		}
 	}
 	digest, err := todoRequestDigest(request)
 	if err != nil {
@@ -214,6 +284,34 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 		return TODOActionResponse{}, err
 	}
 	content, contentErr := m.contentAtRevision(ctx, m.client.Database(company.DatabaseName), record.ProjectID, record.ID, record.Revision)
+	if contentErr == nil && content.SchemaVersion == todoContentSchemaVersion && content.Delivery != nil && content.Delivery.Kind == "prototype" {
+		record.Content = &content.TODOContent
+		if record.Stage == "In-Progress" && request.RequestedStage == "Completed" {
+			_, contentDigest, _, _, digestErr := currentTODOContentSubject(ctx, m.client.Database(company.DatabaseName), record)
+			if digestErr != nil {
+				return TODOActionResponse{}, digestErr
+			}
+			return m.transitionPrototypeTODO(ctx, companyID, project, collection, record, request, digest, contentDigest)
+		}
+		if request.PrototypeDelivery != nil {
+			return TODOActionResponse{}, todoTeach("prototype_delivery", "provide this field only for In-Progress to Completed", ErrConflict)
+		}
+		if request.localProofPresent || request.knowledgeDeliveryPresent || request.knowledgeAcceptancePresent || request.LocalProof != nil || request.KnowledgeDelivery != nil || request.KnowledgeFinalAcceptance != nil || request.promotionTargetsPresent || len(request.PromotionTargets) != 0 {
+			return TODOActionResponse{}, todoTeach("local_proof/knowledge_delivery/knowledge_final_acceptance/promotion_targets", "omit code, Knowledge, and promotion proof fields for every Prototype transition", ErrConflict)
+		}
+		approvalEdge := record.Stage == "Implementation-Approval-Pending" && request.RequestedStage == "Ready-for-Implementation"
+		if request.waiverReferencesPresent || len(request.WaiverReferences) != 0 || (!approvalEdge && (request.proofReferencesPresent || len(request.ProofReferences) != 0)) {
+			return TODOActionResponse{}, todoTeach("proof_refs/waiver_refs", "use only the current owner-approval citation on the Prototype Ready edge; other transition proof is stored from external evidence", ErrConflict)
+		}
+		if record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+			return TODOActionResponse{}, todoTeach("requested_stage", "Prototype delivery completes directly from In-Progress", ErrConflict)
+		}
+		if record.Stage == "Implementation-Approval-Pending" && request.RequestedStage == "Ready-for-Implementation" {
+			if err := validatePrototypeProjectBinding(project); err != nil {
+				return TODOActionResponse{}, err
+			}
+		}
+	}
 	if contentErr == nil && content.SchemaVersion == todoContentSchemaVersion && content.Delivery != nil && content.Delivery.Kind == "knowledge-only" {
 		record.Content = &content.TODOContent
 		return m.transitionKnowledgeTODO(ctx, companyID, project, collection, record, request, digest)
@@ -221,8 +319,8 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 	if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
 		return TODOActionResponse{}, contentErr
 	}
-	if request.KnowledgeDelivery != nil || request.KnowledgeFinalAcceptance != nil {
-		return TODOActionResponse{}, todoTeach("knowledge_delivery/knowledge_final_acceptance", "use Knowledge proof fields only for a TODO explicitly contracted as knowledge-only", ErrConflict)
+	if request.KnowledgeDelivery != nil || request.KnowledgeFinalAcceptance != nil || request.PrototypeDelivery != nil {
+		return TODOActionResponse{}, todoTeach("knowledge_delivery/knowledge_final_acceptance/prototype_delivery", "use typed delivery proof fields only for their matching explicit TODO contract", ErrConflict)
 	}
 	if record.Stage == "Local-Implemented" && request.RequestedStage == "Promotion-Lane" {
 		pin, pinErr := m.activeTODOConstitutionPromotionMode(ctx, companyID, record.ProjectID)
@@ -638,11 +736,17 @@ func (m *MongoStore) mongoBornTransitionProof(ctx context.Context, companyID str
 			if err := validateMongoPlanningContract(record, content); err != nil {
 				return TODOProofReference{}, err
 			}
-			if err := requireTODOImplementationRepositories(ctx, m, companyID, record); err != nil {
-				return TODOProofReference{}, err
-			}
-			if err := m.verifyPlanningCodeAnchors(ctx, companyID, record.ProjectID, content); err != nil {
-				return TODOProofReference{}, err
+			if content.Delivery != nil && content.Delivery.Kind == "prototype" {
+				if err := validatePrototypeProjectBinding(project); err != nil {
+					return TODOProofReference{}, err
+				}
+			} else {
+				if err := requireTODOImplementationRepositories(ctx, m, companyID, record); err != nil {
+					return TODOProofReference{}, err
+				}
+				if err := m.verifyPlanningCodeAnchors(ctx, companyID, record.ProjectID, content); err != nil {
+					return TODOProofReference{}, err
+				}
 			}
 			if err := requirePlanningReviewSubjects(ctx, m.client.Database(company.DatabaseName), record, contentRevision, contentDigest, content.Planning); err != nil {
 				return TODOProofReference{}, err

@@ -137,6 +137,15 @@ func migrateCompanyFixture(t *testing.T, ctx context.Context, store *MongoStore)
 }
 
 func TestCompanyImageAttachmentMigrationUpgradesExistingV1Validator(t *testing.T) {
+	testCompanyTODOValidatorMigration(t, false)
+}
+
+func TestCompanyPrototypeMigrationUpgradesExistingV2Validator(t *testing.T) {
+	testCompanyTODOValidatorMigration(t, true)
+}
+
+func testCompanyTODOValidatorMigration(t *testing.T, fromV2 bool) {
+	t.Helper()
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {
 		t.Skip("requires isolated Mongo integration fixture")
@@ -161,23 +170,31 @@ func TestCompanyImageAttachmentMigrationUpgradesExistingV1Validator(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	v2WithoutImages := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "image_attachments")
-	oldContent := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2WithoutImages}}}
+	v2Content := todoAuthoredContentV2ValidatorBeforePrototype()
+	if !fromV2 {
+		v2Content = withoutBSONFieldsAtPath(v2Content, []string{"properties"}, "image_attachments")
+	}
+	oldContent := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2Content}}}
 	oldValidator := replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, oldContent)
 	db := store.client.Database(company.DatabaseName)
 	if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: oldValidator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = store.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: company.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_migrations", Value: company.SchemaMigrations[:1]}, {Key: "schema_state", Value: "ready"}}}})
+	priorVersions := 1
+	if fromV2 {
+		priorVersions = 2
+	}
+	_, err = store.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: company.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_migrations", Value: company.SchemaMigrations[:priorVersions]}, {Key: "schema_state", Value: "ready"}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Project(ctx, company.ID, "project-a"); err == nil || !strings.Contains(err.Error(), "migrate-all") {
-		t.Fatalf("v1 Company should be gated before migration: %v", err)
+		t.Fatalf("pre-upgrade Company should be gated before migration: %v", err)
 	}
 	migrateCompanyFixture(t, ctx, store)
 	company, err = store.rawCompany(ctx, company.ID)
-	if err != nil || len(company.SchemaMigrations) != 2 || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != companySchemaCatalog[1].digest() {
+	wantVersions := 3
+	if err != nil || len(company.SchemaMigrations) != wantVersions || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != companySchemaCatalog[1].digest() || (fromV2 && company.SchemaMigrations[2].Digest != companySchemaCatalog[2].digest()) {
 		t.Fatalf("migration history: %+v, %v", company, err)
 	}
 	if err := verifyTODOHistoryCollections(ctx, db); err != nil {

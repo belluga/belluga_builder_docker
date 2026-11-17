@@ -65,6 +65,21 @@ var companySchemaCatalog = []companySchemaStep{{
 	verify: func(ctx context.Context, m *MongoStore, company Company) error {
 		return verifyTODOHistoryCollections(ctx, m.client.Database(company.DatabaseName))
 	},
+}, {
+	version:    3,
+	definition: "company-schema-v3:explicit-prototype-todo-delivery",
+	apply: func(ctx context.Context, m *MongoStore, company Company) error {
+		db := m.client.Database(company.DatabaseName)
+		return db.RunCommand(ctx, bson.D{
+			{Key: "collMod", Value: todoContentVersionsCollection},
+			{Key: "validator", Value: TODOContentVersionsValidator()},
+			{Key: "validationLevel", Value: "strict"},
+			{Key: "validationAction", Value: "error"},
+		}).Err()
+	},
+	verify: func(ctx context.Context, m *MongoStore, company Company) error {
+		return verifyTODOHistoryCollections(ctx, m.client.Database(company.DatabaseName))
+	},
 }}
 
 func (m *MongoStore) schemaCatalog() []companySchemaStep {
