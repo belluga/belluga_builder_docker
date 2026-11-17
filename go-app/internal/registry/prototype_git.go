@@ -447,6 +447,9 @@ func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, proje
 	if err != nil {
 		return err
 	}
+	if !prototypeBindingMatchesCatalog(binding, catalog) {
+		return ErrConflict
+	}
 	reader := m.prototypeGit
 	if reader == nil {
 		return ErrUnavailable
@@ -458,7 +461,18 @@ func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, proje
 	if head != catalog.Revision {
 		return ErrConflict
 	}
-	return nil
+	if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
+		return err
+	}
+	manifest, err := m.readPrototypeCanonicalManifest(ctx, companyID, projectID)
+	if err != nil {
+		return err
+	}
+	_, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
+	if err != nil || manifest.GenerationID != catalog.KnowledgeGeneration || knowledgeDigest != catalog.KnowledgeDigest {
+		return ErrConflict
+	}
+	return m.fencePrototypeIdentity(ctx, companyID, projectID, catalog)
 }
 
 func prototypeEvaluationError(evaluation ac.Response) error {

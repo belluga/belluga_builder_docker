@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -149,20 +150,74 @@ func (m *MongoStore) readActivePrototypeProjection(ctx context.Context, companyI
 		return PrototypeCatalogResponse{}, false, ErrUnavailable
 	}
 	items := make([]ac.Item, 0, len(generation.PrototypeIDs))
-	if len(generation.PrototypeIDs) > ac.MaxPrototypes {
+	if len(generation.PrototypeIDs) > ac.MaxPrototypes || hasDuplicatePrototypeIDs(generation.PrototypeIDs) {
+		return PrototypeCatalogResponse{}, false, ErrUnavailable
+	}
+	storedItems, err := readPrototypeProjectionItems(ctx, itemCollection, companyID, projectID, generation.GenerationKey, generation.PrototypeIDs)
+	if err != nil {
 		return PrototypeCatalogResponse{}, false, ErrUnavailable
 	}
 	for _, id := range generation.PrototypeIDs {
-		var stored prototypeItemDocument
-		if err := itemCollection.FindOne(ctx, bson.D{{Key: "company_id", Value: companyID}, {Key: "project_id", Value: projectID}, {Key: "generation_key", Value: generation.GenerationKey}, {Key: "prototype_id", Value: id}}).Decode(&stored); err != nil || stored.Item.ID != id {
-			return PrototypeCatalogResponse{}, false, ErrUnavailable
-		}
-		items = append(items, stored.Item)
-	}
-	if len(items) != len(generation.PrototypeIDs) {
-		return PrototypeCatalogResponse{}, false, ErrUnavailable
+		items = append(items, storedItems[id])
 	}
 	return prototypeGenerationToCatalog(generation, items, companyID, projectID), true, nil
+}
+
+func hasDuplicatePrototypeIDs(ids []string) bool {
+	seen := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		if _, exists := seen[id]; exists {
+			return true
+		}
+		seen[id] = struct{}{}
+	}
+	return false
+}
+
+// readPrototypeProjectionItems performs one bounded indexed query for the
+// complete generation. Generation metadata is trusted only after every item
+// has been accounted for exactly once and in its declared identity context.
+func readPrototypeProjectionItems(ctx context.Context, collection *mongo.Collection, companyID, projectID, generationKey string, ids []string) (map[string]ac.Item, error) {
+	if len(ids) > ac.MaxPrototypes || hasDuplicatePrototypeIDs(ids) {
+		return nil, ErrUnavailable
+	}
+	if len(ids) == 0 {
+		return map[string]ac.Item{}, nil
+	}
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	filter := bson.D{{Key: "company_id", Value: companyID}, {Key: "project_id", Value: projectID}, {Key: "generation_key", Value: generationKey}, {Key: "prototype_id", Value: bson.M{"$in": ids}}}
+	cursor, err := collection.Find(ctx, filter, options.Find().SetLimit(int64(len(ids))).SetBatchSize(int32(len(ids))))
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	items := make(map[string]ac.Item, len(ids))
+	for cursor.Next(ctx) {
+		var stored prototypeItemDocument
+		if err := cursor.Decode(&stored); err != nil {
+			return nil, err
+		}
+		if stored.CompanyID != companyID || stored.ProjectID != projectID || stored.GenerationKey != generationKey || stored.PrototypeID == "" || stored.Item.ID != stored.PrototypeID {
+			return nil, ErrUnavailable
+		}
+		if _, exists := wanted[stored.PrototypeID]; !exists {
+			return nil, ErrUnavailable
+		}
+		if _, exists := items[stored.PrototypeID]; exists {
+			return nil, ErrUnavailable
+		}
+		items[stored.PrototypeID] = stored.Item
+	}
+	if err := cursor.Err(); err != nil {
+		return nil, err
+	}
+	if len(items) != len(ids) {
+		return nil, ErrUnavailable
+	}
+	return items, nil
 }
 
 func prototypeProjectionIdentityMatches(active prototypeActiveDocument, binding RepositoryBinding, revision, knowledgeGeneration, knowledgeDigest string) bool {
@@ -170,6 +225,10 @@ func prototypeProjectionIdentityMatches(active prototypeActiveDocument, binding 
 }
 
 func (m *MongoStore) persistPrototypeProjection(ctx context.Context, companyID, projectID string, catalog PrototypeCatalogResponse) error {
+	items, ids, err := preparePrototypeProjectionItems(catalog.navigation)
+	if err != nil {
+		return err
+	}
 	generationKey, err := prototypeGenerationKey(companyID, projectID, catalog)
 	if err != nil {
 		return err
@@ -178,33 +237,8 @@ func (m *MongoStore) persistPrototypeProjection(ctx context.Context, companyID, 
 	if err != nil {
 		return err
 	}
-	items := append([]ac.Item(nil), catalog.navigation...)
-	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
-	ids := make([]string, 0, len(items))
-	var total int64
-	for _, item := range items {
-		data, marshalErr := json.Marshal(item)
-		if marshalErr != nil || len(data) > prototypeItemMaxBytes || int64(len(data)) > prototypeGenerationMaxBytes-total {
-			return teachCanonical(item.ID, "prototype_projection", "keep each navigation record under 4 MiB and the complete generation under 16 MiB", ErrInvalid)
-		}
-		total += int64(len(data))
-		ids = append(ids, item.ID)
-		document := prototypeItemDocument{CompanyID: companyID, ProjectID: projectID, GenerationKey: generationKey, PrototypeID: item.ID, Item: item}
-		filter := bson.D{{Key: "company_id", Value: companyID}, {Key: "project_id", Value: projectID}, {Key: "generation_key", Value: generationKey}, {Key: "prototype_id", Value: item.ID}}
-		if _, err := itemCollection.UpdateOne(ctx, filter, bson.M{"$setOnInsert": document}, options.UpdateOne().SetUpsert(true)); err != nil {
-			return normalizeMongoError(err)
-		}
-		var stored prototypeItemDocument
-		if err := itemCollection.FindOne(ctx, filter).Decode(&stored); err != nil || stored.Item.ID != item.ID {
-			return ErrUnavailable
-		}
-		storedData, _ := json.Marshal(stored.Item)
-		if string(storedData) != string(data) {
-			return ErrConflict
-		}
-	}
-	if len(ids) > ac.MaxPrototypes {
-		return teachCanonical("", "prototype_projection", "keep the complete generation within the canonical 256-Prototype limit", ErrInvalid)
+	if err := writePrototypeProjectionItemBatch(ctx, itemCollection, companyID, projectID, generationKey, items, ids); err != nil {
+		return err
 	}
 	metadata := prototypeGenerationDocument{
 		CompanyID: companyID, ProjectID: projectID, GenerationKey: generationKey,
@@ -258,6 +292,60 @@ func (m *MongoStore) persistPrototypeProjection(ctx context.Context, companyID, 
 			_, _ = activeCollection.UpdateOne(ctx, append(activeFilter, bson.E{Key: "generation_key", Value: generationKey}), bson.M{"$set": previous})
 		}
 		return err
+	}
+	return nil
+}
+
+func preparePrototypeProjectionItems(source []ac.Item) ([]ac.Item, []string, error) {
+	if len(source) > ac.MaxPrototypes {
+		return nil, nil, teachCanonical("", "prototype_projection", "keep the complete generation within the canonical 256-Prototype limit", ErrInvalid)
+	}
+	items := append([]ac.Item(nil), source...)
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	ids := make([]string, 0, len(items))
+	var total int64
+	for _, item := range items {
+		if item.ID == "" || len(ids) > 0 && ids[len(ids)-1] == item.ID {
+			return nil, nil, teachCanonical(item.ID, "prototype_projection", "use unique non-empty Prototype IDs", ErrInvalid)
+		}
+		data, err := json.Marshal(item)
+		if err != nil || len(data) > prototypeItemMaxBytes || int64(len(data)) > prototypeGenerationMaxBytes-total {
+			return nil, nil, teachCanonical(item.ID, "prototype_projection", "keep each navigation record under 4 MiB and the complete generation under 16 MiB", ErrInvalid)
+		}
+		total += int64(len(data))
+		ids = append(ids, item.ID)
+	}
+	return items, ids, nil
+}
+
+func writePrototypeProjectionItemBatch(ctx context.Context, collection *mongo.Collection, companyID, projectID, generationKey string, items []ac.Item, ids []string) error {
+	if len(items) != len(ids) || len(items) > ac.MaxPrototypes || hasDuplicatePrototypeIDs(ids) {
+		return ErrInvalid
+	}
+	models := make([]mongo.WriteModel, 0, len(items))
+	for i, item := range items {
+		if ids[i] != item.ID {
+			return ErrInvalid
+		}
+		document := prototypeItemDocument{CompanyID: companyID, ProjectID: projectID, GenerationKey: generationKey, PrototypeID: item.ID, Item: item}
+		filter := bson.D{{Key: "company_id", Value: companyID}, {Key: "project_id", Value: projectID}, {Key: "generation_key", Value: generationKey}, {Key: "prototype_id", Value: item.ID}}
+		models = append(models, mongo.NewUpdateOneModel().SetFilter(filter).SetUpdate(bson.M{"$setOnInsert": document}).SetUpsert(true))
+	}
+	if len(models) > 0 {
+		if _, err := collection.BulkWrite(ctx, models, options.BulkWrite().SetOrdered(true)); err != nil {
+			return normalizeMongoError(err)
+		}
+	}
+	storedItems, err := readPrototypeProjectionItems(ctx, collection, companyID, projectID, generationKey, ids)
+	if err != nil {
+		return ErrUnavailable
+	}
+	for _, item := range items {
+		want, _ := json.Marshal(item)
+		got, marshalErr := json.Marshal(storedItems[item.ID])
+		if marshalErr != nil || !bytes.Equal(got, want) {
+			return ErrConflict
+		}
 	}
 	return nil
 }

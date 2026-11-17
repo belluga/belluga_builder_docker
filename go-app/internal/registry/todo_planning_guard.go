@@ -33,7 +33,7 @@ func validateMongoPlanningContract(record TODORecord, content TODOAuthoredConten
 		return todoTeach("content.diff_expectation", "match the current Mongo TODO aggregate and immutable content revision", ErrConflict)
 	}
 	if content.Delivery != nil && len(content.DiffExpectation) != 0 {
-		return todoTeach("content.delivery.kind", "use knowledge-only only for a TODO without implementation repository scopes; keep code/Git-artifact delivery on its ordinary proof path", ErrConflict)
+		return todoTeach("content.delivery.kind", "omit implementation repository scopes for explicit Knowledge-only or prototype delivery; code work uses the ordinary proof path", ErrConflict)
 	}
 	if len(content.LocalChecks) > 0 {
 		for i, check := range content.LocalChecks {
