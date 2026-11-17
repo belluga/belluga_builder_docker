@@ -31,6 +31,7 @@ type roadmapRelease struct {
 	Position         int                     `bson:"position"`
 	DeliveryBranches []releaseDeliveryBranch `bson:"delivery_branches,omitempty"`
 	Investigation    *ReleaseInvestigation   `bson:"investigation,omitempty"`
+	SequencingPlan   *ReleaseSequencingPlan  `bson:"sequencing_plan,omitempty"`
 }
 
 // releaseDeliveryBranch is an immutable owner-confirmed destination for one

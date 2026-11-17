@@ -88,6 +88,10 @@ type releaseInvestigationService interface {
 	ReadReleaseInvestigation(context.Context, string, string, string) (ReleaseInvestigationRead, error)
 }
 
+type releaseSequencingPlanService interface {
+	ReadReleaseSequencingPlan(context.Context, string, string, string) (ReleaseSequencingPlanRead, error)
+}
+
 type canonicalKnowledgeService interface {
 	ImportCanonicalDraft(context.Context, string, CanonicalImport) (CanonicalManifest, error)
 	CanonicalManifest(context.Context, string, string, string) (CanonicalManifest, error)
@@ -229,6 +233,10 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.releaseInvestigation)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("set-investigation"))
 	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation", h.roadmapChange("clear-investigation"))
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan/template", h.releaseSequencingPlanTemplate)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan", h.releaseSequencingPlan)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan", h.releaseSequencingPlanChange("set-sequencing-plan"))
+	mux.HandleFunc("DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan", h.releaseSequencingPlanChange("clear-sequencing-plan"))
 	mux.HandleFunc("GET /internal/v1/tenants/resolve", h.resolveTenant)
 	mux.HandleFunc("POST /internal/v1/todos/import", h.importSelectedTODOs)
 	mux.HandleFunc("POST /internal/v1/todos/admit-builder-r08", h.admitAdditionalTODOs)
@@ -336,6 +344,9 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 		limit := int64(maxRequestBody)
 		if action == "set-investigation" {
 			limit = maxInvestigationBytes + 4<<10
+		}
+		if action == "set-sequencing-plan" {
+			limit = maxReleaseSequencingPlanBytes + 4<<10
 		}
 		if action == "create-release" {
 			if !h.decodeCreateRelease(w, r, &input, limit) {
@@ -540,6 +551,62 @@ func (h *Handler) releaseInvestigationTemplate(w http.ResponseWriter, r *http.Re
 	write := template["write"].(map[string]any)
 	write["project_id"], write["id"], write["expected_roadmap_revision"] = read.ProjectID, read.ReleaseID, read.RoadmapRevision
 	h.respond(w, template, nil)
+}
+
+func (h *Handler) releaseSequencingPlan(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseSequencingPlanService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	value, err := service.ReadReleaseSequencingPlan(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	h.respond(w, value, err)
+}
+
+func (h *Handler) releaseSequencingPlanTemplate(w http.ResponseWriter, r *http.Request) {
+	service, ok := h.service.(releaseSequencingPlanService)
+	if !ok {
+		h.writeError(w, ErrUnavailable)
+		return
+	}
+	read, err := service.ReadReleaseSequencingPlan(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID")))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	template := ReleaseSequencingPlanTemplate()
+	write := template["write"].(map[string]any)
+	write["project_id"], write["id"], write["expected_roadmap_revision"] = read.ProjectID, read.ReleaseID, read.RoadmapRevision
+	h.respond(w, template, nil)
+}
+
+func (h *Handler) releaseSequencingPlanChange(action string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		service, ok := h.service.(roadmapChangeService)
+		if !ok {
+			h.writeError(w, ErrUnavailable)
+			return
+		}
+		var input RoadmapChange
+		limit := int64(8 << 10)
+		if action == "set-sequencing-plan" {
+			limit = maxReleaseSequencingPlanBytes + 4<<10
+		}
+		if !h.decodeLimit(w, r, &input, limit) {
+			return
+		}
+		projectID, releaseID := strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("releaseID"))
+		if input.ProjectID != projectID {
+			h.writeError(w, todoTeach("project_id", "match the exact Project path identity", ErrConflict))
+			return
+		}
+		if input.ID != releaseID {
+			h.writeError(w, todoTeach("id", "match the exact Release path identity", ErrConflict))
+			return
+		}
+		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
+		h.respond(w, value, err)
+	}
 }
 
 type errorResponse struct {
