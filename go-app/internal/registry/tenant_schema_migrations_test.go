@@ -3,6 +3,8 @@ package registry
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +16,58 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
+
+const (
+	frozenCompanySchemaV2Definition = "company-schema-v2:todo-content-image-attachments"
+	frozenCompanySchemaV2Digest     = "sha256:0fae006ba32a9fb4917cac8cf2e7be3a649a53e69f508c8675e54858e5416a5e"
+)
+
+func frozenTODOContentVersionsValidatorV2() bson.D {
+	v2 := todoAuthoredContentV2ValidatorBeforePrototype()
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+func rawCompanyMigrationEntries(ctx context.Context, store *MongoStore, companyID string) ([][]byte, error) {
+	var company bson.Raw
+	if err := store.control.Collection(companiesCollection).FindOne(ctx, bson.D{{Key: "id", Value: companyID}}).Decode(&company); err != nil {
+		return nil, err
+	}
+	entries, ok := company.Lookup("schema_migrations").ArrayOK()
+	if !ok {
+		return nil, errors.New("schema_migrations is not a BSON array")
+	}
+	values, err := entries.Values()
+	if err != nil {
+		return nil, err
+	}
+	result := make([][]byte, 0, len(values))
+	for _, value := range values {
+		document, ok := value.DocumentOK()
+		if !ok {
+			return nil, errors.New("schema_migrations entry is not a BSON document")
+		}
+		result = append(result, append([]byte(nil), document...))
+	}
+	return result, nil
+}
+
+func TestCompanySchemaV2DigestMatchesFrozenPredecessor(t *testing.T) {
+	if !reflect.DeepEqual(TODOContentVersionsValidatorBeforePrototype(), frozenTODOContentVersionsValidatorV2()) {
+		t.Fatal("v2 migration validator differs from frozen pre-Prototype validator")
+	}
+	definition, err := json.Marshal([]any{frozenCompanySchemaV2Definition, frozenTODOContentVersionsValidatorV2()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(definition)
+	if got := "sha256:" + hex.EncodeToString(sum[:]); got != frozenCompanySchemaV2Digest {
+		t.Fatalf("frozen historical v2 validator digest drifted: got=%s want=%s", got, frozenCompanySchemaV2Digest)
+	}
+	if got := companySchemaCatalog[1].digest(); got != frozenCompanySchemaV2Digest {
+		t.Fatalf("Company migration v2 digest changed: got=%s want frozen predecessor=%s", got, frozenCompanySchemaV2Digest)
+	}
+}
 
 func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
@@ -175,33 +229,66 @@ func testCompanyTODOValidatorMigration(t *testing.T, fromV2 bool) {
 		v2Content = withoutBSONFieldsAtPath(v2Content, []string{"properties"}, "image_attachments")
 	}
 	oldContent := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2Content}}}
-	oldValidator := replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, oldContent)
+	oldValidator := frozenTODOContentVersionsValidatorV2()
+	if !fromV2 {
+		oldValidator = replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, oldContent)
+	}
 	db := store.client.Database(company.DatabaseName)
 	if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: todoContentVersionsCollection}, {Key: "validator", Value: oldValidator}, {Key: "validationLevel", Value: "strict"}, {Key: "validationAction", Value: "error"}}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	priorVersions := 1
+	priorHistory := append([]CompanySchemaMigration(nil), company.SchemaMigrations[:1]...)
 	if fromV2 {
-		priorVersions = 2
+		legacyHistory := append([]CompanySchemaMigration(nil), company.SchemaMigrations[:2]...)
+		legacyHistory[1].Digest = frozenCompanySchemaV2Digest
+		priorHistory = legacyHistory
 	}
-	_, err = store.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: company.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_migrations", Value: company.SchemaMigrations[:priorVersions]}, {Key: "schema_state", Value: "ready"}}}})
+	_, err = store.control.Collection(companiesCollection).UpdateOne(ctx, bson.D{{Key: "id", Value: company.ID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "schema_migrations", Value: priorHistory}, {Key: "schema_state", Value: "ready"}}}})
+	if err != nil {
+		t.Fatalf("install frozen deployed v1/v2 migration history: %v", err)
+	}
+	company, err = store.rawCompany(ctx, company.ID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	priorHistory = append([]CompanySchemaMigration(nil), company.SchemaMigrations...)
+	var priorHistoryBytes [][]byte
+	if fromV2 {
+		priorHistoryBytes, err = rawCompanyMigrationEntries(ctx, store, company.ID)
+		if err != nil || len(priorHistoryBytes) != 2 {
+			t.Fatalf("read exact deployed v1/v2 history bytes: entries=%d err=%v", len(priorHistoryBytes), err)
+		}
 	}
 	if _, err := store.Project(ctx, company.ID, "project-a"); err == nil || !strings.Contains(err.Error(), "migrate-all") {
 		t.Fatalf("pre-upgrade Company should be gated before migration: %v", err)
 	}
 	migrateCompanyFixture(t, ctx, store)
 	company, err = store.rawCompany(ctx, company.ID)
-	wantVersions := 3
-	if err != nil || len(company.SchemaMigrations) != wantVersions || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != companySchemaCatalog[1].digest() || (fromV2 && company.SchemaMigrations[2].Digest != companySchemaCatalog[2].digest()) {
+	if err != nil || len(company.SchemaMigrations) != 3 || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != frozenCompanySchemaV2Digest || company.SchemaMigrations[2].Digest != companySchemaCatalog[2].digest() {
 		t.Fatalf("migration history: %+v, %v", company, err)
 	}
+	if fromV2 && !reflect.DeepEqual(company.SchemaMigrations[:2], priorHistory) {
+		t.Fatalf("v1/v2 migration history changed while applying v3: before=%+v after=%+v", priorHistory, company.SchemaMigrations[:2])
+	}
+	if fromV2 {
+		afterHistoryBytes, readErr := rawCompanyMigrationEntries(ctx, store, company.ID)
+		if readErr != nil || len(afterHistoryBytes) != 3 || !bytes.Equal(priorHistoryBytes[0], afterHistoryBytes[0]) || !bytes.Equal(priorHistoryBytes[1], afterHistoryBytes[1]) {
+			t.Fatalf("v3 did not preserve the exact stored v1/v2 migration entry bytes: before=%x after=%x err=%v", priorHistoryBytes, afterHistoryBytes, readErr)
+		}
+	}
 	if err := verifyTODOHistoryCollections(ctx, db); err != nil {
-		t.Fatalf("image attachment validator not installed: %v", err)
+		t.Fatalf("strict v3 TODO history validator was not installed: %v", err)
 	}
 	if _, err := store.Project(ctx, company.ID, "project-a"); err != nil {
 		t.Fatalf("project not readable after migration: %v", err)
+	}
+	if fromV2 {
+		firstMigrationHistory := append([]CompanySchemaMigration(nil), company.SchemaMigrations...)
+		migrateCompanyFixture(t, ctx, store)
+		company, err = store.rawCompany(ctx, company.ID)
+		if err != nil || !reflect.DeepEqual(company.SchemaMigrations, firstMigrationHistory) {
+			t.Fatalf("repeat migrate-all changed immutable history: before=%+v after=%+v err=%v", firstMigrationHistory, company.SchemaMigrations, err)
+		}
 	}
 }
 

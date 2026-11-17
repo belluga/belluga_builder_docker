@@ -57,13 +57,13 @@ var companySchemaCatalog = []companySchemaStep{{
 		db := m.client.Database(company.DatabaseName)
 		return db.RunCommand(ctx, bson.D{
 			{Key: "collMod", Value: todoContentVersionsCollection},
-			{Key: "validator", Value: TODOContentVersionsValidator()},
+			{Key: "validator", Value: TODOContentVersionsValidatorBeforePrototype()},
 			{Key: "validationLevel", Value: "strict"},
 			{Key: "validationAction", Value: "error"},
 		}).Err()
 	},
 	verify: func(ctx context.Context, m *MongoStore, company Company) error {
-		return verifyTODOHistoryCollections(ctx, m.client.Database(company.DatabaseName))
+		return verifyTODOHistoryCollectionsBeforePrototype(ctx, m.client.Database(company.DatabaseName))
 	},
 }, {
 	version:    3,
@@ -310,17 +310,16 @@ func (m *MongoStore) verifyCompanySchemaV1(ctx context.Context, company Company)
 // remain frozen; image attachments are introduced by v2 above.
 const companySchemaV1Digest = "sha256:c952456ba2b452b41d7cfdf030d51425692bc3b28141c3d431cae385018bf12e"
 
+// Version 2 is already recorded by deployed Companies. Its identity and
+// Knowledge-only validator must remain frozen; Prototype delivery is v3.
+const companySchemaV2Digest = "sha256:0fae006ba32a9fb4917cac8cf2e7be3a649a53e69f508c8675e54858e5416a5e"
+
 func (step companySchemaStep) digest() string {
 	if step.version == 1 && step.definition == companySchemaCatalog[0].definition {
 		return companySchemaV1Digest
 	}
 	if step.version == 2 && step.definition == companySchemaCatalog[1].definition {
-		definition, err := json.Marshal([]any{step.definition, TODOContentVersionsValidator()})
-		if err != nil {
-			panic("invalid compiled Company schema migration definition: " + err.Error())
-		}
-		sum := sha256.Sum256(definition)
-		return "sha256:" + hex.EncodeToString(sum[:])
+		return companySchemaV2Digest
 	}
 	sum := sha256.Sum256([]byte(step.definition))
 	return "sha256:" + hex.EncodeToString(sum[:])

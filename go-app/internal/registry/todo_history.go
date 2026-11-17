@@ -874,11 +874,19 @@ func (m *MongoStore) ensureTODOHistoryBaseline(ctx context.Context, database *mo
 }
 
 func verifyTODOHistoryCollections(ctx context.Context, database *mongo.Database) error {
+	return verifyTODOHistoryCollectionsWithContentValidator(ctx, database, TODOContentVersionsValidator())
+}
+
+func verifyTODOHistoryCollectionsBeforePrototype(ctx context.Context, database *mongo.Database) error {
+	return verifyTODOHistoryCollectionsWithContentValidator(ctx, database, TODOContentVersionsValidatorBeforePrototype())
+}
+
+func verifyTODOHistoryCollectionsWithContentValidator(ctx context.Context, database *mongo.Database, contentValidator bson.D) error {
 	for _, expected := range []struct {
 		name      string
 		validator bson.D
 		indexes   []historyIndexSpec
-	}{{todoContentVersionsCollection, TODOContentVersionsValidator(), todoContentVersionIndexes()}, {todoEventsCollection, TODOEventsValidator(), todoEventIndexes()}} {
+	}{{todoContentVersionsCollection, contentValidator, todoContentVersionIndexes()}, {todoEventsCollection, TODOEventsValidator(), todoEventIndexes()}} {
 		collections, err := database.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: expected.name}})
 		if err != nil || len(collections) != 1 {
 			return todoTeach(expected.name, "be provisioned before enabling TODO history operations", ErrConflict)
@@ -1802,6 +1810,14 @@ func TODOContentVersionsValidator() bson.D {
 			{Key: "content", Value: TODOAuthoredContentValidator()},
 		}},
 	}}}
+}
+
+// TODOContentVersionsValidatorBeforePrototype is the strict v2 validator
+// deployed before Prototype delivery. V3 widens only the delivery union.
+func TODOContentVersionsValidatorBeforePrototype() bson.D {
+	v2 := todoAuthoredContentV2ValidatorBeforePrototype()
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
 
 func TODOContentVersionsValidatorBeforeKnowledgeDelivery() bson.D {
