@@ -75,8 +75,7 @@ describe("revision-bound Prototype viewer", () => {
     fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page: "overview" } }));
     expect(onNavigate).toHaveBeenCalledExactlyOnceWith({ page: "overview" });
     for (const page of ["design-system", "prototypes", "roadmap"]) fireEvent(window, new MessageEvent("message", { source: frame.contentWindow, data: { type: "builder-prototype:navigate", page } }));
-    expect(onNavigate).toHaveBeenCalledTimes(4);
-    expect(onNavigate).toHaveBeenLastCalledWith({ page: "roadmap" });
+    expect(onNavigate.mock.calls).toEqual([[{ page: "overview" }], [{ page: "design-system" }], [{ page: "prototypes" }], [{ page: "roadmap" }]]);
   });
 
   it("rejects a stale revision URL before requesting presentation HTML", async () => {

@@ -134,6 +134,26 @@ describe("single root Project experience", () => {
     expect(screen.queryByRole("link", { name: /Administração/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
   });
+  it("discards an administration lookup that finishes after the project changes", async () => {
+    const baseFetch = mockFetch();
+    const revision = "a".repeat(40);
+    let resolveCatalog!: (value: unknown) => void;
+    const lateCatalog = new Promise<unknown>((resolve) => { resolveCatalog = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/prototypes") return lateCatalog;
+      return baseFetch(input);
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    fireEvent.click(await screen.findByLabelText("Abrir menu da conta"));
+    expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
+    act(() => { history.pushState({}, "", "/?company_id=belluga&project_id=boora&page=overview"); window.dispatchEvent(new PopStateEvent("popstate")); });
+    await act(async () => { resolveCatalog({ ok: true, json: async () => ({ revision, items: [{ id: "builder-admin", detail_url: `/api/prototypes/${revision}/builder-admin` }] }) }); });
+    fireEvent.click(await screen.findByLabelText("Abrir menu da conta"));
+    expect(screen.queryByRole("link", { name: /Administração/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Administração/ })).toBeDisabled();
+  });
   it("loads the directory through the Registry catalog route only", async () => {
     const fetcher = mockFetch();
     render(<Projects />);
