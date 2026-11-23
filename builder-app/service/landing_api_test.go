@@ -88,24 +88,32 @@ func TestLandingAPIProxiesExactRevisionInventoryAndFiles(t *testing.T) {
 }
 
 func TestLandingAPIExposesInvalidLegacyManifestSeparatelyFromNotAuthored(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/internal/v1/catalog" {
-			serveLandingTestCatalog(w)
-			return
-		}
-		if r.URL.Path != "/internal/v1/companies/company/projects/project/landing" {
-			http.NotFound(w, r)
-			return
-		}
-		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write([]byte(`{"error":"invalid_input","teach":"TEACH: Replace the legacy v1 manifest with the strict v2 contract."}`))
-	}))
-	defer upstream.Close()
-	consumer := prototypeTestConsumer(t, upstream)
-	response := httptest.NewRecorder()
-	consumer.landingAPIHandler(response, httptest.NewRequest(http.MethodGet, "/api/landing?company_id=company&project_id=project", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"invalid"`) || !strings.Contains(response.Body.String(), "legacy v1") || strings.Contains(response.Body.String(), `"state":"not_authored"`) {
-		t.Fatalf("legacy invalid artifact must not be reported as absent: status=%d body=%s", response.Code, response.Body.String())
+	for _, tc := range []struct {
+		name, body, wantTeach string
+	}{
+		{name: "legacy-only", body: `{"error":"invalid_input","teach":"TEACH: Replace the legacy v1 manifest with the strict v2 contract."}`, wantTeach: "TEACH: Replace the legacy v1 manifest with the strict v2 contract."},
+		{name: "unusable optional detail", body: `{"error":"invalid_input","teach":"TEACH: Replace the legacy v1 manifest with the strict v2 contract.","teach_detail":{"schema_version":"2","code":"private_code","field_path":"manifest_version","next_action":"/private/landing/manifest.json","operation_id":"private-operation"}}`, wantTeach: "TEACH: Replace the legacy v1 manifest with the strict v2 contract."},
+		{name: "malformed error JSON", body: `{"error":"invalid_input","teach":"TEACH: safe before malformed`, wantTeach: "TEACH: O manifesto Landing publicado não satisfaz o contrato v2; atualize o artefato fonte."},
+		{name: "oversized error envelope", body: `{"error":"invalid_input","teach":"TEACH: ` + strings.Repeat("x", maxProxyTeachEnvelope) + `"}`, wantTeach: "TEACH: O manifesto Landing publicado não satisfaz o contrato v2; atualize o artefato fonte."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/internal/v1/companies/company/projects/project/landing" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer upstream.Close()
+			consumer := prototypeTestConsumer(t, upstream)
+			response := httptest.NewRecorder()
+			consumer.landingAPIHandler(response, httptest.NewRequest(http.MethodGet, "/api/landing?company_id=company&project_id=project", nil))
+			var got landingProxyCatalog
+			if json.Unmarshal(response.Body.Bytes(), &got) != nil || response.Code != http.StatusOK || got.State != "invalid" || got.Teach != tc.wantTeach || got.TeachDetail == nil || !safeProxyTeachDetail(*got.TeachDetail) || got.TeachDetail.Code != "landing_invalid" || strings.TrimSpace(got.TeachDetail.NextAction) == "" || got.TeachDetail.Effects != "" || got.TeachDetail.Retry != "" || got.TeachDetail.Revision != nil || strings.Contains(response.Body.String(), "private-operation") || strings.Contains(response.Body.String(), "/private/") {
+				t.Fatalf("legacy invalid artifact must retain its mapping and get a safe v1 fallback: status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
 	}
 }
 

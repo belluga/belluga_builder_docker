@@ -39,6 +39,8 @@ type testDesignSystemMutationService struct {
 	recoverOperation string
 	recoverDeadline  bool
 	recoverCalls     int
+	beginErr         error
+	recoverErr       error
 }
 
 type testDesignSystemReadService struct {
@@ -70,13 +72,13 @@ func (s *testDesignSystemMutationService) ReadDesignSystemState(_ context.Contex
 }
 func (s *testDesignSystemMutationService) BeginDesignSystemMutation(_ context.Context, companyID, projectID string, intent DesignSystemMutationIntent) (DesignSystemMutationIntent, error) {
 	s.beginCompany, s.beginProject, s.intent = companyID, projectID, intent
-	return intent, nil
+	return intent, s.beginErr
 }
 func (s *testDesignSystemMutationService) RecoverDesignSystemMutation(ctx context.Context, companyID, projectID, operationID string) (DesignSystemMutationResult, error) {
 	s.recoverCalls++
 	_, s.recoverDeadline = ctx.Deadline()
 	s.recoverCompany, s.recoverProject, s.recoverOperation = companyID, projectID, operationID
-	return s.result, nil
+	return s.result, s.recoverErr
 }
 
 func (s *testRepositoryBindingService) ReadRepositoryBinding(context.Context, string, string) (RepositoryBinding, error) {
@@ -118,7 +120,7 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	base := "/internal/v1/companies/company-a/projects/project-a/design-system"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+"/state", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"repository_id":"belluga/repo"`) || !strings.Contains(response.Body.String(), `"pending_operation"`) || service.readCompany != "company-a" || service.readProject != "project-a" {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"repository_id":"belluga/repo"`) || !strings.Contains(response.Body.String(), `"pending_operation"`) || !strings.Contains(response.Body.String(), `"code":"design_system_operation_pending"`) || !strings.Contains(response.Body.String(), `"effects":"unknown"`) || !strings.Contains(response.Body.String(), `"retry":"recover_operation"`) || service.readCompany != "company-a" || service.readProject != "project-a" {
 		t.Fatalf("Design System state GET status=%d scope=%s/%s body=%s", response.Code, service.readCompany, service.readProject, response.Body)
 	}
 
@@ -128,13 +130,13 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(string(body))))
-	if response.Code != http.StatusOK || service.beginCompany != "company-a" || service.beginProject != "project-a" || service.intent != intent {
+	if response.Code != http.StatusOK || service.beginCompany != "company-a" || service.beginProject != "project-a" || service.intent != intent || !strings.Contains(response.Body.String(), `"effects":"committed"`) || !strings.Contains(response.Body.String(), `"operation_id":"ds-op-1"`) {
 		t.Fatalf("Design System begin route status=%d scope=%s/%s intent=%+v body=%s", response.Code, service.beginCompany, service.beginProject, service.intent, response.Body)
 	}
 
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", nil))
-	if response.Code != http.StatusOK || !service.recoverDeadline || service.recoverCalls != 1 || service.recoverCompany != "company-a" || service.recoverProject != "project-a" || service.recoverOperation != intent.OperationID || !strings.Contains(response.Body.String(), `"outcome":"published"`) {
+	if response.Code != http.StatusOK || !service.recoverDeadline || service.recoverCalls != 1 || service.recoverCompany != "company-a" || service.recoverProject != "project-a" || service.recoverOperation != intent.OperationID || !strings.Contains(response.Body.String(), `"outcome":"published"`) || !strings.Contains(response.Body.String(), `"effects":"committed"`) || !strings.Contains(response.Body.String(), `"retry":"none"`) {
 		t.Fatalf("Design System recover route status=%d service=%+v body=%s", response.Code, service, response.Body)
 	}
 	response = httptest.NewRecorder()
@@ -146,6 +148,20 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(`{"operation":"create","remote_head":"`+strings.Repeat("f", 40)+`"}`)))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("begin route accepted caller-supplied verification fields: %d %s", response.Code, response.Body)
+	}
+	service.recoverErr = ErrUnavailable
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", nil))
+	var recoveryFailure errorResponse
+	if json.Unmarshal(response.Body.Bytes(), &recoveryFailure) != nil || response.Code != http.StatusServiceUnavailable || recoveryFailure.TeachDetail == nil || recoveryFailure.TeachDetail.Code != "design_system_recovery_uncertain" || recoveryFailure.TeachDetail.OperationID != "ds-op-1" || recoveryFailure.TeachDetail.Effects != TeachEffectsUnknown || recoveryFailure.TeachDetail.Retry != TeachRetryRecoverOperation {
+		t.Fatalf("uncertain recovery lacks safe operation guidance: status=%d body=%s", response.Code, response.Body)
+	}
+	service.beginErr = todoTeach("expected_binding_revision", "reload the current binding and reassess", ErrConflict)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(string(body))))
+	var rejectedBegin errorResponse
+	if json.Unmarshal(response.Body.Bytes(), &rejectedBegin) != nil || response.Code != http.StatusConflict || rejectedBegin.TeachDetail == nil || rejectedBegin.TeachDetail.Code != "registry_validation" || rejectedBegin.TeachDetail.FieldPath != "expected_binding_revision" || !strings.HasPrefix(rejectedBegin.TeachDetail.NextAction, "reload the current binding and reassess") || !strings.Contains(rejectedBegin.TeachDetail.NextAction, "only if it is the pending operation") || rejectedBegin.TeachDetail.Effects != TeachEffectsUnknown || rejectedBegin.TeachDetail.OperationID != "ds-op-1" || rejectedBegin.TeachDetail.Retry != TeachRetryReadReassess {
+		t.Fatalf("begin error lost cause or conservative operation context: status=%d body=%s", response.Code, response.Body)
 	}
 }
 
@@ -405,7 +421,9 @@ func TestTODOBodyLimitReturnsActionable413OnBothDecoderReads(t *testing.T) {
 			if h.decodeTODOLimit(recorder, request, &payload, 128) {
 				t.Fatal("oversized TODO body was accepted")
 			}
-			if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), `"error":"request_too_large"`) || !strings.Contains(recorder.Body.String(), "request.body") || !strings.Contains(recorder.Body.String(), "128-byte") {
+			var errorBody errorResponse
+			decodeErr := json.Unmarshal(recorder.Body.Bytes(), &errorBody)
+			if decodeErr != nil || recorder.Code != http.StatusRequestEntityTooLarge || errorBody.Error != "request_too_large" || errorBody.TeachDetail == nil || errorBody.TeachDetail.SchemaVersion != "1" || errorBody.TeachDetail.Code != "request_too_large" || errorBody.TeachDetail.FieldPath != "request.body" || errorBody.TeachDetail.Effects != TeachEffectsNone || !strings.Contains(recorder.Body.String(), "128-byte") {
 				t.Fatalf("wrong TODO limit response: status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
@@ -473,7 +491,9 @@ func TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP(t *testing.T) {
 	body := `{"project_id":"builder","todo_id":"todo-a","expected_revision":7,"operation_id":"local-run-7","requested_stage":"Local-Implemented","proof_refs":[],"waiver_refs":[],"local_proof":{"schema_version":"builder-local-proof-result-v3"}}`
 	response := httptest.NewRecorder()
 	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/transition", strings.NewReader(body)))
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || service.transitionCalls != 1 {
+	var errorBody errorResponse
+	decodeErr := json.Unmarshal(response.Body.Bytes(), &errorBody)
+	if decodeErr != nil || response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || errorBody.TeachDetail == nil || errorBody.TeachDetail.FieldPath != "proof_refs.criterion:criterion-build.source" || errorBody.TeachDetail.OperationID != "local-run-7" || errorBody.TeachDetail.Effects != TeachEffectsUnknown || service.transitionCalls != 1 {
 		t.Fatalf("field-specific local proof TEACH was not surfaced by HTTP: %d %s calls=%d", response.Code, response.Body.String(), service.transitionCalls)
 	}
 }

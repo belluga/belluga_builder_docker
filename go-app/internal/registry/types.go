@@ -161,6 +161,7 @@ type DesignSystemState struct {
 	Selection        DesignSystemSelection       `json:"selection"`
 	PendingOperation *DesignSystemMutationIntent `json:"pending_operation,omitempty"`
 	LastOperation    *DesignSystemMutationResult `json:"last_operation,omitempty"`
+	TeachDetail      *TeachDiagnostic            `json:"teach_detail,omitempty"`
 }
 
 type LifecycleControl struct {

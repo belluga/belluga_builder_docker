@@ -67,6 +67,7 @@ type TODOImageUploadResponse struct {
 	ImageURL        string              `json:"image_url"`
 	NoOp            bool                `json:"no_op"`
 	Teach           string              `json:"teach"`
+	TeachDetail     *TeachDiagnostic    `json:"teach_detail,omitempty"`
 }
 
 type todoImageFile struct {
@@ -155,7 +156,7 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			if existing.Path != filePath || existing.Digest != digest || existing.Description != request.Description {
 				return TODOImageUploadResponse{}, todoTeach("operation_id", "not be reused for different image bytes or description", ErrConflict)
 			}
-			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: current.TODORevision, ContentRevision: *current.ContentRevision, ContentDigest: current.ContentDigest, Attachment: existing, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, existing.ID), NoOp: true, Teach: todoImageAttachedTeach}, nil
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: current.TODORevision, ContentRevision: *current.ContentRevision, ContentDigest: current.ContentDigest, Attachment: existing, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, existing.ID), NoOp: true, Teach: todoImageAttachedTeach, TeachDetail: &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "todo_image_already_attached", FieldPath: "operation_id", NextAction: "Use the verified existing attachment returned for this exact operation ID.", OperationID: request.OperationID, Effects: TeachEffectsCommitted, Retry: TeachRetryNone}}, nil
 		}
 	}
 	if request.ExpectedRevision != current.TODORevision {
@@ -206,7 +207,7 @@ func (m *MongoStore) AttachTODOImage(ctx context.Context, companyID string, requ
 			if readErr != nil || written.ContentRevision == nil || written.ContentDigest == "" {
 				return TODOImageUploadResponse{}, ErrUnavailable
 			}
-			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, attachment.ID), Teach: todoImageAttachedTeach}, nil
+			return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: written.TODORevision, ContentRevision: *written.ContentRevision, ContentDigest: written.ContentDigest, Attachment: attachment, ImageURL: todoImageURL(companyID, request.ProjectID, request.TODOID, attachment.ID), Teach: todoImageAttachedTeach, TeachDetail: &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "todo_image_attached", FieldPath: "content.image_attachments", NextAction: "Use the returned verified attachment and current TODO revision.", OperationID: request.OperationID, Effects: TeachEffectsCommitted, Retry: TeachRetryNone}}, nil
 		}
 		if errors.Is(verifyErr, ErrConflict) {
 			return TODOImageUploadResponse{}, todoTeach("image", "match the bytes already published at the required Git path", ErrConflict)

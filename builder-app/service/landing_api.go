@@ -44,6 +44,7 @@ type landingProxyCatalog struct {
 	KnowledgeOrigin   landingProxyKnowledge `json:"knowledge_origin,omitempty"`
 	Files             []landingProxyFile    `json:"files,omitempty"`
 	Teach             string                `json:"teach,omitempty"`
+	TeachDetail       *proxyTeachDetail     `json:"teach_detail,omitempty"`
 }
 
 type landingProxyKnowledge struct {
@@ -81,11 +82,20 @@ func (p *registeredPreview) landingAPIHandler(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if response.StatusCode == http.StatusBadRequest {
-		teach := boundedRegistryDesignSystemTeach(response.Body)
-		if teach == "" {
-			teach = "TEACH: O manifesto Landing publicado não satisfaz o contrato v2; atualize o artefato fonte."
+		teach := "TEACH: O manifesto Landing publicado não satisfaz o contrato v2; atualize o artefato fonte."
+		envelope, ok := readProxyTeach(response.Body)
+		if !ok {
+			envelope = proxyTeachEnvelope{}
 		}
-		writeJSON(w, http.StatusOK, landingProxyCatalog{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: teach})
+		if safeProxyTeachText(envelope.Teach) {
+			teach = envelope.Teach
+		}
+		detail := envelope.TeachDetail
+		detail = sanitizeProxyTeachDetail(detail, "landing_invalid", teach)
+		if detail == nil {
+			detail = proxyTeachDetailFromLegacy("landing_invalid", teach)
+		}
+		writeJSON(w, http.StatusOK, landingProxyCatalog{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: teach, TeachDetail: detail})
 		return
 	}
 	if response.StatusCode != http.StatusOK {
@@ -101,6 +111,13 @@ func (p *registeredPreview) landingAPIHandler(w http.ResponseWriter, r *http.Req
 	if json.Unmarshal(data, &catalog) != nil || !validLandingCatalog(catalog, companyID, projectID) {
 		landingProxyError(w, http.StatusServiceUnavailable, "landing_response_invalid", "TEACH: Identidade, SHA, inventário ou origem Knowledge do catálogo Landing não validou.")
 		return
+	}
+	if !safeProxyTeachText(catalog.Teach) {
+		catalog.Teach = ""
+	}
+	catalog.TeachDetail = sanitizeProxyTeachDetail(catalog.TeachDetail, "landing_diagnostic", catalog.Teach)
+	if catalog.TeachDetail == nil && catalog.State == "invalid" {
+		catalog.TeachDetail = proxyTeachDetailFromLegacy("landing_invalid", catalog.Teach)
 	}
 	for i := range catalog.Files {
 		catalog.Files[i].URL = landingProxyFileURL(companyID, projectID, catalog.BindingRevision, catalog.Revision, catalog.InventoryDigest, catalog.Files[i].Path)
@@ -298,11 +315,11 @@ func readBoundedLandingJSON(body io.Reader) ([]byte, error) {
 }
 
 func landingProxyNotAuthored(w http.ResponseWriter, companyID, projectID, teach string) {
-	writeJSON(w, http.StatusOK, landingProxyCatalog{State: "not_authored", CompanyID: companyID, ProjectID: projectID, Teach: teach})
+	writeJSON(w, http.StatusOK, landingProxyCatalog{State: "not_authored", CompanyID: companyID, ProjectID: projectID, Teach: teach, TeachDetail: proxyTeachDetailFromLegacy("landing_not_authored", teach)})
 }
 
 func landingProxyError(w http.ResponseWriter, status int, code, teach string) {
-	writeJSON(w, status, map[string]string{"error": code, "teach": teach})
+	writeProxyTeachError(w, status, code, teach, proxyTeachEnvelope{})
 }
 
 func landingProxyRegistryFailure(w http.ResponseWriter, response *http.Response) {
@@ -314,8 +331,9 @@ func landingProxyRegistryFailure(w http.ResponseWriter, response *http.Response)
 	} else if response.StatusCode == http.StatusBadRequest {
 		status, code, teach = http.StatusBadRequest, "landing_invalid", "TEACH: O manifesto Landing publicado não satisfaz o contrato v2; corrija o artefato fonte."
 	}
-	if message := boundedRegistryDesignSystemTeach(response.Body); message != "" {
-		teach = message
+	envelope, ok := readProxyTeach(response.Body)
+	if !ok {
+		envelope = proxyTeachEnvelope{}
 	}
-	landingProxyError(w, status, code, teach)
+	writeProxyTeachError(w, status, code, teach, envelope)
 }

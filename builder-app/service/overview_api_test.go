@@ -33,8 +33,59 @@ func TestOverviewProxyRequiresRegistryIdentityAndValidatesInvalidState(t *testin
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 	var got overviewProxyResponse
-	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil || got.State != "invalid" || got.Teach == "" {
+	if err := json.Unmarshal(recorder.Body.Bytes(), &got); err != nil || got.State != "invalid" || got.Teach == "" || got.TeachDetail == nil || got.TeachDetail.Code != "overview_invalid" {
 		t.Fatalf("invalid state was not preserved: %#v err=%v", got, err)
+	}
+}
+
+func TestOverviewProxyPreservesActualUnprefixedRegistryTeach(t *testing.T) {
+	const company, project = "belluga", "builder"
+	content := json.RawMessage(`{"schema_version":"1","tagline":"Purpose","summary":"Summary","desktop_alt":"Desktop","mobile_alt":"Mobile","sections":{"problem":{"heading":"Problem","body":"Body","points":[]},"proposal":{"heading":"Proposal","body":"Body","points":[]},"impact":{"heading":"Impact","body":"Body","points":[]},"audience":{"heading":"Audience","body":"Body","points":[]}}}`)
+	digest := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	cases := []struct {
+		state, teach string
+		response     overviewProxyResponse
+	}{
+		{"not_authored", "Create an Overview through the Project-scoped API.", overviewProxyResponse{State: "not_authored", CompanyID: company, ProjectID: project, Teach: "Create an Overview through the Project-scoped API.", TeachDetail: &proxyTeachDetail{SchemaVersion: "1", Code: "overview_not_authored", NextAction: "Create an Overview through the Project-scoped API."}}},
+		{"invalid", "The declared current Overview revision is missing; repair it before use.", overviewProxyResponse{State: "invalid", CompanyID: company, ProjectID: project, Teach: "The declared current Overview revision is missing; repair it before use.", TeachDetail: &proxyTeachDetail{SchemaVersion: "1", Code: "overview_invalid", NextAction: "Repair the declared current Overview revision before using it."}}},
+		{"stale", "The Overview Knowledge origin is stale; refresh and re-author against current Knowledge before relying on it.", overviewProxyResponse{State: "stale", CompanyID: company, ProjectID: project, Revision: 5, Content: content, Media: []overviewProxyMedia{{Slot: "desktop", Digest: digest}, {Slot: "mobile", Digest: digest}}, KnowledgeOrigin: json.RawMessage(`{"origin":"stale"}`), Source: json.RawMessage(`{"source":"test"}`), Teach: "The Overview Knowledge origin is stale; refresh and re-author against current Knowledge before relying on it.", TeachDetail: &proxyTeachDetail{SchemaVersion: "1", Code: "overview_stale", NextAction: "Refresh and re-author against current Knowledge before relying on this Overview."}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.state, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/internal/v1/catalog" {
+					writeJSON(w, http.StatusOK, map[string]any{"schema_version": "1", "companies": []any{map[string]string{"id": company}}, "projects": []any{map[string]string{"id": project, "company_id": company}}})
+					return
+				}
+				writeJSON(w, http.StatusOK, tc.response)
+			}))
+			defer upstream.Close()
+			p := &registeredPreview{registryURL: upstream.URL, client: upstream.Client()}
+			w := httptest.NewRecorder()
+			p.overviewAPIHandler(w, httptest.NewRequest(http.MethodGet, "/api/overview?company_id="+company+"&project_id="+project, nil))
+			var got overviewProxyResponse
+			if json.Unmarshal(w.Body.Bytes(), &got) != nil || w.Code != http.StatusOK || got.State != tc.state || got.Teach != tc.teach || got.TeachDetail == nil || strings.TrimSpace(got.TeachDetail.NextAction) == "" {
+				t.Fatalf("Registry Overview Teach/state was not preserved: status=%d body=%s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func TestOverviewProxyRegistryErrorsProjectTeachDetail(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			writeJSON(w, 200, map[string]any{"schema_version": "1", "companies": []any{map[string]string{"id": "belluga"}}, "projects": []any{map[string]string{"id": "builder", "company_id": "belluga"}}})
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"conflict","teach":"TEACH: Reload Overview.","teach_detail":{"schema_version":"1","code":"overview_conflict","field_path":"expected_revision","next_action":"Reload the current Overview before editing."},"private":"secret"}`))
+	}))
+	defer upstream.Close()
+	p := &registeredPreview{registryURL: upstream.URL, client: upstream.Client()}
+	w := httptest.NewRecorder()
+	p.overviewAPIHandler(w, httptest.NewRequest(http.MethodGet, "/api/overview?company_id=belluga&project_id=builder", nil))
+	if w.Code != http.StatusConflict || strings.Contains(w.Body.String(), "secret") || !strings.Contains(w.Body.String(), `"error":"overview_selection_changed"`) || !strings.Contains(w.Body.String(), `"field_path":"expected_revision"`) {
+		t.Fatalf("Registry error projection: %d %s", w.Code, w.Body.String())
 	}
 }
 

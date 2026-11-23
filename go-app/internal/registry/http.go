@@ -271,9 +271,10 @@ const (
 )
 
 func writeSessionGuardError(w http.ResponseWriter, status int, code, teach string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(errorResponse{Error: code, Teach: teach})
+	writeErrorEnvelope(w, status, errorResponse{
+		Error: code, Teach: teach,
+		TeachDetail: &TeachDiagnostic{Code: code, NextAction: teach},
+	})
 }
 
 func sessionScopeGuard(next http.Handler, service Service) http.Handler {
@@ -400,7 +401,7 @@ func (h *Handler) roadmapChange(action string) http.HandlerFunc {
 			}
 		}
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
-		h.respond(w, value, err)
+		h.respondMutation(w, value, err, input.OperationID)
 	}
 }
 
@@ -605,7 +606,7 @@ func (h *Handler) releaseSequencingPlanChange(action string) http.HandlerFunc {
 			return
 		}
 		value, err := service.ChangeRoadmap(r.Context(), strings.TrimSpace(r.PathValue("companyID")), action, input)
-		h.respond(w, value, err)
+		h.respondMutation(w, value, err, input.OperationID)
 	}
 }
 
@@ -615,6 +616,81 @@ type errorResponse struct {
 	Teach        string                    `json:"teach,omitempty"`
 	TeachDetail  *CanonicalTeachDiagnostic `json:"teach_detail,omitempty"`
 	TODORevision *int64                    `json:"todo_revision,omitempty"`
+}
+
+const maxTeachErrorEnvelopeBytes = 64 << 10
+
+func writeErrorEnvelope(w http.ResponseWriter, status int, response errorResponse) {
+	if response.TeachDetail != nil {
+		diagnostic := response.TeachDetail.normalizedForResponse()
+		response.TeachDetail = &diagnostic
+	}
+	validFields := validLegacyTeachFields(response) && (response.TeachDetail == nil || response.TeachDetail.withinFieldBounds())
+	var body []byte
+	var err error
+	if validFields {
+		body, err = json.Marshal(response)
+	}
+	if !validFields || err != nil || len(body)+1 > maxTeachErrorEnvelopeBytes {
+		// Retain legacy state/revision and a minimal v1 diagnostic. Do not emit
+		// truncated or malformed JSON when optional knowledge guidance is large.
+		fallback := errorResponse{
+			Error: safeTeachText(response.Error, "registry_error"), State: safeTeachText(response.State, ""),
+			Teach: safeTeachText(response.Teach, ""), TODORevision: response.TODORevision,
+		}
+		if detail := response.TeachDetail; detail != nil {
+			minimal := TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "registry_diagnostic", NextAction: "Review the request and consult the owning Registry operation before proceeding.", OperationID: safeTeachText(detail.OperationID, ""), Revision: detail.Revision}
+			if validTeachEffect(detail.Effects) {
+				minimal.Effects = detail.Effects
+			}
+			if validTeachRetry(detail.Retry) {
+				minimal.Retry = detail.Retry
+			}
+			fallback.TeachDetail = &minimal
+		} else {
+			fallback.TeachDetail = &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "registry_diagnostic", NextAction: "Review the request and consult the owning Registry operation before proceeding."}
+		}
+		body, _ = json.Marshal(fallback)
+		if len(body)+1 > maxTeachErrorEnvelopeBytes {
+			fallback.Teach = ""
+			body, _ = json.Marshal(fallback)
+		}
+		if len(body)+1 > maxTeachErrorEnvelopeBytes {
+			fallback.TeachDetail.OperationID = ""
+			fallback.TeachDetail.Revision = nil
+			body, _ = json.Marshal(fallback)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(append(body, '\n'))
+}
+
+func validTeachEffect(value string) bool {
+	switch value {
+	case TeachEffectsNone, TeachEffectsCommitted, TeachEffectsUnknown, TeachEffectsNotApplicable:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTeachRetry(value string) bool {
+	switch value {
+	case TeachRetryNone, TeachRetrySameOperation, TeachRetryReadReassess, TeachRetryRestoreService, TeachRetryRecoverOperation:
+		return true
+	default:
+		return false
+	}
+}
+
+func validLegacyTeachFields(response errorResponse) bool {
+	for _, value := range []string{response.Error, response.State, response.Teach} {
+		if len(value) > 2<<10 || !utf8.ValidString(value) {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) catalog(w http.ResponseWriter, r *http.Request) {
@@ -646,7 +722,7 @@ func (h *Handler) bindSession(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := service.BindSession(r.Context(), request)
 	if err != nil {
-		h.writeError(w, err)
+		h.writeError(w, withTeachDiagnostic(err, mutationErrorDiagnostic(err, request.OperationID)))
 		return
 	}
 	writeSessionJSON(w, http.StatusCreated, session)
@@ -720,7 +796,7 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		value, err := h.service.Register(r.Context(), input)
-		h.respond(w, value, err)
+		h.respondMutation(w, value, err, "")
 	}
 }
 func (h *Handler) bindFirst(w http.ResponseWriter, r *http.Request) {
@@ -750,7 +826,7 @@ func (h *Handler) changeRepositoryBinding(w http.ResponseWriter, r *http.Request
 		return
 	}
 	value, err := service.ChangeRepositoryBinding(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 func (h *Handler) designSystemService(w http.ResponseWriter) (designSystemMutationService, bool) {
 	service, ok := h.service.(designSystemMutationService)
@@ -765,8 +841,22 @@ func (h *Handler) readDesignSystemState(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	value, err := service.ReadDesignSystemState(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")))
+	if err == nil && value.PendingOperation != nil {
+		value.TeachDetail = &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "design_system_operation_pending", FieldPath: "pending_operation", NextAction: "Recover this exact pending operation through its operation-specific recovery route before starting another mutation.", OperationID: value.PendingOperation.OperationID, Effects: TeachEffectsUnknown, Retry: TeachRetryRecoverOperation}
+	}
 	h.respond(w, value, err)
 }
+
+type designSystemIntentResponse struct {
+	DesignSystemMutationIntent
+	TeachDetail *TeachDiagnostic `json:"teach_detail,omitempty"`
+}
+
+type designSystemResultResponse struct {
+	DesignSystemMutationResult
+	TeachDetail *TeachDiagnostic `json:"teach_detail,omitempty"`
+}
+
 func (h *Handler) beginDesignSystemMutation(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.designSystemService(w)
 	if !ok {
@@ -777,7 +867,12 @@ func (h *Handler) beginDesignSystemMutation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	value, err := service.BeginDesignSystemMutation(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
-	h.respond(w, value, err)
+	if err != nil {
+		h.writeError(w, withTeachDiagnostic(err, designSystemErrorDiagnostic(err, input.OperationID, false)))
+		return
+	}
+	detail := TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "design_system_intent_persisted", FieldPath: "operation", NextAction: "Continue the existing Design System workflow for this persisted operation.", OperationID: value.OperationID, Effects: TeachEffectsCommitted, Retry: TeachRetryNone}
+	h.respond(w, designSystemIntentResponse{DesignSystemMutationIntent: value, TeachDetail: &detail}, nil)
 }
 func (h *Handler) recoverDesignSystemMutation(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.designSystemService(w)
@@ -791,7 +886,13 @@ func (h *Handler) recoverDesignSystemMutation(w http.ResponseWriter, r *http.Req
 	ctx, cancel := context.WithTimeout(r.Context(), designSystemRecoveryTimeout)
 	defer cancel()
 	value, err := service.RecoverDesignSystemMutation(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), strings.TrimSpace(r.PathValue("operationID")))
-	h.respond(w, value, err)
+	operationID := strings.TrimSpace(r.PathValue("operationID"))
+	if err != nil {
+		h.writeError(w, withTeachDiagnostic(err, designSystemErrorDiagnostic(err, operationID, true)))
+		return
+	}
+	detail := TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "design_system_recovered", FieldPath: "operation_id", NextAction: "Use the returned persisted outcome and current Design System state.", OperationID: value.OperationID, Effects: TeachEffectsCommitted, Retry: TeachRetryNone}
+	h.respond(w, designSystemResultResponse{DesignSystemMutationResult: value, TeachDetail: &detail}, nil)
 }
 func (h *Handler) readDesignSystem(w http.ResponseWriter, r *http.Request) {
 	service, ok := h.designSystemReadService(w)
@@ -905,7 +1006,7 @@ func (h *Handler) writeOverview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), overviewReadTimeout)
 	defer cancel()
 	value, err := service.WriteOverview(ctx, strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) readOverview(w http.ResponseWriter, r *http.Request) {
@@ -992,7 +1093,7 @@ func (h *Handler) updateLifecycleControl(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	value, err := h.service.UpdateLifecycleControl(r.Context(), input.ExpectedRevision, input.Value)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, "")
 }
 func (h *Handler) roadmap(w http.ResponseWriter, r *http.Request) {
 	companyID := strings.TrimSpace(r.PathValue("companyID"))
@@ -1024,7 +1125,7 @@ func (h *Handler) admitTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := admitter.AdmitTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), strings.TrimSpace(r.PathValue("projectID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) adoptHistoricalTODOStages(w http.ResponseWriter, r *http.Request) {
@@ -1043,7 +1144,7 @@ func (h *Handler) adoptHistoricalTODOStages(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	value, err := adopter.AdoptHistoricalTODOStages(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) todoCreationTemplate(w http.ResponseWriter, r *http.Request) {
@@ -1096,7 +1197,7 @@ func (h *Handler) removeTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.RemoveTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) transitionTODO(w http.ResponseWriter, r *http.Request) {
@@ -1114,7 +1215,7 @@ func (h *Handler) transitionTODO(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := lifecycle.TransitionTODO(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) verifyCurrentTODOStage(w http.ResponseWriter, r *http.Request) {
@@ -1132,7 +1233,7 @@ func (h *Handler) verifyCurrentTODOStage(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	value, err := lifecycle.VerifyCurrentTODOStage(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) readTODOHistory(w http.ResponseWriter, r *http.Request) {
@@ -1209,7 +1310,7 @@ func (h *Handler) editTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) migrateTODOContent(w http.ResponseWriter, r *http.Request) {
@@ -1227,7 +1328,7 @@ func (h *Handler) migrateTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := migrator.MigrateTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) restoreTODOContent(w http.ResponseWriter, r *http.Request) {
@@ -1245,7 +1346,7 @@ func (h *Handler) restoreTODOContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.RestoreTODOContent(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
@@ -1263,7 +1364,7 @@ func (h *Handler) editTODOEvidence(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOEvidence(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) grantTODOReviewWaiver(w http.ResponseWriter, r *http.Request) {
@@ -1281,7 +1382,7 @@ func (h *Handler) grantTODOReviewWaiver(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	value, err := service.GrantTODOReviewWaiver(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
@@ -1299,7 +1400,7 @@ func (h *Handler) editTODOPlacement(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODOPlacement(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) editTODONextStep(w http.ResponseWriter, r *http.Request) {
@@ -1317,7 +1418,7 @@ func (h *Handler) editTODONextStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditTODONextStep(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.Request) {
@@ -1335,7 +1436,7 @@ func (h *Handler) normalizeTODOSectionOwnership(w http.ResponseWriter, r *http.R
 		return
 	}
 	value, err := service.NormalizeTODOSectionOwnership(r.Context(), strings.TrimSpace(r.PathValue("companyID")), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalTemplate(w http.ResponseWriter, r *http.Request) {
@@ -1404,7 +1505,7 @@ func (h *Handler) canonicalImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.ImportCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalDraftCreate(w http.ResponseWriter, r *http.Request) {
@@ -1422,7 +1523,7 @@ func (h *Handler) canonicalDraftCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.CreateCanonicalDraft(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalCreate(w http.ResponseWriter, r *http.Request) {
@@ -1440,7 +1541,7 @@ func (h *Handler) canonicalCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.CreateCanonical(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalActivate(w http.ResponseWriter, r *http.Request) {
@@ -1463,7 +1564,7 @@ func (h *Handler) canonicalActivate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.ActivateCanonical(r.Context(), r.PathValue("companyID"), input.ProjectID, input.GenerationID, input.OperationID, input.Actor)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalRead(w http.ResponseWriter, r *http.Request) {
@@ -1502,7 +1603,7 @@ func (h *Handler) canonicalEdit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.EditCanonical(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalDelete(w http.ResponseWriter, r *http.Request) {
@@ -1520,7 +1621,7 @@ func (h *Handler) canonicalDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.DeleteCanonical(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalRestore(w http.ResponseWriter, r *http.Request) {
@@ -1538,7 +1639,7 @@ func (h *Handler) canonicalRestore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	value, err := service.RestoreCanonical(r.Context(), r.PathValue("companyID"), input)
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, input.OperationID)
 }
 
 func (h *Handler) canonicalHistory(w http.ResponseWriter, r *http.Request) {
@@ -1662,11 +1763,10 @@ func (h *Handler) writeTODOBodyLimit(w http.ResponseWriter, err error, limit int
 	if !errors.As(err, &tooLarge) {
 		return false
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusRequestEntityTooLarge)
-	_ = json.NewEncoder(w).Encode(errorResponse{
-		Error: "request_too_large",
-		Teach: fmt.Sprintf("TEACH: request.body exceeds this TODO route's %d-byte limit; reduce the JSON payload and retry the same operation only after it fits", limit),
+	teach := fmt.Sprintf("TEACH: request.body exceeds this TODO route's %d-byte limit; reduce the JSON payload and retry the same operation only after it fits", limit)
+	writeErrorEnvelope(w, http.StatusRequestEntityTooLarge, errorResponse{
+		Error: "request_too_large", Teach: teach,
+		TeachDetail: &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "request_too_large", FieldPath: "request.body", NextAction: "Reduce the JSON payload to fit this route's request limit before submitting it.", Effects: TeachEffectsNone},
 	})
 	return true
 }
@@ -1678,6 +1778,14 @@ func (h *Handler) respond(w http.ResponseWriter, value any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func (h *Handler) respondMutation(w http.ResponseWriter, value any, err error, operationID string) {
+	if err != nil {
+		h.writeError(w, withTeachDiagnostic(err, mutationErrorDiagnostic(err, operationID)))
+		return
+	}
+	h.respond(w, value, nil)
 }
 func (h *Handler) respondRaw(w http.ResponseWriter, value json.RawMessage, err error) {
 	if err != nil {
@@ -1702,9 +1810,8 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrConflict):
 		status, code = http.StatusConflict, ErrConflict.Error()
 	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
 	response := errorResponse{Error: code}
+	response.TeachDetail = registryErrorDiagnostic(err, code)
 	var teach *TODOValidationError
 	if errors.As(err, &teach) {
 		response.Teach = teach.Error()
@@ -1712,7 +1819,6 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 	var canonicalTeach *canonicalTeachError
 	if errors.As(err, &canonicalTeach) {
 		response.Teach = canonicalTeach.Error()
-		response.TeachDetail = &canonicalTeach.Diagnostic
 		if canonicalTeach.Diagnostic.Code == "canonical_pending" {
 			response.State = "pending"
 		}
@@ -1722,5 +1828,30 @@ func (h *Handler) writeError(w http.ResponseWriter, err error) {
 		response.TODORevision = &revisionConflict.Revision
 		response.Teach = revisionConflict.Error()
 	}
-	_ = json.NewEncoder(w).Encode(response)
+	if explicit := explicitTeachDiagnostic(err); explicit != nil {
+		response.TeachDetail = explicit
+	}
+	writeErrorEnvelope(w, status, response)
+}
+
+func defaultRegistryDiagnostic(code string) *TeachDiagnostic {
+	diagnostic := &TeachDiagnostic{Code: "registry_error"}
+	switch code {
+	case ErrInvalid.Error():
+		diagnostic.Code = "registry_invalid"
+		diagnostic.NextAction = "correct the typed request using the owning Registry API contract"
+	case ErrNotFound.Error():
+		diagnostic.Code = "registry_not_found"
+		diagnostic.NextAction = "confirm the exact resource identity and read the current Registry state"
+	case ErrConflict.Error():
+		diagnostic.Code = "registry_conflict"
+		diagnostic.NextAction = "read the current resource and reassess the request before submitting again"
+		diagnostic.Retry = TeachRetryReadReassess
+	case ErrUnavailable.Error():
+		diagnostic.Code = "registry_unavailable"
+		diagnostic.NextAction = "restore the Registry dependency, then read current state before continuing"
+	default:
+		diagnostic.NextAction = "consult the owning Registry operation and read current state before continuing"
+	}
+	return diagnostic
 }

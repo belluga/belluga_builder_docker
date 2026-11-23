@@ -170,6 +170,10 @@ func TestConversationLaneEnforcesImmutableProjectBinding(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing session identity status=%d body=%s", response.Code, response.Body)
 	}
+	var guardBody errorResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &guardBody); err != nil || guardBody.Error != "session_required" || guardBody.Teach == "" || guardBody.TeachDetail == nil || guardBody.TeachDetail.SchemaVersion != "1" || guardBody.TeachDetail.Code != guardBody.Error || guardBody.TeachDetail.NextAction != guardBody.Teach {
+		t.Fatalf("missing-session diagnostic changed legacy response or lacks v1 detail: body=%s error=%v", response.Body, err)
+	}
 }
 
 func TestConversationLaneRejectsForeignProjectAcrossRoutes(t *testing.T) {

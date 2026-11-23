@@ -153,7 +153,7 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if attached.NoOp || attached.TODORevision != 1 || attached.ContentRevision != 1 || attached.Attachment.Path != imageStore.path || attached.Attachment.Digest == "" || attached.ImageURL != "/api/todo-images/company-a/builder/image-reference-todo/"+attached.Attachment.ID || imageStore.reads < 1 {
+	if attached.NoOp || attached.TODORevision != 1 || attached.ContentRevision != 1 || attached.Attachment.Path != imageStore.path || attached.Attachment.Digest == "" || attached.ImageURL != "/api/todo-images/company-a/builder/image-reference-todo/"+attached.Attachment.ID || attached.TeachDetail == nil || attached.TeachDetail.Code != "todo_image_attached" || attached.TeachDetail.OperationID != request.OperationID || attached.TeachDetail.Effects != TeachEffectsCommitted || imageStore.reads < 1 {
 		t.Fatalf("wrong linked attachment: %+v", attached)
 	}
 	read, err := store.ReadTODO(ctx, "company-a", "builder", record.ID, nil)
@@ -240,7 +240,7 @@ func TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes(t *testing.T) {
 		t.Fatalf("cross-TODO read: %v", err)
 	}
 	noOp, err := store.AttachTODOImage(ctx, "company-a", request)
-	if err != nil || !noOp.NoOp || noOp.TODORevision != 1 || noOp.ImageURL != attached.ImageURL {
+	if err != nil || !noOp.NoOp || noOp.TODORevision != 1 || noOp.ImageURL != attached.ImageURL || noOp.TeachDetail == nil || noOp.TeachDetail.Code != "todo_image_already_attached" || noOp.TeachDetail.OperationID != request.OperationID || noOp.TeachDetail.Effects != TeachEffectsCommitted {
 		t.Fatalf("same operation retry: %+v %v", noOp, err)
 	}
 	request.Description = "Changed description"

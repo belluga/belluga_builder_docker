@@ -98,8 +98,10 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 		}
 	}
 	failedOnce := false
+	backfillVersion := companySchemaCatalog[len(companySchemaCatalog)-1].version + 1
+	completeHistoryLength := len(companySchemaCatalog) + 1
 	store.schemaMigrations = append(append([]companySchemaStep{}, companySchemaCatalog...), companySchemaStep{
-		version: 3, definition: "test-only-safe-project-backfill-v3",
+		version: backfillVersion, definition: "test-only-safe-project-backfill",
 		apply: func(ctx context.Context, m *MongoStore, company Company) error {
 			collection := m.client.Database(company.DatabaseName).Collection(projectsCollection)
 			if company.ID == "company-b" && !failedOnce {
@@ -139,24 +141,24 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	if len(lines) != 3 || lines[2]["complete"] != false || lines[2]["failed"] != float64(1) {
 		t.Fatalf("incomplete report = %s", report.String())
 	}
-	if lines[0]["company_id"] != "company-a" || !reflect.DeepEqual(lines[0]["applied_versions"], []any{float64(3)}) ||
-		lines[1]["company_id"] != "company-b" || lines[1]["failed_version"] != float64(3) || !reflect.DeepEqual(lines[1]["pending_versions"], []any{float64(3)}) {
+	if lines[0]["company_id"] != "company-a" || !reflect.DeepEqual(lines[0]["applied_versions"], []any{float64(backfillVersion)}) ||
+		lines[1]["company_id"] != "company-b" || lines[1]["failed_version"] != float64(backfillVersion) || !reflect.DeepEqual(lines[1]["pending_versions"], []any{float64(backfillVersion)}) {
 		t.Fatalf("per-Company version report = %s", report.String())
 	}
 	companyA, err := store.rawCompany(ctx, "company-a")
-	if err != nil || len(companyA.SchemaMigrations) != 3 {
-		t.Fatalf("verified Company must retain both versions: %+v, %v", companyA, err)
+	if err != nil || len(companyA.SchemaMigrations) != completeHistoryLength {
+		t.Fatalf("verified Company must retain the full catalog and backfill version: %+v, %v", companyA, err)
 	}
 	stale := companyA
-	stale.SchemaMigrations = stale.SchemaMigrations[:2]
+	stale.SchemaMigrations = stale.SchemaMigrations[:len(companySchemaCatalog)]
 	store.markCompanySchemaFailed(ctx, stale)
 	companyA, err = store.rawCompany(ctx, "company-a")
 	if err != nil || companyA.SchemaState != "ready" {
 		t.Fatalf("stale failure overwrote a winner's ready state: %+v, %v", companyA, err)
 	}
 	companyB, err := store.rawCompany(ctx, "company-b")
-	if err != nil || len(companyB.SchemaMigrations) != 2 {
-		t.Fatalf("partial Company must not record v2: %+v, %v", companyB, err)
+	if err != nil || len(companyB.SchemaMigrations) != len(companySchemaCatalog) {
+		t.Fatalf("partial Company must not record backfill version %d: %+v, %v", backfillVersion, companyB, err)
 	}
 	report.Reset()
 	if err := store.MigrateAllCompanies(ctx, &report); err != nil || !strings.Contains(report.String(), `"complete":true`) {
@@ -164,14 +166,14 @@ func TestCompanyMigrateAllAppliesPendingVersionsAndResumesPartialBackfill(t *tes
 	}
 	companyA, _ = store.rawCompany(ctx, "company-a")
 	companyB, _ = store.rawCompany(ctx, "company-b")
-	if len(companyA.SchemaMigrations) != 3 || len(companyB.SchemaMigrations) != 3 {
+	if len(companyA.SchemaMigrations) != completeHistoryLength || len(companyB.SchemaMigrations) != completeHistoryLength {
 		t.Fatalf("retry duplicated or skipped history: A=%d B=%d", len(companyA.SchemaMigrations), len(companyB.SchemaMigrations))
 	}
 	if _, err := store.Register(ctx, Registration{CompanyID: "company-c", CompanyName: "company-c", ProjectID: "project-a", ProjectName: "project-a"}); err != nil {
 		t.Fatalf("fresh Company must run full catalog: %v", err)
 	}
 	companyC, _ := store.rawCompany(ctx, "company-c")
-	if len(companyC.SchemaMigrations) != 3 {
+	if len(companyC.SchemaMigrations) != completeHistoryLength {
 		t.Fatalf("fresh Company versions = %d", len(companyC.SchemaMigrations))
 	}
 	inventoryCtx, stopInventory := context.WithCancel(ctx)
@@ -331,7 +333,7 @@ func TestCompanyMigrateAllAdoptsExactLegacySchemaAndRejectsUnknownDrift(t *testi
 		t.Fatalf("exact legacy adoption: %v; report=%s", err, report.String())
 	}
 	company, err := store.rawCompany(ctx, "company-a")
-	if err != nil || len(company.SchemaMigrations) != 2 || company.SchemaState != "ready" {
+	if err != nil || len(company.SchemaMigrations) != len(companySchemaCatalog) || company.SchemaState != "ready" {
 		t.Fatalf("legacy migration history: %+v, %v", company, err)
 	}
 	if _, err := store.Project(ctx, "company-a", "project-a"); err != nil {

@@ -37,6 +37,7 @@ type ProjectPortfolio struct {
 	ProjectID         string              `json:"project_id"`
 	State             string              `json:"state"`
 	Teach             string              `json:"teach,omitempty"`
+	TeachDetail       *TeachDiagnostic    `json:"teach_detail,omitempty"`
 	RepositoryID      string              `json:"repository_id,omitempty"`
 	PublicationBranch string              `json:"publication_branch,omitempty"`
 	BindingRevision   int64               `json:"binding_revision,omitempty"`
@@ -87,7 +88,7 @@ func (m *MongoStore) ReadPortfolioCatalog(ctx context.Context, companyID string)
 		}
 		item, readErr := m.ReadProjectPortfolio(ctx, companyID, record.ID)
 		if readErr != nil {
-			item = ProjectPortfolio{CompanyID: companyID, ProjectID: record.ID, State: portfolioErrorState(readErr), Teach: portfolioTeach(readErr)}
+			item = ProjectPortfolio{CompanyID: companyID, ProjectID: record.ID, State: portfolioErrorState(readErr), Teach: portfolioTeach(readErr), TeachDetail: portfolioTeachDetail(readErr)}
 		}
 		result.Projects = append(result.Projects, item)
 	}
@@ -95,6 +96,17 @@ func (m *MongoStore) ReadPortfolioCatalog(ctx context.Context, companyID string)
 		return PortfolioCatalogResponse{}, ErrUnavailable
 	}
 	return result, nil
+}
+
+func portfolioTeachDetail(err error) *TeachDiagnostic {
+	code, field, action := "portfolio_unavailable", "portfolio", "Restore verifiable Portfolio Git access, then read the catalog again."
+	switch {
+	case errors.Is(err, ErrNotFound):
+		code, field, action = "portfolio_not_authored", "portfolio.publication", "Publish project_portfolio.json v1 at the bound Git revision."
+	case errors.Is(err, ErrInvalid):
+		code, field, action = "portfolio_invalid", "portfolio", "Correct project_portfolio.json to the strict v1 summary contract."
+	}
+	return readTeach(code, field, action)
 }
 
 func portfolioErrorState(err error) string {

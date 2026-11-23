@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
@@ -18,6 +19,37 @@ import (
 
 func canonicalTestRecord(family CanonicalFamily, id string, payload string) CanonicalImportRecord {
 	return CanonicalImportRecord{Family: family, Record: CanonicalRecord{ID: id, ProjectID: "builder", GenerationID: "g1", Revision: 1, Payload: json.RawMessage(payload)}}
+}
+
+type pendingCanonicalHTTPService struct {
+	testService
+	canonicalKnowledgeService
+}
+
+func (pendingCanonicalHTTPService) CanonicalManifest(context.Context, string, string, string) (CanonicalManifest, error) {
+	teach := canonicalPending().Diagnostic
+	return CanonicalManifest{ProjectID: "builder", Active: false, State: "pending", TeachDetail: &teach, Documents: []CanonicalManifestEntry{}}, nil
+}
+
+func (pendingCanonicalHTTPService) ReadCanonical(context.Context, string, string, CanonicalFamily, string) (CanonicalRecord, error) {
+	return CanonicalRecord{}, canonicalPending()
+}
+
+func TestPendingCanonicalHandlerEmitsVersionedDiagnostic(t *testing.T) {
+	handler := NewHandler(&pendingCanonicalHTTPService{})
+	base := "/internal/v1/companies/company-a/projects/builder/knowledge/"
+	manifestResponse := httptest.NewRecorder()
+	handler.ServeHTTP(manifestResponse, httptest.NewRequest("GET", base+"manifest", nil))
+	var manifest CanonicalManifest
+	if err := json.Unmarshal(manifestResponse.Body.Bytes(), &manifest); err != nil || manifestResponse.Code != 200 || manifest.State != "pending" || manifest.TeachDetail == nil || manifest.TeachDetail.SchemaVersion != "1" || manifest.TeachDetail.Code != "canonical_pending" {
+		t.Fatalf("pending manifest response=%s status=%d error=%v", manifestResponse.Body, manifestResponse.Code, err)
+	}
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, httptest.NewRequest("GET", base+"project_mandate/builder", nil))
+	var body errorResponse
+	if err := json.Unmarshal(readResponse.Body.Bytes(), &body); err != nil || readResponse.Code != 404 || body.State != "pending" || body.TeachDetail == nil || body.TeachDetail.SchemaVersion != "1" || body.TeachDetail.Code != "canonical_pending" {
+		t.Fatalf("pending read response=%s status=%d error=%v", readResponse.Body, readResponse.Code, err)
+	}
 }
 
 func TestCanonicalTemplateDescribesCompleteTypedPayloadsAndDraftLimit(t *testing.T) {
@@ -238,7 +270,7 @@ func TestMongoCanonicalKnowledgeDraftActivationHistoryAndCAS(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("GET", base+"project_mandate/builder", nil))
 	var pendingBody errorResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &pendingBody); err != nil || response.Code != 404 || pendingBody.State != "pending" || pendingBody.TeachDetail == nil || pendingBody.TeachDetail.Code != "canonical_pending" {
+	if err := json.Unmarshal(response.Body.Bytes(), &pendingBody); err != nil || response.Code != 404 || pendingBody.State != "pending" || pendingBody.TeachDetail == nil || pendingBody.TeachDetail.SchemaVersion != "1" || pendingBody.TeachDetail.Code != "canonical_pending" {
 		t.Fatalf("pending read=%s status=%d error=%v", response.Body, response.Code, err)
 	}
 	input := CanonicalImport{ProjectID: "builder", GenerationID: "g1", SourceRevision: "6dd3f957b9bbcdb8e3d6131c3e6f22ea5d6865b7", OperationID: "import-1", Actor: "migration-agent", Records: []CanonicalImportRecord{
@@ -684,6 +716,44 @@ func TestMongoCanonicalAPIBornDraftOnUnboundProjectIsIdempotentAndRequiresActiva
 	}
 	handler := NewHandler(store)
 	base := "/internal/v1/companies/company-api-born/projects/unbound/knowledge/drafts/api-born"
+	duplicateFirst := records[0]
+	duplicateFirst.Record.ProjectID, duplicateFirst.Record.GenerationID = "unbound", "duplicate-generation"
+	duplicateInput := CanonicalDraftCreate{ProjectID: "unbound", GenerationID: "duplicate-generation", Records: []CanonicalImportRecord{duplicateFirst, duplicateFirst}, OperationID: "duplicate-family-op", Actor: "genesis-agent"}
+	duplicateBody, err := json.Marshal(duplicateInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateResponse := httptest.NewRecorder()
+	handler.ServeHTTP(duplicateResponse, httptest.NewRequest("POST", base, strings.NewReader(string(duplicateBody))))
+	var duplicateFailure errorResponse
+	if json.Unmarshal(duplicateResponse.Body.Bytes(), &duplicateFailure) != nil || duplicateResponse.Code != http.StatusConflict || duplicateFailure.TeachDetail == nil || duplicateFailure.TeachDetail.Effects != TeachEffectsNone || duplicateFailure.TeachDetail.OperationID != duplicateInput.OperationID || duplicateFailure.TeachDetail.FieldPath != "records" {
+		t.Errorf("duplicate family/id draft rejection lost owner-proven prewrite facts: status=%d body=%s", duplicateResponse.Code, duplicateResponse.Body.String())
+	}
+	duplicateDB := store.client.Database(store.tenantDatabase("company-api-born"))
+	duplicateCollection, err := canonicalCollection(FamilyMandate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicateRecords, err := duplicateDB.Collection(duplicateCollection).CountDocuments(ctx, bson.D{{Key: "generation_id", Value: duplicateInput.GenerationID}})
+	if err != nil || duplicateRecords != 0 {
+		t.Fatalf("duplicate family/id prewrite rejection persisted %d records, err=%v", duplicateRecords, err)
+	}
+	duplicateEvents, err := duplicateDB.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "operation_id", Value: duplicateInput.OperationID}})
+	if err != nil || duplicateEvents != 0 {
+		t.Fatalf("duplicate family/id prewrite rejection persisted %d events, err=%v", duplicateEvents, err)
+	}
+	emptyInput := CanonicalDraftCreate{ProjectID: "unbound", GenerationID: "empty-generation", OperationID: "empty-draft-op", Actor: "genesis-agent"}
+	emptyBody, err := json.Marshal(emptyInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptyResponse := httptest.NewRecorder()
+	handler.ServeHTTP(emptyResponse, httptest.NewRequest("POST", base, strings.NewReader(string(emptyBody))))
+	var emptyFailure errorResponse
+	if json.Unmarshal(emptyResponse.Body.Bytes(), &emptyFailure) != nil || emptyResponse.Code != 400 || emptyFailure.TeachDetail == nil || emptyFailure.TeachDetail.Effects != TeachEffectsNone || emptyFailure.TeachDetail.OperationID != emptyInput.OperationID || emptyFailure.TeachDetail.FieldPath != "records" {
+		t.Fatalf("known initial draft rejection lacks owner none fact: status=%d body=%s", emptyResponse.Code, emptyResponse.Body.String())
+	}
+	assertTeachDetailMatchesSchema(t, loadTeachSchema(t), *emptyFailure.TeachDetail)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(body))))
 	var draft CanonicalManifest
@@ -701,6 +771,30 @@ func TestMongoCanonicalAPIBornDraftOnUnboundProjectIsIdempotentAndRequiresActiva
 	invalid.GenerationID, invalid.OperationID = "invalid-generation", "invalid-api-born"
 	invalid.Records = []CanonicalImportRecord{canonicalTestRecord(FamilyMandate, "unbound", `{"scope":["web"]}`)}
 	invalid.Records[0].Record.ProjectID, invalid.Records[0].Record.GenerationID = "unbound", invalid.GenerationID
+	invalidBody, err := json.Marshal(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest("POST", base, strings.NewReader(string(invalidBody))))
+	var invalidResponse errorResponse
+	if json.Unmarshal(response.Body.Bytes(), &invalidResponse) != nil || response.Code != 400 || invalidResponse.TeachDetail == nil || invalidResponse.TeachDetail.Effects != TeachEffectsNone || invalidResponse.TeachDetail.OperationID != invalid.OperationID || invalidResponse.TeachDetail.FieldPath != "payload.purpose" {
+		t.Fatalf("proven prewrite API-born rejection lacks causal TEACH none fact: status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertTeachDetailMatchesSchema(t, loadTeachSchema(t), *invalidResponse.TeachDetail)
+	apiBornDB := store.client.Database(store.tenantDatabase("company-api-born"))
+	mandates, err := canonicalCollection(FamilyMandate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidDocuments, err := apiBornDB.Collection(mandates).CountDocuments(ctx, bson.D{{Key: "generation_id", Value: invalid.GenerationID}})
+	if err != nil || invalidDocuments != 0 {
+		t.Fatalf("prewrite rejection persisted canonical documents=%d, err=%v", invalidDocuments, err)
+	}
+	invalidEvents, err := apiBornDB.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "generation_id", Value: invalid.GenerationID}, {Key: "operation_id", Value: invalid.OperationID}})
+	if err != nil || invalidEvents != 0 {
+		t.Fatalf("prewrite rejection persisted canonical events=%d, err=%v", invalidEvents, err)
+	}
 	if _, err := store.CreateCanonicalDraft(ctx, "company-api-born", invalid); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("API-born draft accepted invalid typed content: %v", err)
 	}
@@ -801,6 +895,51 @@ func TestMongoCanonicalAPIBornDraftOnUnboundProjectIsIdempotentAndRequiresActiva
 	active, err := store.ActivateCanonical(ctx, "company-api-born", "unbound", generation, "activate-api-born", "owner")
 	if err != nil || !active.Active || active.State != "active" {
 		t.Fatalf("explicit API-born activation=%+v, err=%v", active, err)
+	}
+	invalidIDInput := `{"project_id":"unbound","family":"project_mandate","record":{"id":"InvalidID","payload":{"purpose":"Must remain untouched","scope":["web"]}},"expected_revision":1,"operation_id":"invalid-record-id-op","actor":"owner"}`
+	invalidIDPath := "/internal/v1/companies/company-api-born/projects/unbound/knowledge/project_mandate/InvalidID"
+	invalidIDBefore, err := store.ReadCanonical(ctx, "company-api-born", "unbound", FamilyMandate, "unbound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	versionsBefore, err := duplicateDB.Collection(canonicalVersions).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidIDResponse := httptest.NewRecorder()
+	handler.ServeHTTP(invalidIDResponse, httptest.NewRequest(http.MethodPut, invalidIDPath, strings.NewReader(invalidIDInput)))
+	var invalidIDFailure errorResponse
+	if json.Unmarshal(invalidIDResponse.Body.Bytes(), &invalidIDFailure) != nil || invalidIDResponse.Code != http.StatusBadRequest || invalidIDFailure.TeachDetail == nil || invalidIDFailure.TeachDetail.Effects != TeachEffectsNone || invalidIDFailure.TeachDetail.OperationID != "invalid-record-id-op" || invalidIDFailure.TeachDetail.FieldPath != "record_id" {
+		t.Fatalf("invalid record ID edit lost owner-proven prewrite facts: status=%d body=%s", invalidIDResponse.Code, invalidIDResponse.Body.String())
+	}
+	invalidIDAfter, err := store.ReadCanonical(ctx, "company-api-born", "unbound", FamilyMandate, "unbound")
+	if err != nil || invalidIDAfter.Revision != invalidIDBefore.Revision || canonicalDigest(invalidIDAfter.Payload) != canonicalDigest(invalidIDBefore.Payload) {
+		t.Fatalf("invalid record ID edit changed the live record: before=%+v after=%+v err=%v", invalidIDBefore, invalidIDAfter, err)
+	}
+	versionsAfter, err := duplicateDB.Collection(canonicalVersions).CountDocuments(ctx, bson.D{{Key: "project_id", Value: "unbound"}})
+	if err != nil || versionsAfter != versionsBefore {
+		t.Fatalf("invalid record ID edit wrote revisions: before=%d after=%d err=%v", versionsBefore, versionsAfter, err)
+	}
+	invalidIDEvents, err := duplicateDB.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "operation_id", Value: "invalid-record-id-op"}})
+	if err != nil || invalidIDEvents != 0 {
+		t.Fatalf("invalid record ID edit wrote %d events, err=%v", invalidIDEvents, err)
+	}
+	for _, tc := range []struct {
+		method, path, operationID, payload, field string
+	}{
+		{http.MethodPost, base[:strings.LastIndex(base, "/drafts/api-born")] + "/policy", "invalid-create", `{"project_id":"unbound","family":"policy","record":{"id":"new-policy","payload":{"rules":[{"id":"r","status":"bogus","statement":"x"}],"ownership":[]}},"operation_id":"invalid-create","actor":"owner"}`, "payload.rules[0].status"},
+		{http.MethodPut, base[:strings.LastIndex(base, "/drafts/api-born")] + "/project_mandate/unbound", "invalid-edit", `{"project_id":"unbound","family":"project_mandate","record":{"id":"unbound","payload":{"scope":["web"]}},"expected_revision":1,"operation_id":"invalid-edit","actor":"owner"}`, "payload.purpose"},
+	} {
+		failure := httptest.NewRecorder()
+		handler.ServeHTTP(failure, httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.payload)))
+		var body errorResponse
+		if json.Unmarshal(failure.Body.Bytes(), &body) != nil || failure.Code != http.StatusBadRequest || body.TeachDetail == nil || body.TeachDetail.Effects != TeachEffectsNone || body.TeachDetail.OperationID != tc.operationID || body.TeachDetail.FieldPath != tc.field {
+			t.Fatalf("canonical %s prewrite route lost owner evidence: status=%d body=%s", tc.method, failure.Code, failure.Body.String())
+		}
+		count, countErr := store.client.Database(store.tenantDatabase("company-api-born")).Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "operation_id", Value: tc.operationID}})
+		if countErr != nil || count != 0 {
+			t.Fatalf("canonical %s prewrite rejection wrote %d events, err=%v", tc.method, count, countErr)
+		}
 	}
 	updatedMandate := records[0].Record
 	updatedMandate.Payload = json.RawMessage(`{"purpose":"Build responsibly","scope":["web"]}`)

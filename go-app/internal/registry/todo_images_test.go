@@ -61,7 +61,7 @@ func (s *testTODOImageHTTPService) AttachTODOImage(_ context.Context, companyID 
 	if companyID != "company-a" || request.ProjectID != "project-a" || request.TODOID != "todo-a" || request.ExpectedRevision != 2 || request.OperationID != "upload-a" {
 		return TODOImageUploadResponse{}, ErrConflict
 	}
-	return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: 3}, nil
+	return TODOImageUploadResponse{CompanyID: companyID, ProjectID: request.ProjectID, TODOID: request.TODOID, TODORevision: 3, TeachDetail: &TeachDiagnostic{SchemaVersion: teachDiagnosticSchemaVersion, Code: "todo_image_attached", FieldPath: "content.image_attachments", NextAction: "Use the returned verified attachment and current TODO revision.", OperationID: request.OperationID, Effects: TeachEffectsCommitted}}, nil
 }
 
 func (s *testTODOImageHTTPService) ReadTODOImage(_ context.Context, companyID, projectID, todoID, imageID string) (todoImageFile, error) {
@@ -115,6 +115,9 @@ func TestTODOImageHTTPRequiresBoundSessionAndExactPath(t *testing.T) {
 		handler.ServeHTTP(response, request(tc.project, tc.bound))
 		if response.Code != tc.status {
 			t.Fatalf("project=%s bound=%t: status=%d body=%s", tc.project, tc.bound, response.Code, response.Body.String())
+		}
+		if tc.status == http.StatusOK && (!strings.Contains(response.Body.String(), `"code":"todo_image_attached"`) || !strings.Contains(response.Body.String(), `"effects":"committed"`)) {
+			t.Fatalf("image upload response lost TEACH detail: %s", response.Body.String())
 		}
 	}
 	if service.uploads != 1 {

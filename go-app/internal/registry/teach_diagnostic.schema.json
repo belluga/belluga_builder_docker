@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://belluga-solutions.local/registry/teach-diagnostic-v1.schema.json",
+  "title": "Registry TEACH diagnostic v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "code", "next_action"],
+  "properties": {
+    "schema_version": {"const": "1"},
+    "code": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "field_path": {"type": "string", "maxLength": 2048},
+    "record_id": {"type": "string", "maxLength": 2048},
+    "accepted_values": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 2048}},
+    "next_action": {"type": "string", "minLength": 1, "maxLength": 2048},
+    "object_purpose": {"type": "string", "maxLength": 2048},
+    "required_fields": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 2048}},
+    "accepted_fields": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 2048}},
+    "not_persisted_fields": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 2048}},
+    "operation_id": {"type": "string", "maxLength": 2048},
+    "revision": {"type": "integer", "minimum": 0},
+    "effects": {"enum": ["none", "committed", "unknown", "not_applicable"]},
+    "retry": {"enum": ["none", "same_operation", "read_reassess", "restore_service", "recover_operation"]}
+  }
+}

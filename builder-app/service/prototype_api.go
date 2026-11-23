@@ -134,14 +134,15 @@ func (p *registeredPreview) proxyPrototypeCatalog(w http.ResponseWriter, r *http
 		return
 	}
 	var catalog struct {
-		RepositoryID        string `json:"repository_id"`
-		PublicationBranch   string `json:"publication_branch"`
-		BindingRevision     int64  `json:"binding_revision"`
-		Revision            string `json:"revision"`
-		EvaluatorVersion    string `json:"evaluator_version"`
-		InventoryDigest     string `json:"inventory_digest"`
-		KnowledgeGeneration string `json:"knowledge_generation_id,omitempty"`
-		KnowledgeDigest     string `json:"knowledge_digest"`
+		TeachDetail         *proxyTeachDetail `json:"teach_detail,omitempty"`
+		RepositoryID        string            `json:"repository_id"`
+		PublicationBranch   string            `json:"publication_branch"`
+		BindingRevision     int64             `json:"binding_revision"`
+		Revision            string            `json:"revision"`
+		EvaluatorVersion    string            `json:"evaluator_version"`
+		InventoryDigest     string            `json:"inventory_digest"`
+		KnowledgeGeneration string            `json:"knowledge_generation_id,omitempty"`
+		KnowledgeDigest     string            `json:"knowledge_digest"`
 		Items               []struct {
 			ID          string  `json:"id"`
 			Name        string  `json:"name"`
@@ -155,6 +156,7 @@ func (p *registeredPreview) proxyPrototypeCatalog(w http.ResponseWriter, r *http
 		prototypeError(w, http.StatusServiceUnavailable, "prototype_response_invalid", "TEACH: A identidade, revisão ou digest do catálogo retornado pela Registry é inválido.")
 		return
 	}
+	catalog.TeachDetail = sanitizeProxyTeachDetail(catalog.TeachDetail, "prototype_diagnostic", "")
 	for i := range catalog.Items {
 		item := &catalog.Items[i]
 		if !safePrototypeID(item.ID) || item.Name == "" || len(item.Name) > 256 || (item.Status != "active" && item.Status != "archived") {
@@ -184,16 +186,17 @@ func (p *registeredPreview) proxyPrototypeDetail(w http.ResponseWriter, r *http.
 		return
 	}
 	var detail struct {
-		RepositoryID        string          `json:"repository_id"`
-		PublicationBranch   string          `json:"publication_branch"`
-		BindingRevision     int64           `json:"binding_revision"`
-		Revision            string          `json:"revision"`
-		EvaluatorVersion    string          `json:"evaluator_version"`
-		InventoryDigest     string          `json:"inventory_digest"`
-		KnowledgeGeneration string          `json:"knowledge_generation_id,omitempty"`
-		KnowledgeDigest     string          `json:"knowledge_digest"`
-		Item                json.RawMessage `json:"item"`
-		EntryURL            string          `json:"entry_url"`
+		TeachDetail         *proxyTeachDetail `json:"teach_detail,omitempty"`
+		RepositoryID        string            `json:"repository_id"`
+		PublicationBranch   string            `json:"publication_branch"`
+		BindingRevision     int64             `json:"binding_revision"`
+		Revision            string            `json:"revision"`
+		EvaluatorVersion    string            `json:"evaluator_version"`
+		InventoryDigest     string            `json:"inventory_digest"`
+		KnowledgeGeneration string            `json:"knowledge_generation_id,omitempty"`
+		KnowledgeDigest     string            `json:"knowledge_digest"`
+		Item                json.RawMessage   `json:"item"`
+		EntryURL            string            `json:"entry_url"`
 		FileURLs            []struct {
 			Path string `json:"path"`
 			URL  string `json:"url"`
@@ -203,6 +206,7 @@ func (p *registeredPreview) proxyPrototypeDetail(w http.ResponseWriter, r *http.
 		prototypeError(w, http.StatusServiceUnavailable, "prototype_response_invalid", "TEACH: Identidade e digest do Prototype não correspondem à revisão solicitada.")
 		return
 	}
+	detail.TeachDetail = sanitizeProxyTeachDetail(detail.TeachDetail, "prototype_diagnostic", "")
 	var item struct {
 		ID         string `json:"id"`
 		Root       string `json:"root"`
@@ -324,7 +328,7 @@ func prototypeFilePolicy(filePath, contentType string) string {
 	return "default-src 'none'; sandbox; frame-ancestors 'self'"
 }
 func prototypeError(w http.ResponseWriter, status int, code, teach string) {
-	writeJSON(w, status, map[string]string{"error": code, "teach": teach})
+	writeProxyTeachError(w, status, code, teach, proxyTeachEnvelope{})
 }
 func readBoundedPrototypeJSON(body io.Reader) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(body, maxPrototypeJSONBytes+1))
@@ -340,10 +344,11 @@ func (p *registeredPreview) forwardPrototypeFailure(w http.ResponseWriter, respo
 	} else if response.StatusCode == http.StatusConflict {
 		status, code, teach = http.StatusConflict, "prototype_selection_changed", "TEACH: A revisão do Prototype mudou durante a leitura; recarregue o catálogo."
 	}
-	if message := boundedRegistryDesignSystemTeach(response.Body); message != "" {
-		teach = message
+	envelope, ok := readProxyTeach(response.Body)
+	if !ok {
+		envelope = proxyTeachEnvelope{}
 	}
-	prototypeError(w, status, code, teach)
+	writeProxyTeachError(w, status, code, teach, envelope)
 }
 func (p *registeredPreview) prototypeGet(r *http.Request, method, endpoint string) (*http.Response, error) {
 	base := strings.TrimRight(strings.TrimSpace(p.registryURL), "/")

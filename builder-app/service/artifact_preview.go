@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -262,7 +263,15 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 	}
 	if response.StatusCode != http.StatusOK {
 		if response.StatusCode >= 400 && response.StatusCode < 500 {
-			writeJSON(w, response.StatusCode, json.RawMessage(body))
+			envelope, ok := readProxyTeach(bytes.NewReader(body))
+			if !ok {
+				envelope = proxyTeachEnvelope{}
+			}
+			code := envelope.Error
+			if code == "" {
+				code = "roadmap_request_rejected"
+			}
+			writeProxyTeachError(w, response.StatusCode, code, "TEACH: A Registry rejeitou a leitura do roadmap; recarregue o estado atual e revise os filtros enviados.", envelope)
 		} else {
 			writeError(w, http.StatusServiceUnavailable, "roadmap_api_unavailable")
 		}
@@ -273,10 +282,15 @@ func (p *registeredPreview) roadmapAPIHandler(w http.ResponseWriter, r *http.Req
 			writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
 			return
 		}
+		projected, projectionErr := projectRoadmapTODOTeach(body)
+		if projectionErr != nil {
+			writeError(w, http.StatusServiceUnavailable, "roadmap_api_response_invalid")
+			return
+		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+		_, _ = w.Write(projected)
 		return
 	}
 	if len(q) == 3 {
@@ -493,6 +507,135 @@ func validRegistryRoadmap(data []byte, projectID string) bool {
 		}
 	}
 	return validFolders(roadmap.Backlog.Folders, "")
+}
+
+// projectRoadmapTODOTeach changes only the known Roadmap TODO diagnostic fields.
+// It decodes and encodes the successful document once, using json.Number so
+// unknown extension integers retain their original precision.
+func projectRoadmapTODOTeach(data []byte) ([]byte, error) {
+	var root map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&root); err != nil {
+		return nil, err
+	}
+	epics, ok := root["epics"].([]any)
+	if !ok {
+		return nil, errors.New("Roadmap epics are not an array")
+	}
+	for _, rawEpic := range epics {
+		epic, ok := rawEpic.(map[string]any)
+		if !ok {
+			return nil, errors.New("Roadmap epic is not an object")
+		}
+		releases, ok := epic["releases"].([]any)
+		if !ok {
+			return nil, errors.New("Roadmap releases are not an array")
+		}
+		for _, rawRelease := range releases {
+			release, ok := rawRelease.(map[string]any)
+			if !ok {
+				return nil, errors.New("Roadmap release is not an object")
+			}
+			todos, ok := release["todos"].([]any)
+			if !ok {
+				return nil, errors.New("Roadmap release TODOs are not an array")
+			}
+			if err := projectRoadmapTODOList(todos); err != nil {
+				return nil, err
+			}
+		}
+	}
+	backlog, ok := root["backlog"].(map[string]any)
+	if !ok {
+		return nil, errors.New("Roadmap backlog is not an object")
+	}
+	backlogTODOs, ok := backlog["todos"].([]any)
+	if !ok {
+		return nil, errors.New("Roadmap backlog TODOs are not an array")
+	}
+	if err := projectRoadmapTODOList(backlogTODOs); err != nil {
+		return nil, err
+	}
+	folders, ok := backlog["folders"].([]any)
+	if !ok {
+		return nil, errors.New("Roadmap backlog folders are not an array")
+	}
+	if err := projectRoadmapFolders(folders); err != nil {
+		return nil, err
+	}
+	return marshalRoadmapProjection(root)
+}
+
+func marshalRoadmapProjection(value any) ([]byte, error) {
+	var output bytes.Buffer
+	encoder := json.NewEncoder(&output)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(output.Bytes(), []byte{'\n'}), nil
+}
+
+func projectRoadmapTODOList(todos []any) error {
+	for _, rawTODO := range todos {
+		todo, ok := rawTODO.(map[string]any)
+		if !ok {
+			return errors.New("Roadmap TODO is not an object")
+		}
+		var legacy string
+		if rawLegacy, exists := todo["delivery_stage_teach"]; exists {
+			legacy, ok = rawLegacy.(string)
+			if !ok || !safeProxyTeachText(legacy) {
+				legacy = "TEACH: Reload the current Roadmap and review this TODO's delivery-stage evidence."
+				todo["delivery_stage_teach"] = legacy
+			}
+		}
+		if rawDetail, exists := todo["teach_detail"]; exists && rawDetail != nil {
+			var detail proxyTeachDetail
+			var projected *proxyTeachDetail
+			detailJSON, err := json.Marshal(rawDetail)
+			if err == nil && json.Unmarshal(detailJSON, &detail) == nil {
+				projected = sanitizeProxyTeachDetail(&detail, "roadmap_todo_diagnostic", legacy)
+			} else {
+				projected = proxyTeachDetailFromLegacy("roadmap_todo_diagnostic", legacy)
+			}
+			if projected == nil {
+				projected = proxyTeachDetailFromLegacy("roadmap_todo_diagnostic", legacy)
+			}
+			todo["teach_detail"] = projected
+		} else if legacy != "" {
+			// A tolerated legacy Roadmap row may carry explicit diagnostic guidance
+			// without the additive detail. Preserve that guidance and add only a
+			// minimal public detail; healthy rows with neither remain unchanged.
+			todo["teach_detail"] = proxyTeachDetailFromLegacy("roadmap_todo_diagnostic", legacy)
+		}
+	}
+	return nil
+}
+
+func projectRoadmapFolders(folders []any) error {
+	for _, rawFolder := range folders {
+		folder, ok := rawFolder.(map[string]any)
+		if !ok {
+			return errors.New("Roadmap folder is not an object")
+		}
+		todos, ok := folder["todos"].([]any)
+		if !ok {
+			return errors.New("Roadmap folder TODOs are not an array")
+		}
+		if err := projectRoadmapTODOList(todos); err != nil {
+			return err
+		}
+		children, ok := folder["folders"].([]any)
+		if !ok {
+			return errors.New("Roadmap child folders are not an array")
+		}
+		if err := projectRoadmapFolders(children); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validMongoTODOPath(value string) bool {

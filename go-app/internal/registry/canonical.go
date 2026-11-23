@@ -147,17 +147,9 @@ type CanonicalHistoryPage struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
-type CanonicalTeachDiagnostic struct {
-	Code           string   `json:"code"`
-	FieldPath      string   `json:"field_path"`
-	RecordID       string   `json:"record_id,omitempty"`
-	AcceptedValues []string `json:"accepted_values,omitempty"`
-	NextAction     string   `json:"next_action"`
-	ObjectPurpose  string   `json:"object_purpose,omitempty"`
-	RequiredFields []string `json:"required_fields,omitempty"`
-	AcceptedFields []string `json:"accepted_fields,omitempty"`
-	NotPersisted   []string `json:"not_persisted_fields,omitempty"`
-}
+// CanonicalTeachDiagnostic is retained as a source-compatible name for the
+// shared Registry diagnostic contract.
+type CanonicalTeachDiagnostic = TeachDiagnostic
 type canonicalTeachError struct {
 	Diagnostic CanonicalTeachDiagnostic
 	Cause      error
@@ -435,6 +427,24 @@ func teachCanonical(recordID, field, action string, err error) error {
 	return &canonicalTeachError{Diagnostic: CanonicalTeachDiagnostic{Code: "canonical_validation", FieldPath: field, RecordID: recordID, AcceptedValues: values, NextAction: action}, Cause: err}
 }
 
+// canonicalPrewriteError carries owner evidence only at validation sites that
+// run before the corresponding draft or record write begins.
+func canonicalPrewriteError(err error, operationID string) error {
+	if err == nil {
+		return nil
+	}
+	diagnostic := registryErrorDiagnostic(err, ErrInvalid.Error())
+	if diagnostic == nil {
+		return err
+	}
+	diagnostic.SchemaVersion = teachDiagnosticSchemaVersion
+	diagnostic.Effects = TeachEffectsNone
+	if canonicalID.MatchString(operationID) {
+		diagnostic.OperationID = operationID
+	}
+	return withTeachDiagnostic(err, *diagnostic)
+}
+
 func normalizeCanonicalPayload(family CanonicalFamily, recordID string, payload json.RawMessage) (json.RawMessage, error) {
 	if family != FamilyEndpoint {
 		return payload, nil
@@ -706,22 +716,22 @@ func (m *MongoStore) CreateCanonicalDraft(ctx context.Context, companyID string,
 
 func (m *MongoStore) createCanonicalDraft(ctx context.Context, companyID string, input CanonicalDraftCreate, sourceKind, sourceRevision string) (CanonicalManifest, error) {
 	if len(input.Records) == 0 || len(input.Records) > 500 {
-		return CanonicalManifest{}, teachCanonical("", "records", "provide between 1 and 500 typed records in this draft import", ErrInvalid)
+		return CanonicalManifest{}, canonicalPrewriteError(teachCanonical("", "records", "provide between 1 and 500 typed records in this draft import", ErrInvalid), input.OperationID)
 	}
 	if !canonicalID.MatchString(input.GenerationID) {
-		return CanonicalManifest{}, teachCanonical("", "generation_id", "provide a lowercase stable generation ID", ErrInvalid)
+		return CanonicalManifest{}, canonicalPrewriteError(teachCanonical("", "generation_id", "provide a lowercase stable generation ID", ErrInvalid), input.OperationID)
 	}
 	if !canonicalID.MatchString(input.OperationID) {
-		return CanonicalManifest{}, teachCanonical("", "operation_id", "provide a lowercase stable operation ID", ErrInvalid)
+		return CanonicalManifest{}, canonicalPrewriteError(teachCanonical("", "operation_id", "provide a lowercase stable operation ID", ErrInvalid), input.OperationID)
 	}
 	if sourceKind == "git" && !canonicalSourceRevision.MatchString(sourceRevision) {
-		return CanonicalManifest{}, teachCanonical("", "source_revision", "provide the exact 40-character lowercase Git SHA of the source revision", ErrInvalid)
+		return CanonicalManifest{}, canonicalPrewriteError(teachCanonical("", "source_revision", "provide the exact 40-character lowercase Git SHA of the source revision", ErrInvalid), input.OperationID)
 	}
 	if sourceKind != "git" && sourceKind != "api" {
-		return CanonicalManifest{}, ErrInvalid
+		return CanonicalManifest{}, canonicalPrewriteError(ErrInvalid, input.OperationID)
 	}
 	if strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
-		return CanonicalManifest{}, teachCanonical("", "actor", "provide a non-empty actor identifier of at most 200 characters", ErrInvalid)
+		return CanonicalManifest{}, canonicalPrewriteError(teachCanonical("", "actor", "provide a non-empty actor identifier of at most 200 characters", ErrInvalid), input.OperationID)
 	}
 	db, _, err := m.canonicalDB(ctx, companyID, input.ProjectID)
 	if err != nil {
@@ -732,14 +742,14 @@ func (m *MongoStore) createCanonicalDraft(ctx context.Context, companyID string,
 		item := &input.Records[i]
 		item.Record.Payload, err = normalizeCanonicalPayload(item.Family, item.Record.ID, item.Record.Payload)
 		if err != nil {
-			return CanonicalManifest{}, err
+			return CanonicalManifest{}, canonicalPrewriteError(err, input.OperationID)
 		}
 		if err := validateCanonicalRecord(input.ProjectID, input.GenerationID, item.Family, item.Record); err != nil {
-			return CanonicalManifest{}, err
+			return CanonicalManifest{}, canonicalPrewriteError(err, input.OperationID)
 		}
 		key := string(item.Family) + "/" + item.Record.ID
 		if seen[key] {
-			return CanonicalManifest{}, teachCanonical(item.Record.ID, "records", "avoid duplicate family/id pairs", ErrConflict)
+			return CanonicalManifest{}, canonicalPrewriteError(teachCanonical(item.Record.ID, "records", "avoid duplicate family/id pairs", ErrConflict), input.OperationID)
 		}
 		seen[key] = true
 		item.Record.Revision = 1
@@ -1012,7 +1022,7 @@ func (m *MongoStore) EditCanonical(ctx context.Context, companyID string, input 
 
 func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input CanonicalMutation, eventKind string) (CanonicalRecord, error) {
 	if !canonicalID.MatchString(input.OperationID) || strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
-		return CanonicalRecord{}, ErrInvalid
+		return CanonicalRecord{}, canonicalPrewriteError(ErrInvalid, input.OperationID)
 	}
 	db, project, err := m.canonicalDB(ctx, companyID, input.ProjectID)
 	if err != nil {
@@ -1024,7 +1034,7 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	}
 	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.ID, input.Record.Payload)
 	if err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(err, input.OperationID)
 	}
 	var prior CanonicalEvent
 	if e := db.Collection(canonicalEvents).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.Record.ID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: eventKind}}).Decode(&prior); e == nil {
@@ -1043,10 +1053,10 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	}
 	name, err := canonicalCollection(input.Family)
 	if err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(teachCanonical("", "family", "use a supported canonical knowledge family", ErrInvalid), input.OperationID)
 	}
 	if !canonicalID.MatchString(input.Record.ID) {
-		return CanonicalRecord{}, teachCanonical(input.Record.ID, "record_id", "use a stable lowercase record ID", ErrInvalid)
+		return CanonicalRecord{}, canonicalPrewriteError(teachCanonical(input.Record.ID, "record_id", "use a stable lowercase record ID", ErrInvalid), input.OperationID)
 	}
 	currentFilter := bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "id", Value: input.Record.ID}}
 	if eventKind != "content_restored" {
@@ -1066,7 +1076,7 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 	input.Record.GenerationID = generation
 	input.Record.Revision = current.Revision + 1
 	if err = validateCanonicalRecord(input.ProjectID, generation, input.Family, input.Record); err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(err, input.OperationID)
 	}
 	input.Record.ContentDigest = canonicalDigest(input.Record.Payload)
 	input.Record.UpdatedAt = canonicalTime()
@@ -1119,7 +1129,7 @@ func (m *MongoStore) editCanonical(ctx context.Context, companyID string, input 
 
 func (m *MongoStore) CreateCanonical(ctx context.Context, companyID string, input CanonicalMutation) (CanonicalRecord, error) {
 	if input.ExpectedRevision != 0 || !canonicalID.MatchString(input.OperationID) || strings.TrimSpace(input.Actor) == "" || len(input.Actor) > 200 {
-		return CanonicalRecord{}, ErrInvalid
+		return CanonicalRecord{}, canonicalPrewriteError(ErrInvalid, input.OperationID)
 	}
 	db, project, err := m.canonicalDB(ctx, companyID, input.ProjectID)
 	if err != nil {
@@ -1132,15 +1142,15 @@ func (m *MongoStore) CreateCanonical(ctx context.Context, companyID string, inpu
 	input.Record.ProjectID, input.Record.GenerationID, input.Record.Revision = input.ProjectID, generation, 1
 	input.Record.Payload, err = normalizeCanonicalPayload(input.Family, input.Record.ID, input.Record.Payload)
 	if err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(err, input.OperationID)
 	}
 	if err = validateCanonicalRecord(input.ProjectID, generation, input.Family, input.Record); err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(err, input.OperationID)
 	}
 	input.Record.ContentDigest, input.Record.UpdatedAt = canonicalDigest(input.Record.Payload), canonicalTime()
 	name, err := canonicalCollection(input.Family)
 	if err != nil {
-		return CanonicalRecord{}, err
+		return CanonicalRecord{}, canonicalPrewriteError(teachCanonical("", "family", "use a supported canonical knowledge family", ErrInvalid), input.OperationID)
 	}
 	var prior CanonicalEvent
 	if err = db.Collection(canonicalEvents).FindOne(ctx, bson.D{{Key: "project_id", Value: input.ProjectID}, {Key: "generation_id", Value: generation}, {Key: "family", Value: input.Family}, {Key: "record_id", Value: input.Record.ID}, {Key: "operation_id", Value: input.OperationID}, {Key: "kind", Value: "record_created"}}).Decode(&prior); err == nil {

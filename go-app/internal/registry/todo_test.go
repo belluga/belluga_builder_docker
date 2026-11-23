@@ -438,7 +438,7 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 		t.Fatalf("Builder Project Roadmap did not include the migrated TODO: %s, %v", roadmap, err)
 	}
 	listed := builderRoadmap.Epics[0].Releases[0].TODOs[0]
-	if listed.ID != "builder-company-tenant-mongo-registry" || listed.TODORevision != 0 || listed.AuthoredDeliveryStage != "In-Progress" || listed.DeliveryStage != "" || listed.DeliveryStageState != "unverified" || !strings.HasPrefix(listed.DeliveryStageTeach, "TEACH:") {
+	if listed.ID != "builder-company-tenant-mongo-registry" || listed.TODORevision != 0 || listed.AuthoredDeliveryStage != "In-Progress" || listed.DeliveryStage != "" || listed.DeliveryStageState != "unverified" || !strings.HasPrefix(listed.DeliveryStageTeach, "TEACH:") || listed.TeachDetail == nil || listed.TeachDetail.Code != "todo_stage_unverified" || listed.TeachDetail.Effects != TeachEffectsNotApplicable {
 		t.Fatalf("unverified Builder Roadmap summary = %+v", listed)
 	}
 	var booraRoadmap struct {
@@ -453,7 +453,7 @@ func TestMongoSelectedTODOImportIsAtomicIdempotentAndNoOverwrite(t *testing.T) {
 		t.Fatalf("Bóora Project Roadmap did not include its three migrated TODOs: %s, %v", roadmap, err)
 	}
 	completed := booraRoadmap.Epics[0].Releases[0].TODOs[2]
-	if completed.AuthoredDeliveryStage != "Completed" || completed.DeliveryStage != "" || completed.DeliveryStageState != "unverified" || !strings.HasPrefix(completed.DeliveryStageTeach, "TEACH:") {
+	if completed.AuthoredDeliveryStage != "Completed" || completed.DeliveryStage != "" || completed.DeliveryStageState != "unverified" || !strings.HasPrefix(completed.DeliveryStageTeach, "TEACH:") || completed.TeachDetail == nil || completed.TeachDetail.Code != "todo_stage_unverified" || completed.TeachDetail.Effects != TeachEffectsNotApplicable {
 		t.Fatalf("unverified authored Completed stage became effective: %+v", completed)
 	}
 	zeroRevision := int64(0)

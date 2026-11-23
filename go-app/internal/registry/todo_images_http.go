@@ -59,7 +59,7 @@ func (h *Handler) uploadTODOImage(w http.ResponseWriter, r *http.Request) {
 		ProjectID: strings.TrimSpace(r.PathValue("projectID")), TODOID: strings.TrimSpace(r.PathValue("todoID")),
 		ExpectedRevision: revision, OperationID: r.FormValue("operation_id"), Description: r.FormValue("description"), Data: data,
 	})
-	h.respond(w, value, err)
+	h.respondMutation(w, value, err, r.FormValue("operation_id"))
 }
 
 func (h *Handler) readTODOImage(w http.ResponseWriter, r *http.Request) {

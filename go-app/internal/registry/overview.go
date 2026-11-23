@@ -92,6 +92,7 @@ type OverviewReadResponse struct {
 	KnowledgeOrigin *OverviewKnowledgeOrigin `json:"knowledge_origin,omitempty"`
 	Source          *OverviewSource          `json:"source,omitempty"`
 	Teach           string                   `json:"teach,omitempty"`
+	TeachDetail     *TeachDiagnostic         `json:"teach_detail,omitempty"`
 }
 
 type overviewVersionDocument struct {
@@ -598,7 +599,7 @@ func (m *MongoStore) ReadOverview(ctx context.Context, companyID, projectID stri
 		if requestedRevision > 0 {
 			return OverviewReadResponse{}, ErrNotFound
 		}
-		return OverviewReadResponse{State: "not_authored", CompanyID: companyID, ProjectID: projectID, Teach: "Create an Overview through the Project-scoped API."}, nil
+		return OverviewReadResponse{State: "not_authored", CompanyID: companyID, ProjectID: projectID, Teach: "Create an Overview through the Project-scoped API.", TeachDetail: readTeach("overview_not_authored", "overview", "Create an Overview through the Project-scoped API.")}, nil
 	}
 	revision := requestedRevision
 	if revision == 0 {
@@ -613,18 +614,18 @@ func (m *MongoStore) ReadOverview(ctx context.Context, companyID, projectID stri
 			if requestedRevision > 0 {
 				return OverviewReadResponse{}, ErrNotFound
 			}
-			return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The declared current Overview revision is missing; repair it before use."}, nil
+			return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The declared current Overview revision is missing; repair it before use.", TeachDetail: readTeach("overview_invalid", "overview.revision", "Repair the declared current Overview revision before using it.")}, nil
 		}
 		return OverviewReadResponse{}, ErrUnavailable
 	}
 	if version.ProjectID != projectID || version.Revision != revision || len(version.Media) < 2 || len(version.Media) > 6 {
-		return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The stored Overview revision is inconsistent; repair it before use."}, nil
+		return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The stored Overview revision is inconsistent; repair it before use.", TeachDetail: readTeach("overview_invalid", "overview", "Repair the stored Overview revision before using it.")}, nil
 	}
 	slots := make([]string, 0, len(version.Media))
 	for i := range version.Media {
 		ref := &version.Media[i]
 		if !overviewSlot(ref.Slot) || !validSourceDigest(ref.Digest) {
-			return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The stored Overview media reference is invalid."}, nil
+			return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "The stored Overview media reference is invalid.", TeachDetail: readTeach("overview_invalid", "overview.media", "Repair the stored Overview media reference before using it.")}, nil
 		}
 		slots = append(slots, ref.Slot)
 		ref.Href = fmt.Sprintf("/internal/v1/companies/%s/projects/%s/overview/%d/media/%s", companyID, projectID, revision, ref.Slot)
@@ -642,7 +643,7 @@ func (m *MongoStore) ReadOverview(ctx context.Context, companyID, projectID stri
 		return OverviewReadResponse{}, ErrUnavailable
 	}
 	if !overviewMetadataMatches(version.Content, version.Media, metadata, projectID, version.OperationID) {
-		return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "A declared Overview media slot is missing or changed, or the stored content/reference schema is invalid."}, nil
+		return OverviewReadResponse{State: "invalid", CompanyID: companyID, ProjectID: projectID, Teach: "A declared Overview media slot is missing or changed, or the stored content/reference schema is invalid.", TeachDetail: readTeach("overview_invalid", "overview.media", "Repair the stored Overview content and media references before using them.")}, nil
 	}
 	manifest, err := m.CanonicalManifest(ctx, companyID, projectID, "")
 	if err != nil {
@@ -652,7 +653,12 @@ func (m *MongoStore) ReadOverview(ctx context.Context, companyID, projectID stri
 	if !overviewOriginMatches(version.KnowledgeOrigin, manifest) {
 		state = "stale"
 	}
-	return OverviewReadResponse{State: state, CompanyID: companyID, ProjectID: projectID, Revision: revision, Content: &version.Content, Media: version.Media, KnowledgeOrigin: &version.KnowledgeOrigin, Source: &version.Source}, nil
+	response := OverviewReadResponse{State: state, CompanyID: companyID, ProjectID: projectID, Revision: revision, Content: &version.Content, Media: version.Media, KnowledgeOrigin: &version.KnowledgeOrigin, Source: &version.Source}
+	if state == "stale" {
+		response.Teach = "The Overview Knowledge origin is stale; refresh and re-author against current Knowledge before relying on it."
+		response.TeachDetail = readTeach("overview_stale", "knowledge_origin", response.Teach)
+	}
+	return response, nil
 }
 
 func overviewMediaMatches(ref OverviewMediaReference, media overviewMediaDocument) bool {
