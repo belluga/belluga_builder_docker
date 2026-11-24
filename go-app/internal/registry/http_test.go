@@ -349,6 +349,24 @@ func TestPrivateAPIRejectsCompanyMismatchBeforeRegister(t *testing.T) {
 	}
 }
 
+func assertRegistrationRetryTeachHTTP(t *testing.T, ctx context.Context, store *MongoStore, input Registration) {
+	t.Helper()
+	request, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/internal/v1/companies/" + input.CompanyID + "/projects"
+	response := httptest.NewRecorder()
+	NewHandler(store).ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(request))).WithContext(ctx))
+	var body errorResponse
+	const waitGuidance = "finish schema preparation before you retry registration"
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusConflict ||
+		body.Error != ErrConflict.Error() || !strings.Contains(body.Teach, waitGuidance) || body.TeachDetail == nil ||
+		body.TeachDetail.FieldPath != "company.schema_migrations" || !strings.Contains(body.TeachDetail.NextAction, waitGuidance) {
+		t.Fatalf("registration response during schema preparation: status=%d body=%s decode=%v", response.Code, response.Body, err)
+	}
+}
+
 type testSelectedTODOImporter struct {
 	*testService
 	calls int

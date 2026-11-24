@@ -384,25 +384,28 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 	companies := m.control.Collection(companiesCollection)
 	var existing Company
 	companyErr := companies.FindOne(ctx, bson.D{{Key: "id", Value: company.ID}}).Decode(&existing)
-	if companyErr == nil {
-		if existing.Name != company.Name || existing.DatabaseName != company.DatabaseName {
-			return Project{}, ErrConflict
+	inserted := false
+	if errors.Is(companyErr, mongo.ErrNoDocuments) {
+		_, insertErr := companies.InsertOne(ctx, company)
+		if insertErr == nil {
+			inserted = true
+		} else {
+			if err := normalizeMongoError(insertErr); !errors.Is(err, ErrConflict) {
+				return Project{}, err
+			}
+			existing, err = m.rawCompany(ctx, company.ID)
+			if err != nil {
+				return Project{}, ErrConflict
+			}
 		}
-		if existing.SchemaState == "" {
-			return Project{}, todoTeach("company.schema_migrations", "run the Registry migrate-all command to adopt this existing Company before registration", ErrConflict)
-		}
-	} else if !errors.Is(companyErr, mongo.ErrNoDocuments) {
+	} else if companyErr != nil {
 		return Project{}, ErrUnavailable
-	} else if _, err := companies.InsertOne(ctx, company); err != nil {
-		if !errors.Is(normalizeMongoError(err), ErrConflict) {
-			return Project{}, normalizeMongoError(err)
-		}
-		current, readErr := m.rawCompany(ctx, company.ID)
-		if readErr != nil || current.Name != company.Name {
-			return Project{}, ErrConflict
-		}
 	}
-	if err := m.convergeCompanySchema(ctx, company.ID, false); err != nil {
+	if inserted {
+		if err := m.convergeCompanySchema(ctx, company.ID, false); err != nil {
+			return Project{}, err
+		}
+	} else if err := m.requireExistingCompanyForRegistration(company, existing); err != nil {
 		return Project{}, err
 	}
 	prior, readErr := m.readProject(ctx, company, project.ID)
@@ -435,6 +438,27 @@ func (m *MongoStore) Register(ctx context.Context, input Registration) (Project,
 		return Project{}, err
 	}
 	return m.readProject(ctx, company, project.ID)
+}
+
+func (m *MongoStore) requireExistingCompanyForRegistration(requested, existing Company) error {
+	if existing.Name != requested.Name || existing.DatabaseName != requested.DatabaseName {
+		return ErrConflict
+	}
+	if existing.ObjectID.IsZero() {
+		return ErrUnavailable
+	}
+	switch existing.SchemaState {
+	case "initializing", "pending":
+		return todoTeach("company.schema_migrations", "finish schema preparation before you retry registration; if preparation remains incomplete after the first request has stopped, have an operator run the Registry migrate-all command", ErrConflict)
+	case "failed":
+		return todoTeach("company.schema_migrations", "be recovered with the Registry migrate-all command before retrying registration", ErrConflict)
+	case "":
+		return todoTeach("company.schema_migrations", "run the Registry migrate-all command to adopt this existing Company before registration", ErrConflict)
+	}
+	if err := m.validateCompanyMigrationPrefix(existing); err != nil {
+		return err
+	}
+	return m.companySchemaReady(existing)
 }
 
 func sameOptionalBinding(a, b *Binding) bool {
