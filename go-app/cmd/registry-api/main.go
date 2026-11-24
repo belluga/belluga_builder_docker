@@ -21,6 +21,11 @@ import (
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "discovery-indexes":
+			if err := runDiscoveryIndexes(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "import":
 			if err := runImport(os.Args[2:]); err != nil {
 				log.Fatal(err)

@@ -1,11 +1,18 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -513,5 +520,193 @@ func TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP(t *testing.T) {
 	decodeErr := json.Unmarshal(response.Body.Bytes(), &errorBody)
 	if decodeErr != nil || response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || errorBody.TeachDetail == nil || errorBody.TeachDetail.FieldPath != "proof_refs.criterion:criterion-build.source" || errorBody.TeachDetail.OperationID != "local-run-7" || errorBody.TeachDetail.Effects != TeachEffectsUnknown || service.transitionCalls != 1 {
 		t.Fatalf("field-specific local proof TEACH was not surfaced by HTTP: %d %s calls=%d", response.Code, response.Body.String(), service.transitionCalls)
+	}
+}
+
+func TestMCPDesignSystemSameOperationRecoveryAgainstMongoAndGit(t *testing.T) {
+	binary, uri := os.Getenv("BUILDER_MCP_FIXTURE_BINARY"), os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if binary == "" || uri == "" {
+		t.Skip("required MCP delivery fixture sets BUILDER_MCP_FIXTURE_BINARY and REGISTRY_TEST_MONGODB_URI")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	identity := fmt.Sprintf("mcp_ds_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = identity
+	const company, project = "mcp-fixture", "design-system-recovery"
+	t.Cleanup(func() {
+		bg, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		_ = store.client.Database(store.tenantDatabase(company)).Drop(bg)
+		_ = store.control.Drop(bg)
+		_ = store.Close(bg)
+	})
+	root := t.TempDir()
+	runFixtureGit(t, root, "init", "--quiet", "--initial-branch=main")
+	runFixtureGit(t, root, "-c", "user.name=isolated fixture", "-c", "user.email=fixture@example.invalid",
+		"commit", "--quiet", "--allow-empty", "-m", "Seed recovery head")
+	head := fixtureGitOutput(t, root, "rev-parse", "HEAD")
+	var gitAvailable atomic.Bool
+	store.designSystemVerifier = gitDesignSystemVerifier{repositoryURL: func(string) string {
+		if gitAvailable.Load() {
+			return "file://" + root
+		}
+		return "file://" + filepath.Join(root, "unavailable")
+	}}
+	binding := validTestBinding()
+	binding.RepositoryID = "fixture/design-system"
+	registered, err := registerTestProjectWithBinding(ctx, store, Registration{
+		CompanyID: company, CompanyName: "MCP recovery fixture", ProjectID: project, ProjectName: "Recovery fixture", Binding: binding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const nativeID = "b1ddbc77-0361-4609-8c04-bb04ab5fbe93"
+	if _, err := store.BindSession(ctx, SessionBindingRequest{
+		Type: "codex", ExternalID: nativeID, CompanyID: company, ProjectID: project,
+		OperationID: "bind-recovery-fixture", OwnerReference: "owned test session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := httptest.NewServer(NewHandler(store))
+	defer registry.Close()
+	address := startFixtureMCP(t, ctx, binary, registry.URL, company)
+	type wireReply struct {
+		Status int             `json:"http_status"`
+		Data   json.RawMessage `json:"data"`
+		Teach  TeachDiagnostic `json:"teach_detail"`
+	}
+	call := func(tool string, input map[string]any, want int) wireReply {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": tool, "arguments": input},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/mcp", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+fixtureMCPToken)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		request.Header.Set(sessionTypeHeader, "codex")
+		request.Header.Set(sessionExternalIDHeader, nativeID)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var output struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil ||
+			response.StatusCode != http.StatusOK || len(output.Result.Content) != 1 {
+			t.Fatalf("%s unexpected MCP transport result: status=%d, output=%+v, err=%v", tool, response.StatusCode, output, err)
+		}
+		var reply wireReply
+		if err := json.Unmarshal([]byte(output.Result.Content[0].Text), &reply); err != nil ||
+			reply.Status != want || output.Result.IsError != (want >= 400) {
+			t.Fatalf("%s unexpected outcome: %s err=%v", tool, output.Result.Content[0].Text, err)
+		}
+		return reply
+	}
+	const operationID = "design-system-recovery-op"
+	digest := "sha256:" + strings.Repeat("b", 64)
+	intent := DesignSystemMutationIntent{
+		Operation: "create", OperationID: operationID, Actor: "isolated fixture", PayloadDigest: digest,
+		ExpectedBindingRevision: registered.BindingRevision, ExpectedHead: head, CandidateTreeSHA: strings.Repeat("a", 40),
+		PreparedCommitSHA: strings.Repeat("c", 40), InventoryDigest: digest,
+	}
+	call("builder_design_system_begin", map[string]any{"company_id": company, "project_id": project, "body": intent}, http.StatusOK)
+	readArgs := map[string]any{"company_id": company, "project_id": project}
+	before := call("builder_design_system_state", readArgs, http.StatusOK)
+	recoverArgs := map[string]any{"company_id": company, "project_id": project, "operation_id": operationID}
+	unknown := call("builder_design_system_recover", recoverArgs, http.StatusServiceUnavailable)
+	if unknown.Teach.Effects != TeachEffectsUnknown || unknown.Teach.OperationID != operationID {
+		t.Fatalf("owner uncertainty lost: %+v", unknown.Teach)
+	}
+	if after := call("builder_design_system_state", readArgs, http.StatusOK); !bytes.Equal(before.Data, after.Data) {
+		t.Fatalf("unknown recovery changed the selected or pending state: %s versus %s", before.Data, after.Data)
+	}
+
+	gitAvailable.Store(true)
+	recovered := call("builder_design_system_recover", recoverArgs, http.StatusOK)
+	var outcome DesignSystemMutationResult
+	if err := json.Unmarshal(recovered.Data, &outcome); err != nil ||
+		outcome.OperationID != operationID || outcome.Outcome != "not_pushed" || outcome.State != "unselected" {
+		t.Fatalf("the same operation did not recover against verified Git: %s err=%v", recovered.Data, err)
+	}
+	final := call("builder_design_system_state", readArgs, http.StatusOK)
+	var state DesignSystemState
+	if err := json.Unmarshal(final.Data, &state); err != nil ||
+		state.PendingOperation != nil || state.LastOperation == nil || *state.LastOperation != outcome {
+		t.Fatalf("MCP readback did not expose the persisted exact result: %s err=%v", final.Data, err)
+	}
+	if replay := call("builder_design_system_recover", recoverArgs, http.StatusOK); !bytes.Equal(replay.Data, recovered.Data) {
+		t.Fatalf("same operation replay changed the result: %s", replay.Data)
+	}
+	collection := store.client.Database(store.tenantDatabase(company)).Collection(projectsCollection)
+	var document projectDocument
+	if err := collection.FindOne(ctx, bson.M{"id": project}).Decode(&document); err != nil ||
+		document.PendingDesignSystemMutation != nil || document.DesignSystemLastOperation == nil ||
+		*document.DesignSystemLastOperation != outcome {
+		t.Fatalf("Mongo does not contain the one final operation result: %+v err=%v", document.DesignSystemLastOperation, err)
+	}
+	t.Logf("live adapter + Registry + Mongo + local Git: %s pending, outage effects=%s, exact recovery=%s, replay unchanged",
+		operationID, unknown.Teach.Effects, outcome.Outcome)
+}
+
+const fixtureMCPToken = "isolated-mcp-registry-fixture-token-01"
+
+func startFixtureMCP(t *testing.T, ctx context.Context, binary, upstream, company string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	command := exec.CommandContext(ctx, binary)
+	command.Env = []string{
+		"BUILDER_MCP_COMPANY_IDS=" + company,
+		"BUILDER_MCP_BEARER_TOKEN=" + fixtureMCPToken,
+		"BUILDER_MCP_ALLOWED_HOSTS=" + address,
+		"BUILDER_MCP_LISTEN_ADDR=" + address,
+		"BUILDER_MCP_REGISTRY_URL=" + upstream,
+		"GOMEMLIMIT=768MiB", "GOMAXPROCS=2",
+	}
+	command.Stderr = os.Stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	wait, stop := context.WithTimeout(ctx, 10*time.Second)
+	defer stop()
+	for {
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return address
+		}
+		select {
+		case <-wait.Done():
+			t.Fatal("owned MCP fixture did not start")
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }

@@ -1,0 +1,1216 @@
+[
+  {
+    "name": "builder_session_bind",
+    "template": "POST /internal/v1/sessions/bind",
+    "route": "POST /internal/v1/sessions/bind",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "operation_id": "operation-id",
+      "expected_revision": 0
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_session_get",
+    "template": "GET /internal/v1/sessions/{provider}/{externalID}",
+    "route": "GET /internal/v1/sessions/codex/11111111-1111-4111-8111-111111111111",
+    "arguments": {},
+    "expected_query": {}
+  },
+  {
+    "name": "builder_session_list",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/sessions",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/sessions",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "after": "012345678901234567890123",
+      "limit": 99
+    },
+    "expected_query": {
+      "after": [
+        "012345678901234567890123"
+      ],
+      "limit": [
+        "99"
+      ]
+    }
+  },
+  {
+    "name": "builder_knowledge_template",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/template",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_manifest",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/manifest",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "generation_id": "draft-generation"
+    },
+    "expected_query": {
+      "generation_id": [
+        "draft-generation"
+      ]
+    }
+  },
+  {
+    "name": "builder_knowledge_index",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/index",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "module",
+      "module_id": "projects",
+      "method": "GET",
+      "q": "matching title",
+      "limit": 25,
+      "cursor": "knowledge-cursor",
+      "decisions_only": true
+    },
+    "expected_query": {
+      "family": [
+        "module"
+      ],
+      "module_id": [
+        "projects"
+      ],
+      "method": [
+        "GET"
+      ],
+      "q": [
+        "matching title"
+      ],
+      "limit": [
+        "25"
+      ],
+      "cursor": [
+        "knowledge-cursor"
+      ],
+      "decisions_only": [
+        "true"
+      ]
+    }
+  },
+  {
+    "name": "builder_knowledge_entity_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/entities/entity-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "entity_id": "entity-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_endpoint_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/endpoints/endpoint-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "endpoint_id": "endpoint-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_decision_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id/decisions/decision-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "decision_id": "decision-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_compare",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id/history/compare",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "from": 1,
+      "to": 1
+    },
+    "expected_query": {
+      "from": [
+        "1"
+      ],
+      "to": [
+        "1"
+      ]
+    }
+  },
+  {
+    "name": "builder_knowledge_revision_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id/history/1",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "revision": 1
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_draft_create",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts/api-born",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/knowledge/drafts/api-born",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "project_id": "project-id",
+        "generation_id": "generation-id",
+        "records": [],
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_activate",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/knowledge/activate",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "project_id": "project-id",
+        "generation_id": "generation-id",
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "generation_id": "draft-generation"
+    },
+    "expected_query": {
+      "generation_id": [
+        "draft-generation"
+      ]
+    }
+  },
+  {
+    "name": "builder_knowledge_update",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "body": {
+        "project_id": "project-id",
+        "family": "project_mandate",
+        "record": {
+          "id": "record-id",
+          "project_id": "project-id",
+          "generation_id": "generation-id",
+          "revision": 1,
+          "payload": {}
+        },
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_delete",
+    "template": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+    "route": "DELETE /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "body": {
+        "project_id": "project-id",
+        "family": "project_mandate",
+        "record_id": "record-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_create",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "body": {
+        "project_id": "project-id",
+        "family": "project_mandate",
+        "record": {
+          "id": "fixture",
+          "project_id": "project-id",
+          "generation_id": "generation-id",
+          "revision": 1,
+          "payload": {}
+        },
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_restore",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/knowledge/project_mandate/record-id/history/restore",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "family": "project_mandate",
+      "record_id": "record-id",
+      "body": {
+        "project_id": "project-id",
+        "family": "project_mandate",
+        "record_id": "record-id",
+        "revision": 1,
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_knowledge_history",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/knowledge/history",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "limit": 25,
+      "cursor": "history-cursor"
+    },
+    "expected_query": {
+      "limit": [
+        "25"
+      ],
+      "cursor": [
+        "history-cursor"
+      ]
+    }
+  },
+  {
+    "name": "builder_project_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_project_register",
+    "template": "POST /internal/v1/companies/{companyID}/projects",
+    "route": "POST /internal/v1/companies/company-id/projects",
+    "arguments": {
+      "company_id": "company-id",
+      "body": {
+        "company_id": "company-id",
+        "company_name": "Fixture Company",
+        "project_id": "project-id",
+        "project_name": "Fixture Project"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_repository_binding_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/binding",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/binding",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_repository_binding_change",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/binding",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "action": "bind",
+        "project_id": "project-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_implementation_repositories_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/implementation-repositories",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_implementation_repository_change",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/implementation-repositories",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "action": "confirm",
+        "project_id": "project-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture",
+        "owner_reference": "fixture",
+        "repository_id": "repository-id"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_state",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system/state",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_overview_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/overview",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/overview",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_overview_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/overview/1",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "revision": 1
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_overview_write",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/overview",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/overview",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "project_id": "project-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture",
+        "content": {
+          "schema_version": "fixture",
+          "tagline": "fixture",
+          "summary": "fixture",
+          "desktop_alt": "fixture",
+          "mobile_alt": "fixture",
+          "sections": {
+            "problem": {
+              "heading": "fixture",
+              "body": "fixture",
+              "points": []
+            },
+            "proposal": {
+              "heading": "fixture",
+              "body": "fixture",
+              "points": []
+            },
+            "impact": {
+              "heading": "fixture",
+              "body": "fixture",
+              "points": []
+            },
+            "audience": {
+              "heading": "fixture",
+              "body": "fixture",
+              "points": []
+            }
+          }
+        },
+        "media": [
+          {
+            "slot": "desktop",
+            "data": "YWJjZA=="
+          },
+          {
+            "slot": "mobile",
+            "data": "YWJjZA=="
+          }
+        ],
+        "knowledge_origin": {
+          "project_id": "project-id",
+          "generation_id": "generation-id",
+          "documents": []
+        },
+        "source": {
+          "origin_absent": false
+        }
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_history",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system/history",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "limit": 100
+    },
+    "expected_query": {
+      "limit": [
+        "100"
+      ]
+    }
+  },
+  {
+    "name": "builder_design_system_revision_validate",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system/history/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_revision_validate",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/validate/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system/validate/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "source": "validate"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/design-system/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_prototype_list",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/prototypes",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_prototype_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/prototypes/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/prototype-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "prototype_id": "prototype-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_landing_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/landing",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/landing",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_begin",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/design-system/mutations",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "operation": "create",
+        "operation_id": "operation-id",
+        "actor": "fixture",
+        "payload_digest": "fixture",
+        "expected_binding_revision": 1,
+        "expected_head": "fixture",
+        "candidate_tree_sha": "fixture",
+        "prepared_commit_sha": "fixture",
+        "inventory_digest": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_design_system_recover",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/design-system/mutations/operation-id/recover",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "operation_id": "operation-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_roadmap_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/roadmap",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_create_epic",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/roadmap/epics",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "id": "fixture",
+        "name": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_edit_epic",
+    "template": "PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+    "route": "PATCH /internal/v1/companies/company-id/projects/project-id/roadmap/epics/epic-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "epic_id": "epic-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "name": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_order_epics",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/order",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/roadmap/epics/order",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "ordered_ids": []
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_delete_epic",
+    "template": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+    "route": "DELETE /internal/v1/companies/company-id/projects/project-id/roadmap/epics/epic-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "epic_id": "epic-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_create_release",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/roadmap/epics/epic-id/releases",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "epic_id": "epic-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "id": "fixture",
+        "name": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_edit_release",
+    "template": "PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+    "route": "PATCH /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "name": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_confirm_release_branch",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/delivery-branches",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/delivery-branches",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "repository_id": "repository-id",
+        "branch": "fixture",
+        "owner_reference": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_order_releases",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/roadmap/epics/epic-id/releases/order",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "epic_id": "epic-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "ordered_ids": []
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_delete_release",
+    "template": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+    "route": "DELETE /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_release_investigation_template",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/investigation/template",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_release_investigation_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/investigation",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_set_investigation",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/investigation",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "investigation": {
+          "title": "fixture",
+          "introduction": "fixture",
+          "materials": []
+        }
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_clear_investigation",
+    "template": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+    "route": "DELETE /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/investigation",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_release_sequencing_plan_template",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan/template",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/sequencing-plan/template",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_release_sequencing_plan_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/sequencing-plan",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_set_sequencing_plan",
+    "template": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+    "route": "PUT /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/sequencing-plan",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "id": "release-id",
+        "sequencing_plan": {
+          "title": "fixture",
+          "introduction": "fixture",
+          "rows": []
+        }
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_clear_sequencing_plan",
+    "template": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+    "route": "DELETE /internal/v1/companies/company-id/projects/project-id/roadmap/releases/release-id/sequencing-plan",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "release_id": "release-id",
+      "body": {
+        "project_id": "project-id",
+        "operation_id": "operation-id",
+        "expected_roadmap_revision": 1,
+        "id": "release-id"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_create",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "body": {
+        "todo": {
+          "id": "fixture",
+          "project_id": "project-id",
+          "title": "fixture",
+          "objective": "fixture",
+          "next_exact_step": "fixture",
+          "artifact_type": "fixture",
+          "stage": "Planning",
+          "qualifiers": [],
+          "sections": [],
+          "proof_refs": [],
+          "waiver_refs": [],
+          "diff_expectation": [],
+          "implementation_commits": [],
+          "affected_files": [],
+          "work_state": "fixture",
+          "content": {}
+        },
+        "schema_version": "builder-todo-creation-v2",
+        "operation_id": "operation-id"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_template",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/todos/template",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id"
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/todos/todo-id",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "todo_revision": 9223372036854775807
+    },
+    "expected_query": {
+      "todo_revision": [
+        "9223372036854775807"
+      ]
+    }
+  },
+  {
+    "name": "builder_todo_remove",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/remove",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "actor": "fixture",
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_transition",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/transition",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "requested_stage": "Planning"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_stage_verify",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/verify-current-stage",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_compare",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/todos/todo-id/history/compare",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "from": 1,
+      "to": 1
+    },
+    "expected_query": {
+      "from": [
+        "1"
+      ],
+      "to": [
+        "1"
+      ]
+    }
+  },
+  {
+    "name": "builder_todo_revision_get",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/todos/todo-id/history/1",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "revision": 1
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_history",
+    "template": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history",
+    "route": "GET /internal/v1/companies/company-id/projects/project-id/todos/todo-id/history",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "after_revision": 2,
+      "limit": 15
+    },
+    "expected_query": {
+      "after_revision": [
+        "2"
+      ],
+      "limit": [
+        "15"
+      ]
+    }
+  },
+  {
+    "name": "builder_todo_update",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/content",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "content": {
+          "title": "fixture",
+          "objective": "fixture",
+          "diff_expectation": [],
+          "affected_files": []
+        },
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_evidence_update",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/evidence",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_place",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/placement",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "expected_roadmap_revision": 1,
+        "operation_id": "operation-id",
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_next_step_update",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/next-step",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "next_exact_step": "fixture",
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_todo_restore",
+    "template": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore",
+    "route": "POST /internal/v1/companies/company-id/projects/project-id/todos/todo-id/history/restore",
+    "arguments": {
+      "company_id": "company-id",
+      "project_id": "project-id",
+      "todo_id": "todo-id",
+      "body": {
+        "project_id": "project-id",
+        "todo_id": "todo-id",
+        "expected_revision": 1,
+        "operation_id": "operation-id",
+        "content_revision": 1,
+        "reason": "fixture"
+      }
+    },
+    "expected_query": {}
+  },
+  {
+    "name": "builder_company_search",
+    "template": "GET /internal/v1/companies/search",
+    "route": "GET /internal/v1/companies/search",
+    "arguments": {
+      "name": "  Fixture Company  ",
+      "limit": 1
+    },
+    "expected_query": {
+      "name": [
+        "Fixture Company"
+      ],
+      "limit": [
+        "1"
+      ],
+      "company_ids": [
+        "company-id"
+      ]
+    }
+  },
+  {
+    "name": "builder_project_search",
+    "template": "GET /internal/v1/companies/{companyID}/projects",
+    "route": "GET /internal/v1/companies/company-id/projects",
+    "arguments": {
+      "company_id": "company-id",
+      "name": "  Fixture Company  ",
+      "limit": 1
+    },
+    "expected_query": {
+      "name": [
+        "Fixture Company"
+      ],
+      "limit": [
+        "1"
+      ]
+    }
+  }
+]

@@ -244,6 +244,27 @@ func OpenMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 }
 
 func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, error) {
+	ctx, cancel := context.WithTimeout(ctx, operationTimeout)
+	defer cancel()
+	store, err := OpenDiscoveryMongo(ctx, uri, controlDatabase)
+	if err != nil {
+		return nil, err
+	}
+	if err := store.ensureControlIndexes(ctx); err != nil {
+		_ = store.client.Disconnect(context.Background())
+		return nil, ErrUnavailable
+	}
+	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }, prototypeCacheRoot: os.Getenv("DELPHI_PROTOTYPE_GIT_CACHE_ROOT")}
+	store.designSystemVerifier = newGitDesignSystemVerifier()
+	store.prototypeGit = prototypeGit
+	store.prototypeFileCache = newPrototypeFileCache()
+	store.prototypeHot = newPrototypeHotCache()
+	return store, nil
+}
+
+// OpenDiscoveryMongo connects without creating control indexes or initializing
+// Registry services. It is used by the additive discovery preparation command.
+func OpenDiscoveryMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, error) {
 	uri = strings.TrimSpace(uri)
 	parsed, err := url.Parse(uri)
 	if err != nil || (parsed.Scheme != "mongodb" && parsed.Scheme != "mongodb+srv") || parsed.Host == "" {
@@ -265,13 +286,7 @@ func openMongo(ctx context.Context, uri, controlDatabase string) (*MongoStore, e
 		_ = client.Disconnect(context.Background())
 		return nil, ErrUnavailable
 	}
-	prototypeGit := gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }, prototypeCacheRoot: os.Getenv("DELPHI_PROTOTYPE_GIT_CACHE_ROOT")}
-	store := &MongoStore{client: client, control: client.Database(controlDatabase), designSystemVerifier: newGitDesignSystemVerifier(), prototypeGit: prototypeGit, prototypeFileCache: newPrototypeFileCache(), prototypeHot: newPrototypeHotCache()}
-	if err := store.ensureControlIndexes(pingCtx); err != nil {
-		_ = client.Disconnect(context.Background())
-		return nil, ErrUnavailable
-	}
-	return store, nil
+	return &MongoStore{client: client, control: client.Database(controlDatabase)}, nil
 }
 
 func (m *MongoStore) Close(ctx context.Context) error { return m.client.Disconnect(ctx) }

@@ -168,6 +168,8 @@ func NewHandler(service Service) http.Handler {
 	h := &Handler{service: service}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /internal/v1/catalog", h.catalog)
+	mux.HandleFunc("GET /internal/v1/companies/search", h.searchCompanies)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects", h.searchProjects)
 	mux.HandleFunc("POST /internal/v1/sessions/bind", h.bindSession)
 	mux.HandleFunc("GET /internal/v1/sessions/{provider}/{externalID}", h.readSession)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/sessions", h.listProjectSessions)

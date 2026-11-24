@@ -1,0 +1,7117 @@
+{
+  "version": 1,
+  "definitions": {
+    "DesignSystemMutationIntent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": [
+            "create",
+            "replace",
+            "delete"
+          ]
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "payload_digest": {
+          "type": "string"
+        },
+        "expected_binding_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "expected_selected_sha": {
+          "type": "string"
+        },
+        "expected_inventory_digest": {
+          "type": "string"
+        },
+        "expected_head": {
+          "type": "string"
+        },
+        "candidate_tree_sha": {
+          "type": "string"
+        },
+        "prepared_commit_sha": {
+          "type": "string"
+        },
+        "inventory_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "operation_id",
+        "actor",
+        "payload_digest",
+        "expected_binding_revision",
+        "expected_head",
+        "candidate_tree_sha",
+        "prepared_commit_sha",
+        "inventory_digest"
+      ]
+    },
+    "ImplementationRepositoryChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "confirm",
+            "remove"
+          ]
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "owner_reference": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "project_id",
+        "expected_revision",
+        "operation_id",
+        "actor",
+        "owner_reference",
+        "repository_id"
+      ]
+    },
+    "CanonicalMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record": {
+          "$ref": "#/$defs/CanonicalRecord"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "family",
+        "record",
+        "expected_revision",
+        "operation_id",
+        "actor"
+      ]
+    },
+    "CanonicalRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "generation_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "content_digest": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "deleted": {
+          "type": "boolean"
+        },
+        "payload": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MandatePayload"
+            },
+            {
+              "$ref": "#/$defs/DomainCatalogPayload"
+            },
+            {
+              "$ref": "#/$defs/ConstitutionPayload"
+            },
+            {
+              "$ref": "#/$defs/StrategicRoadmapPayload"
+            },
+            {
+              "$ref": "#/$defs/ModulePayload"
+            },
+            {
+              "$ref": "#/$defs/CanonicalEndpointPayload"
+            },
+            {
+              "$ref": "#/$defs/PolicyPayload"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "generation_id",
+        "revision",
+        "payload"
+      ]
+    },
+    "MandatePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "working_name": {
+          "type": "string"
+        },
+        "working_name_state": {
+          "type": "string"
+        },
+        "working_name_policy": {
+          "type": "string"
+        },
+        "business_thesis": {
+          "type": "string"
+        },
+        "desired_outcomes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_context": {
+          "type": "string"
+        },
+        "principles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "future_boundary": {
+          "type": "string"
+        },
+        "success_measures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "success_measures_context": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalKnowledgeState": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        }
+      }
+    },
+    "CanonicalQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "question": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalReference"
+          }
+        }
+      }
+    },
+    "CanonicalReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      }
+    },
+    "DomainCatalogPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalEntity"
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRelation"
+          }
+        },
+        "relationship_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "distinctions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalDistinction"
+          }
+        },
+        "qa_validation_outline": {
+          "$ref": "#/$defs/CanonicalQATargetOutline"
+        },
+        "lifecycle_boundary": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalEntity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "authority_boundary": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalRelation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        },
+        "to": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "cardinality": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "applies_to": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalDistinction": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "terms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalQATargetOutline": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "applicability": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        }
+      }
+    },
+    "CanonicalNamedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      }
+    },
+    "ConstitutionPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "promotion_mode": {
+          "type": "string"
+        },
+        "capability_namespaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "authority_boundaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "control_plane_responsibilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "publication_flow": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalProcess"
+          }
+        },
+        "synchronization_outcomes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "freshness_states": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "module_boundary_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalReference"
+          }
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalDecision"
+          }
+        },
+        "maintenance_rule": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalProcess": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        }
+      }
+    },
+    "CanonicalDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalReference"
+          }
+        },
+        "replaces": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cleanup_trigger": {
+          "type": "string"
+        }
+      }
+    },
+    "StrategicRoadmapPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "strategic_objective": {
+          "type": "string"
+        },
+        "epic_candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "epic_sequence_context": {
+          "type": "string"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalStage"
+          }
+        },
+        "deferred_options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "admission_rule": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalStage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "context": {
+          "type": "string"
+        },
+        "executive_value": {
+          "type": "string"
+        },
+        "first_viewer_slice": {
+          "type": "string"
+        },
+        "open_fronts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ModulePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "coverage": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "processes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalProcess"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalDecision"
+          }
+        },
+        "interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "workflows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalDependency"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRouteOwnership"
+          }
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalSchema"
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "local_operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalLocalOperation"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalEventContract"
+          }
+        },
+        "jobs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalJob"
+          }
+        },
+        "observability": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalObservation"
+          }
+        },
+        "verification": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalVerification"
+          }
+        }
+      }
+    },
+    "CanonicalField": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "format": {
+          "type": "string"
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "min_length": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "max_length": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "min_items": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "location": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "items": {
+          "$ref": "#/$defs/CanonicalField"
+        },
+        "schema_ref": {
+          "type": "string"
+        },
+        "one_of": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "required_when": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalCondition"
+          }
+        }
+      }
+    },
+    "CanonicalCondition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "operator": {
+          "type": "string"
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "responsibility": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalRouteOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "route": {
+          "type": "string"
+        },
+        "host_scope": {
+          "type": "string"
+        },
+        "environment_type": {
+          "type": "string"
+        },
+        "main_scope": {
+          "type": "string"
+        },
+        "subscope": {
+          "type": "string"
+        },
+        "guard": {
+          "type": "string"
+        },
+        "screen_id": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalSchema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "indexes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalIndex"
+          }
+        },
+        "invariants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        }
+      }
+    },
+    "CanonicalIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalIndexKey"
+          }
+        },
+        "unique": {
+          "type": "boolean"
+        },
+        "sparse": {
+          "type": "boolean"
+        },
+        "expire_after_seconds": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "partial_filter": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalCondition"
+          }
+        }
+      }
+    },
+    "CanonicalIndexKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "type": "string"
+        },
+        "order": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalLocalOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "command": {
+          "type": "string"
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "exit_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalExitCode"
+          }
+        },
+        "response": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "digest": {
+          "$ref": "#/$defs/CanonicalDigestContract"
+        },
+        "side_effects": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "limits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        }
+      }
+    },
+    "CanonicalExitCode": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "outcome": {
+          "type": "string"
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        },
+        "consumer_action": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalDigestContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalEventContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "direction": {
+          "type": "string"
+        },
+        "transport": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        }
+      }
+    },
+    "CanonicalJob": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "handler": {
+          "type": "string"
+        },
+        "schedule": {
+          "type": "string"
+        },
+        "timezone": {
+          "type": "string"
+        },
+        "lifecycle_requirements": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "target": {
+          "type": "string"
+        },
+        "comparison": {
+          "type": "string"
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalVerification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "layer": {
+          "type": "string"
+        },
+        "requirement": {
+          "type": "string"
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalEndpointPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        },
+        "route": {
+          "type": "string"
+        },
+        "host_scope": {
+          "type": "string"
+        },
+        "module_id": {
+          "type": "string"
+        },
+        "request": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "response": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "behavior_rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "security": {
+          "$ref": "#/$defs/CanonicalSecurity"
+        },
+        "pagination": {
+          "$ref": "#/$defs/CanonicalPagination"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/CanonicalIdempotency"
+        },
+        "patch": {
+          "$ref": "#/$defs/CanonicalPatch"
+        },
+        "responses": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalResponse"
+          }
+        },
+        "policy_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "entity_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "CanonicalSecurity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "type": "string"
+        },
+        "authentication": {
+          "type": "string"
+        },
+        "abilities": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "principals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "trusted_proxy_required": {
+          "type": "boolean"
+        },
+        "direct_origin_blocked": {
+          "type": "boolean"
+        },
+        "observe_mode": {
+          "type": "boolean"
+        },
+        "rejection_codes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response_headers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        }
+      }
+    },
+    "CanonicalPagination": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string"
+        },
+        "request_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "response_fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalIndexKey"
+          }
+        },
+        "default_size": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "max_size": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        }
+      }
+    },
+    "CanonicalIdempotency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "header": {
+          "type": "string"
+        },
+        "replay_window_seconds": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflict_status_code": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        }
+      }
+    },
+    "CanonicalPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "omitted_fields": {
+          "type": "string"
+        },
+        "null_fields": {
+          "type": "string"
+        },
+        "atomic": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CanonicalResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status_code": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "description": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "headers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        }
+      }
+    },
+    "PolicyPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "semantic_status": {
+          "type": "string"
+        },
+        "open_questions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalQuestion"
+          }
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope_concepts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "prohibited_inferences": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "future_surface_declarations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalNamedText"
+          }
+        },
+        "future_surface_condition": {
+          "type": "string"
+        },
+        "environment_type_state": {
+          "type": "string"
+        },
+        "maintenance_rule": {
+          "type": "string"
+        },
+        "rules": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRule"
+          }
+        },
+        "definitions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalField"
+          }
+        },
+        "ownership": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalOwnership"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalDecision"
+          }
+        },
+        "routes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalRouteOwnership"
+          }
+        },
+        "endpoint_conventions": {
+          "$ref": "#/$defs/CanonicalEndpointConventions"
+        }
+      }
+    },
+    "CanonicalOwnership": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner_kind": {
+          "type": "string"
+        },
+        "owner_id": {
+          "type": "string"
+        },
+        "decision_id": {
+          "type": "string"
+        }
+      }
+    },
+    "CanonicalEndpointConventions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "base_path": {
+          "type": "string"
+        },
+        "id_format": {
+          "type": "string"
+        },
+        "datetime_format": {
+          "type": "string"
+        },
+        "tenant_id_required": {
+          "type": "boolean"
+        },
+        "pagination": {
+          "$ref": "#/$defs/CanonicalPagination"
+        },
+        "security": {
+          "$ref": "#/$defs/CanonicalSecurity"
+        },
+        "idempotency": {
+          "$ref": "#/$defs/CanonicalIdempotency"
+        },
+        "patch": {
+          "$ref": "#/$defs/CanonicalPatch"
+        }
+      }
+    },
+    "CanonicalDeleteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "family",
+        "record_id",
+        "expected_revision",
+        "operation_id",
+        "actor"
+      ]
+    },
+    "CanonicalDraftCreate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "generation_id": {
+          "type": "string"
+        },
+        "records": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalImportRecord"
+          },
+          "maxItems": 500
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "generation_id",
+        "records",
+        "operation_id",
+        "actor"
+      ]
+    },
+    "CanonicalImportRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record": {
+          "$ref": "#/$defs/CanonicalRecord"
+        }
+      },
+      "required": [
+        "family",
+        "record"
+      ]
+    },
+    "CanonicalRestoreRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "family",
+        "record_id",
+        "revision",
+        "expected_revision",
+        "operation_id",
+        "actor"
+      ]
+    },
+    "OverviewWriteRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "content": {
+          "$ref": "#/$defs/OverviewContent"
+        },
+        "media": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OverviewMediaInput"
+          },
+          "minItems": 2,
+          "maxItems": 6
+        },
+        "knowledge_origin": {
+          "$ref": "#/$defs/OverviewKnowledgeOrigin"
+        },
+        "source": {
+          "$ref": "#/$defs/OverviewSource"
+        }
+      },
+      "required": [
+        "project_id",
+        "expected_revision",
+        "operation_id",
+        "actor",
+        "content",
+        "media",
+        "knowledge_origin",
+        "source"
+      ]
+    },
+    "OverviewContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "tagline": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "desktop_alt": {
+          "type": "string"
+        },
+        "mobile_alt": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "problem": {
+              "$ref": "#/$defs/OverviewSection"
+            },
+            "proposal": {
+              "$ref": "#/$defs/OverviewSection"
+            },
+            "impact": {
+              "$ref": "#/$defs/OverviewSection"
+            },
+            "audience": {
+              "$ref": "#/$defs/OverviewSection"
+            }
+          },
+          "required": [
+            "problem",
+            "proposal",
+            "impact",
+            "audience"
+          ]
+        }
+      },
+      "required": [
+        "schema_version",
+        "tagline",
+        "summary",
+        "desktop_alt",
+        "mobile_alt",
+        "sections"
+      ]
+    },
+    "OverviewSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "heading": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 3
+        },
+        "image_alt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "heading",
+        "body",
+        "points"
+      ]
+    },
+    "OverviewMediaInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "type": "string",
+          "enum": [
+            "desktop",
+            "mobile",
+            "problem",
+            "proposal",
+            "impact",
+            "audience"
+          ]
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "minLength": 4,
+          "maxLength": 2796204
+        }
+      },
+      "required": [
+        "slot",
+        "data"
+      ]
+    },
+    "OverviewKnowledgeOrigin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "generation_id": {
+          "type": "string"
+        },
+        "documents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CanonicalManifestEntry"
+          }
+        }
+      },
+      "required": [
+        "project_id",
+        "generation_id",
+        "documents"
+      ]
+    },
+    "CanonicalManifestEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "content_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "id",
+        "revision",
+        "content_digest"
+      ]
+    },
+    "OverviewSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "content_digest": {
+          "type": "string"
+        },
+        "origin_absent": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "origin_absent"
+      ]
+    },
+    "Registration": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "company_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "company_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "project_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "company_id",
+        "company_name",
+        "project_id",
+        "project_name"
+      ]
+    },
+    "RepositoryBindingRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "bind",
+            "replace",
+            "unbind"
+          ]
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "publication_branch": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action",
+        "project_id",
+        "expected_revision",
+        "operation_id",
+        "actor"
+      ]
+    },
+    "ReleaseInvestigation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "introduction": {
+          "type": "string"
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReleaseInvestigationMaterial"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "introduction",
+        "materials"
+      ]
+    },
+    "ReleaseInvestigationMaterial": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body_markdown": {
+          "type": "string"
+        },
+        "source_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "body_markdown"
+      ]
+    },
+    "ReleaseSequencingPlan": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "introduction": {
+          "type": "string"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReleaseSequencingPlanRow"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "introduction",
+        "rows"
+      ]
+    },
+    "ReleaseSequencingPlanRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "todo_id": {
+          "type": "string"
+        },
+        "depends_on": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "uncertainties": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "checkpoint_proposal": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "todo_id",
+        "depends_on",
+        "rationale",
+        "uncertainties",
+        "checkpoint_proposal"
+      ]
+    },
+    "TODOAdmissionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "string",
+          "enum": [
+            "builder-todo-creation-v2"
+          ]
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "initial_state_acceptance": {
+          "$ref": "#/$defs/TODOInitialStateAcceptance"
+        },
+        "disposition": {
+          "$ref": "#/$defs/TODODisposition"
+        },
+        "todo": {
+          "$ref": "#/$defs/TODORecord"
+        }
+      },
+      "required": [
+        "todo",
+        "schema_version",
+        "operation_id"
+      ]
+    },
+    "TODOInitialStateAcceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner_reference": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "actor_claim": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "owner_reference",
+        "reason"
+      ]
+    },
+    "TODODisposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "successor_todo_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reason"
+      ]
+    },
+    "TODORecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "release_id": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "title": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "next_exact_step": {
+          "type": "string"
+        },
+        "artifact_type": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string",
+          "enum": [
+            "Planning",
+            "Implementation-Approval-Pending",
+            "Ready-for-Implementation",
+            "In-Progress",
+            "Local-Implemented",
+            "Promotion-Lane",
+            "Completed"
+          ]
+        },
+        "qualifiers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "work_state": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOSection"
+          }
+        },
+        "proof_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "waiver_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "diff_expectation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODORepositoryScope"
+          }
+        },
+        "implementation_commits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOCommitReference"
+          }
+        },
+        "affected_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "content": {
+          "$ref": "#/$defs/TODOContent"
+        }
+      },
+      "required": [
+        "id",
+        "project_id",
+        "title",
+        "objective",
+        "next_exact_step",
+        "artifact_type",
+        "stage",
+        "qualifiers",
+        "sections",
+        "proof_refs",
+        "waiver_refs",
+        "diff_expectation",
+        "implementation_commits",
+        "affected_files",
+        "work_state",
+        "content"
+      ]
+    },
+    "TODOSection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body_markdown": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "ownership": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "title",
+        "body_markdown",
+        "position"
+      ]
+    },
+    "TODOProofReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "source_digest": {
+          "type": "string"
+        },
+        "verification_state": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "ref",
+        "source_digest",
+        "verification_state"
+      ]
+    },
+    "TODORepositoryScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "delivery_branch": {
+          "type": "string"
+        },
+        "baseline": {
+          "type": "string"
+        },
+        "expected_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "not_expected_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "repository",
+        "baseline",
+        "expected_paths",
+        "not_expected_paths"
+      ]
+    },
+    "TODOCommitReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "commit": {
+          "type": "string"
+        },
+        "source_digest": {
+          "type": "string"
+        },
+        "verification_state": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository",
+        "commit",
+        "source_digest",
+        "verification_state"
+      ]
+    },
+    "TODOContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "delivery": {
+          "$ref": "#/$defs/TODODeliveryContract"
+        },
+        "context": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/TODOContentScope"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "validation_scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOValidationScenario"
+          }
+        },
+        "implementation_plan": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentRisk"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentReference"
+          }
+        },
+        "image_attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOImageAttachment"
+          }
+        },
+        "legacy_context": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOLegacyContext"
+          }
+        },
+        "architecture": {
+          "$ref": "#/$defs/TODOArchitectureDecision"
+        },
+        "planning": {
+          "$ref": "#/$defs/TODOPlanning"
+        },
+        "local_checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOLocalCheck"
+          }
+        }
+      }
+    },
+    "TODODeliveryContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "targets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOKnowledgeTarget"
+          }
+        },
+        "prototype_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "TODOKnowledgeTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record_id": {
+          "type": "string"
+        },
+        "generation_id": {
+          "type": "string"
+        },
+        "baseline_revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "baseline_digest": {
+          "type": "string"
+        },
+        "change_kind": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "family",
+        "record_id",
+        "generation_id",
+        "baseline_revision",
+        "change_kind"
+      ]
+    },
+    "TODOContentScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "included": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "TODOContentItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text"
+      ]
+    },
+    "TODOValidationScenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "criterion_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "method": {
+          "type": "string"
+        },
+        "expected": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "criterion_ids",
+        "method",
+        "expected"
+      ]
+    },
+    "TODOContentRisk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "mitigation": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "mitigation"
+      ]
+    },
+    "TODOContentReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ]
+    },
+    "TODOImageAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "verified_revision": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "digest",
+        "verified_revision"
+      ]
+    },
+    "TODOLegacyContext": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "source_revision": {
+          "type": "string"
+        },
+        "section_position": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "ownership": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_revision",
+        "section_position",
+        "ownership",
+        "title",
+        "body",
+        "digest"
+      ]
+    },
+    "TODOArchitectureDecision": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        },
+        "protection": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision",
+        "rationale",
+        "protection"
+      ]
+    },
+    "TODOPlanning": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "complexity": {
+          "type": "string"
+        },
+        "audit_triggers": {
+          "$ref": "#/$defs/TODOAuditTriggers"
+        },
+        "impact": {
+          "$ref": "#/$defs/TODOPlanningImpact"
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOPlanningAssumption"
+          }
+        },
+        "reviews": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOPlanningReview"
+          }
+        }
+      },
+      "required": [
+        "complexity",
+        "impact",
+        "assumptions",
+        "reviews"
+      ]
+    },
+    "TODOAuditTriggers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "blast_radius": {
+          "type": "string"
+        },
+        "architecture_applicability": {
+          "type": "string"
+        },
+        "behavioral_change_or_bugfix": {
+          "type": "boolean"
+        },
+        "changes_public_contract": {
+          "type": "boolean"
+        },
+        "touches_auth_or_tenant": {
+          "type": "boolean"
+        },
+        "touches_runtime_or_infra": {
+          "type": "boolean"
+        },
+        "touches_tests": {
+          "type": "boolean"
+        },
+        "critical_user_journey": {
+          "type": "boolean"
+        },
+        "release_or_promotion_critical": {
+          "type": "boolean"
+        },
+        "high_severity_plan_review_issue": {
+          "type": "boolean"
+        },
+        "explicit_three_lane_request": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "blast_radius",
+        "architecture_applicability"
+      ]
+    },
+    "TODOPlanningImpact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cross_module": {
+          "type": "boolean"
+        },
+        "public_contract": {
+          "type": "boolean"
+        },
+        "runtime_sensitive": {
+          "type": "boolean"
+        },
+        "high_severity": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "cross_module",
+        "public_contract",
+        "runtime_sensitive",
+        "high_severity"
+      ]
+    },
+    "TODOPlanningAssumption": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "statement": {
+          "type": "string"
+        },
+        "code_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOPlanningCodeRef"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "statement",
+        "code_refs"
+      ]
+    },
+    "TODOPlanningCodeRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "path"
+      ]
+    },
+    "TODOPlanningReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "reference"
+      ]
+    },
+    "TODOLocalCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "working_directory": {
+          "type": "string"
+        },
+        "input_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "repository_id",
+        "argv",
+        "working_directory",
+        "input_paths"
+      ]
+    },
+    "TODOEvidenceEditRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "proof_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "waiver_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "implementation_commits": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOCommitReference"
+          }
+        },
+        "record_sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOSection"
+          }
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "reason"
+      ]
+    },
+    "TODONextStepEditRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "next_exact_step": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "next_exact_step",
+        "reason"
+      ]
+    },
+    "TODOPlacementEditRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "expected_roadmap_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "action": {
+          "type": "string",
+          "enum": [
+            "attach",
+            "detach"
+          ]
+        },
+        "detach": {
+          "type": "boolean"
+        },
+        "release_id": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "expected_roadmap_revision",
+        "operation_id",
+        "reason"
+      ]
+    },
+    "TODORemovalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "actor",
+        "reason"
+      ]
+    },
+    "TODOContentRestoreRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "content_revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "content_revision",
+        "reason"
+      ]
+    },
+    "VerifyCurrentTODOStageRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "proof_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id"
+      ]
+    },
+    "TODOActionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "requested_stage": {
+          "type": "string",
+          "enum": [
+            "Planning",
+            "Implementation-Approval-Pending",
+            "Ready-for-Implementation",
+            "In-Progress",
+            "Local-Implemented",
+            "Promotion-Lane",
+            "Completed"
+          ]
+        },
+        "promotion_targets": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "maxProperties": 32
+        },
+        "proof_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "waiver_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOProofReference"
+          }
+        },
+        "local_proof": {
+          "$ref": "#/$defs/LocalProofResult"
+        },
+        "knowledge_delivery": {
+          "$ref": "#/$defs/TODOKnowledgeDeliveryClaim"
+        },
+        "knowledge_final_acceptance": {
+          "$ref": "#/$defs/TODOKnowledgeFinalAcceptance"
+        },
+        "prototype_delivery": {
+          "$ref": "#/$defs/TODOPrototypeDeliveryClaim"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "requested_stage"
+      ]
+    },
+    "LocalProofResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "string"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "company_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "content_digest": {
+          "type": "string"
+        },
+        "release_id": {
+          "type": "string"
+        },
+        "position": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "started_at": {
+          "type": "string"
+        },
+        "finished_at": {
+          "type": "string"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localProofRepository"
+          }
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localProofCheck"
+          }
+        },
+        "result_digest": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_version",
+        "todo_id",
+        "run_id",
+        "started_at",
+        "finished_at",
+        "repositories",
+        "checks",
+        "result_digest"
+      ]
+    },
+    "localProofRepository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repository_id": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        },
+        "head_before": {
+          "type": "string"
+        },
+        "head_after": {
+          "type": "string"
+        },
+        "inputs_digest_before": {
+          "type": "string"
+        },
+        "inputs_digest_after": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_id",
+        "branch",
+        "head_before",
+        "head_after",
+        "inputs_digest_before",
+        "inputs_digest_after"
+      ]
+    },
+    "localProofCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "repository_id": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "id",
+        "repository_id",
+        "exit_code"
+      ]
+    },
+    "TODOKnowledgeDeliveryClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOKnowledgeDeliveryItem"
+          }
+        },
+        "owner_attribution_reference": {
+          "type": "string"
+        },
+        "retrospective": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "content_digest",
+        "items",
+        "owner_attribution_reference"
+      ]
+    },
+    "TODOKnowledgeDeliveryItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "family": {
+          "type": "string",
+          "enum": [
+            "project_mandate",
+            "domain_catalog",
+            "project_constitution",
+            "strategic_roadmap",
+            "module",
+            "endpoint_contract",
+            "policy"
+          ]
+        },
+        "record_id": {
+          "type": "string"
+        },
+        "generation_id": {
+          "type": "string"
+        },
+        "to_revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "to_digest": {
+          "type": "string"
+        },
+        "criterion_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scenario_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "family",
+        "record_id",
+        "generation_id",
+        "to_revision",
+        "to_digest",
+        "criterion_ids",
+        "scenario_ids"
+      ]
+    },
+    "TODOKnowledgeFinalAcceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "type": "string"
+        },
+        "set_digest": {
+          "type": "string"
+        },
+        "owner_reference": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "content_digest",
+        "set_digest",
+        "owner_reference",
+        "reason"
+      ]
+    },
+    "TODOPrototypeDeliveryClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "content_digest": {
+          "type": "string"
+        },
+        "revision": {
+          "type": "string"
+        },
+        "inventory_digest": {
+          "type": "string"
+        },
+        "binding_revision": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        }
+      },
+      "required": [
+        "content_digest",
+        "revision",
+        "inventory_digest",
+        "binding_revision"
+      ]
+    },
+    "TODOContentEditRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z][a-z0-9-]{0,63}$"
+        },
+        "todo_id": {
+          "type": "string"
+        },
+        "expected_revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "operation_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+        },
+        "content": {
+          "$ref": "#/$defs/TODOAuthoredContent"
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "project_id",
+        "todo_id",
+        "expected_revision",
+        "operation_id",
+        "content",
+        "reason"
+      ]
+    },
+    "TODOAuthoredContent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "minimum": -9223372036854775808,
+          "maximum": 9223372036854775807
+        },
+        "delivery": {
+          "$ref": "#/$defs/TODODeliveryContract"
+        },
+        "context": {
+          "type": "string"
+        },
+        "scope": {
+          "$ref": "#/$defs/TODOContentScope"
+        },
+        "criteria": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "validation_scenarios": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOValidationScenario"
+          }
+        },
+        "implementation_plan": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentItem"
+          }
+        },
+        "risks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentRisk"
+          }
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOContentReference"
+          }
+        },
+        "image_attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOImageAttachment"
+          }
+        },
+        "legacy_context": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOLegacyContext"
+          }
+        },
+        "architecture": {
+          "$ref": "#/$defs/TODOArchitectureDecision"
+        },
+        "planning": {
+          "$ref": "#/$defs/TODOPlanning"
+        },
+        "local_checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOLocalCheck"
+          }
+        },
+        "title": {
+          "type": "string"
+        },
+        "objective": {
+          "type": "string"
+        },
+        "sections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODOSection"
+          }
+        },
+        "diff_expectation": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/TODORepositoryScope"
+          }
+        },
+        "affected_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "title",
+        "objective",
+        "diff_expectation",
+        "affected_files"
+      ]
+    }
+  },
+  "tools": [
+    {
+      "name": "builder_clear_investigation",
+      "description": "Clear investigation through the owning Registry API.",
+      "method": "DELETE",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_clear_sequencing_plan",
+      "description": "Clear sequencing plan through the owning Registry API.",
+      "method": "DELETE",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "id"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_company_search",
+      "description": "Find allowed Companies by exact name or ID. Exact names are case-insensitive. Use the canonical ID and name from results, and ask the user to choose an ID for ambiguous names.",
+      "method": "GET",
+      "path": "/internal/v1/companies/search",
+      "query": [
+        "id",
+        "name",
+        "limit",
+        "cursor"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact name containing 1 to 200 UTF-8 bytes after trimming outer whitespace."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "required": [
+              "id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "builder_confirm_release_branch",
+      "description": "Confirm release branch through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/delivery-branches",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "repository_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "branch": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "owner_reference": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "repository_id",
+              "branch",
+              "owner_reference"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_create_epic",
+      "description": "Create epic through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "id",
+              "name"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_create_release",
+      "description": "Create release through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "epic_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              },
+              "epic_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "id",
+              "name"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "epic_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_delete_epic",
+      "description": "Delete epic through the owning Registry API.",
+      "method": "DELETE",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "epic_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "epic_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_delete_release",
+      "description": "Delete release through the owning Registry API.",
+      "method": "DELETE",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_begin",
+      "description": "Design system begin through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/DesignSystemMutationIntent"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_get",
+      "description": "Read the current Design System or the selected immutable Git revision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system",
+      "alternate_path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[0-9a-f]{40}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_history",
+      "description": "Design system history through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/history",
+      "query": [
+        "limit"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_recover",
+      "description": "Ask the Registry to recover the selected existing Design System operation and report its authoritative state.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "operation_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_revision_validate",
+      "description": "Read the validation and provenance of an exact Design System revision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/history/{revision}",
+      "alternate_path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/validate/{revision}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "history",
+              "validate"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "revision"
+        ]
+      }
+    },
+    {
+      "name": "builder_design_system_state",
+      "description": "Design system state through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/design-system/state",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_edit_epic",
+      "description": "Edit epic through the owning Registry API.",
+      "method": "PATCH",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "epic_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "name"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "epic_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_edit_release",
+      "description": "Edit release through the owning Registry API.",
+      "method": "PATCH",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "epic_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "description": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 2048
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "name"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_implementation_repositories_get",
+      "description": "Read the selected implementation repositories.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_implementation_repository_change",
+      "description": "Implementation repository change through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/ImplementationRepositoryChange"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_activate",
+      "description": "Knowledge activate through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "generation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "actor": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              }
+            },
+            "required": [
+              "project_id",
+              "generation_id",
+              "operation_id",
+              "actor"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_compare",
+      "description": "Knowledge compare through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare",
+      "query": [
+        "from",
+        "to"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "from": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "from",
+          "to"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_create",
+      "description": "Knowledge create through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "body": {
+            "$ref": "#/$defs/CanonicalMutation"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_decision_get",
+      "description": "Read the selected knowledge decision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "decision_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "decision_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_delete",
+      "description": "Knowledge delete through the owning Registry API.",
+      "method": "DELETE",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "body": {
+            "$ref": "#/$defs/CanonicalDeleteRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_draft_create",
+      "description": "Knowledge draft create through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts/api-born",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/CanonicalDraftCreate"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_endpoint_get",
+      "description": "Read the selected knowledge endpoint.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "endpoint_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "endpoint_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_entity_get",
+      "description": "Read the selected knowledge entity.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "entity_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "entity_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_get",
+      "description": "Read the selected knowledge.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "query": [
+        "generation_id"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "generation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_history",
+      "description": "Knowledge history through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history",
+      "query": [
+        "limit",
+        "cursor"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_index",
+      "description": "Knowledge index through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index",
+      "query": [
+        "family",
+        "module_id",
+        "method",
+        "q",
+        "limit",
+        "cursor",
+        "decisions_only"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "module_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "HEAD",
+              "OPTIONS",
+              "CONNECT",
+              "TRACE"
+            ]
+          },
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "decisions_only": {
+            "type": "boolean",
+            "const": true
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_manifest",
+      "description": "Knowledge manifest through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest",
+      "query": [
+        "generation_id"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "generation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_restore",
+      "description": "Knowledge restore through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "body": {
+            "$ref": "#/$defs/CanonicalRestoreRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_revision_get",
+      "description": "Read the selected knowledge revision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "revision"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_template",
+      "description": "Read the current Registry templates for typed Project Knowledge.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_knowledge_update",
+      "description": "Knowledge update through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "family": {
+            "type": "string",
+            "enum": [
+              "project_mandate",
+              "domain_catalog",
+              "project_constitution",
+              "strategic_roadmap",
+              "module",
+              "endpoint_contract",
+              "policy"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          },
+          "body": {
+            "$ref": "#/$defs/CanonicalMutation"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "family",
+          "record_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_landing_get",
+      "description": "Read the selected landing.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/landing",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_order_epics",
+      "description": "Order epics through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/order",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "ordered_ids": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 500,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                }
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "ordered_ids"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_order_releases",
+      "description": "Order releases through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "epic_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "ordered_ids": {
+                "type": "array",
+                "uniqueItems": true,
+                "maxItems": 500,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64,
+                  "pattern": "^[a-z][a-z0-9-]{0,63}$"
+                }
+              },
+              "epic_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "ordered_ids"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "epic_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_overview_get",
+      "description": "Read the current Overview or the selected exact revision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/overview",
+      "alternate_path": "/internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_overview_write",
+      "description": "Write the typed Overview and two to six existing PNG media slots with compare and set.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/overview",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/OverviewWriteRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_project_get",
+      "description": "Read the exact Project after binding the current conversation.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_project_register",
+      "description": "Register a Project in a pre-existing Company after host confirmation. Send canonical Company ID and name. If the outcome is unknown, use project search by exact ID before binding.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/Registration"
+          }
+        },
+        "required": [
+          "company_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_project_search",
+      "description": "Find Projects within a selected Company by exact name or ID. Use the exact Company, Project and name tuple for registration outcome readback.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects",
+      "query": [
+        "id",
+        "name",
+        "limit",
+        "cursor"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Exact name containing 1 to 200 UTF-8 bytes after trimming outer whitespace."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50
+          },
+          "cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "required": [
+          "company_id"
+        ],
+        "oneOf": [
+          {
+            "required": [
+              "name"
+            ]
+          },
+          {
+            "required": [
+              "id"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "builder_prototype_get",
+      "description": "Read the selected prototype.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40,
+            "pattern": "^[0-9a-f]{40}$"
+          },
+          "prototype_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "revision",
+          "prototype_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_prototype_list",
+      "description": "Prototype list through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/prototypes",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_release_investigation_get",
+      "description": "Read the selected release investigation.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_release_investigation_template",
+      "description": "Release investigation template through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_release_sequencing_plan_get",
+      "description": "Read the selected release sequencing plan.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_release_sequencing_plan_template",
+      "description": "Release sequencing plan template through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan/template",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_repository_binding_change",
+      "description": "Repository binding change through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/binding",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/RepositoryBindingRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_repository_binding_get",
+      "description": "Read the selected repository binding.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/binding",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_roadmap_get",
+      "description": "Read the selected roadmap.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_session_bind",
+      "description": "Permanently bind the current native conversation to the host-confirmed Company and Project. Supply a stable operation ID and expected revision zero.",
+      "method": "POST",
+      "path": "/internal/v1/sessions/bind",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "operation_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "expected_revision": {
+            "type": "integer",
+            "const": 0
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "operation_id",
+          "expected_revision"
+        ]
+      }
+    },
+    {
+      "name": "builder_session_get",
+      "description": "Read the permanent binding of the current native conversation.",
+      "method": "GET",
+      "path": "/internal/v1/sessions/{provider}/{externalID}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    {
+      "name": "builder_session_list",
+      "description": "List sessions bound to this Company and Project.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/sessions",
+      "query": [
+        "limit",
+        "after"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "after": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24,
+            "pattern": "^[a-fA-F0-9]{24}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_set_investigation",
+      "description": "Set investigation through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "investigation": {
+                "$ref": "#/$defs/ReleaseInvestigation"
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "investigation"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_set_sequencing_plan",
+      "description": "Set sequencing plan through the owning Registry API.",
+      "method": "PUT",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "release_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "project_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "operation_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+              },
+              "expected_roadmap_revision": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9223372036854775807
+              },
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9-]{0,63}$"
+              },
+              "sequencing_plan": {
+                "$ref": "#/$defs/ReleaseSequencingPlan"
+              }
+            },
+            "required": [
+              "project_id",
+              "operation_id",
+              "expected_roadmap_revision",
+              "id",
+              "sequencing_plan"
+            ]
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "release_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_compare",
+      "description": "Todo compare through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare",
+      "query": [
+        "from",
+        "to"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "from": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "from",
+          "to"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_create",
+      "description": "Todo create through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOAdmissionRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_evidence_update",
+      "description": "Todo evidence update through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOEvidenceEditRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_get",
+      "description": "Read the selected todo.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}",
+      "query": [
+        "todo_revision"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_revision": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_history",
+      "description": "Todo history through the owning Registry API.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history",
+      "query": [
+        "after_revision",
+        "limit"
+      ],
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "after_revision": {
+            "type": "integer",
+            "minimum": -1,
+            "maximum": 9223372036854775807
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_next_step_update",
+      "description": "Todo next step update through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODONextStepEditRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_place",
+      "description": "Todo place through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOPlacementEditRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_remove",
+      "description": "Todo remove through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODORemovalRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_restore",
+      "description": "Todo restore through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOContentRestoreRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_revision_get",
+      "description": "Read the selected todo revision.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9223372036854775807
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "revision"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_stage_verify",
+      "description": "Ask the Registry to verify the current TODO stage against the supplied existing evidence.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/VerifyCurrentTODOStageRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_template",
+      "description": "Read the current Registry template for TODO creation and editing.",
+      "method": "GET",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/template",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_transition",
+      "description": "Request a governed TODO stage transition with caller-provided evidence and the current revision. The Registry decides the outcome.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOActionRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    },
+    {
+      "name": "builder_todo_update",
+      "description": "Todo update through the owning Registry API.",
+      "method": "POST",
+      "path": "/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content",
+      "schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "company_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "todo_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "body": {
+            "$ref": "#/$defs/TODOContentEditRequest"
+          }
+        },
+        "required": [
+          "company_id",
+          "project_id",
+          "todo_id",
+          "body"
+        ]
+      }
+    }
+  ]
+}
