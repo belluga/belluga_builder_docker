@@ -193,6 +193,8 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first", h.bindFirst)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.readRepositoryBinding)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding", h.changeRepositoryBinding)
+	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/promotion-mode", h.readProjectPromotionMode)
+	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/promotion-mode", h.changeProjectPromotionMode)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.readImplementationRepositories)
 	mux.HandleFunc("PUT /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories", h.changeImplementationRepository)
 	mux.HandleFunc("GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state", h.readDesignSystemState)

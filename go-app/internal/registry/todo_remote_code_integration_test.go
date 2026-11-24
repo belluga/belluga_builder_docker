@@ -1,13 +1,17 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -75,8 +79,10 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if _, err := store.ImportCanonicalDraft(ctx, companyID, canonical); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.ActivateCanonical(ctx, companyID, projectID, canonical.GenerationID, "fixture-canonical-activate", "fixture-owner"); err != nil {
-		t.Fatal(err)
+	if legacyProof || targetBranch == "dev" {
+		if _, err := store.ActivateCanonical(ctx, companyID, projectID, canonical.GenerationID, "fixture-canonical-activate", "fixture-owner"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.ProvisionTODOCollection(ctx, companyID); err != nil {
 		t.Fatal(err)
@@ -85,7 +91,8 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		t.Fatal(err)
 	}
 	const repository, branch, secondaryRepository = "owner/repo", "r-08-rc", "owner/secondary"
-	baseline, commit, secondaryCommit, head := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("d", 40), strings.Repeat("c", 40)
+	gitDir, baseline, commit, secondaryCommit, heads := createPromotionGitFixture(t, branch)
+	head := heads[branch]
 	if _, err := database.Collection(epicsCollection).InsertOne(ctx, roadmapEpic{StorageID: bson.NewObjectID(), ProjectID: projectID, ID: "e-06", Name: "Database", Position: 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -122,25 +129,47 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		t.Fatal(err)
 	}
 	var readerCalls atomic.Int64
-	var arrivalFailure, arrivalIdentityMismatch, reachableOnRelease atomic.Bool
+	var arrivalIdentityMismatch, reachableOnRelease atomic.Bool
+	var expectedArrivalBranch atomic.Value
+	expectedArrivalBranch.Store(targetBranch)
 	var injectPromotionIdentityConflict atomic.Bool
 	var removeSecondaryOnArrival atomic.Bool
 	var arrivalDelay atomic.Int64
+	var changeConstitutionOnArrival atomic.Bool
+	editConstitution := func(mode, statement, operationID string) error {
+		current, err := store.ReadCanonical(ctx, companyID, projectID, FamilyConstitution, constitutionID)
+		if err != nil {
+			return err
+		}
+		current.Payload = json.RawMessage(fmt.Sprintf(`{"promotion_mode":%q,"capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":%q}]}`, mode, statement))
+		_, err = store.EditCanonical(ctx, companyID, CanonicalMutation{
+			ProjectID: projectID, Family: FamilyConstitution, Record: current, ExpectedRevision: current.Revision,
+			OperationID: operationID, Actor: "fixture-owner",
+		})
+		return err
+	}
 	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readerCalls.Add(1)
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer fixture-token" {
+			t.Error("Reader request must be an authenticated GET")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
 		q := r.URL.Query()
 		if r.URL.Path == "/internal/v1/proofs/arrival" {
 			if delay := time.Duration(arrivalDelay.Load()); delay > 0 {
 				time.Sleep(delay)
 			}
-			targetBranch := q.Get("branch")
+			requestedBranch := q.Get("branch")
 			arrivalRepository := q.Get("repository")
 			wantedCommits := commit
 			if arrivalRepository == secondaryRepository {
 				wantedCommits = secondaryCommit
 			}
-			if q.Get("company_id") != companyID || q.Get("project_id") != projectID || arrivalRepository != repository && arrivalRepository != secondaryRepository || q.Get("todo_authority") != "mongo-v2" || targetBranch != "dev" && targetBranch != "stage" && targetBranch != "main" && targetBranch != branch || q.Get("commit_shas") != wantedCommits {
+			if q.Get("company_id") != companyID || q.Get("project_id") != projectID || arrivalRepository != repository && arrivalRepository != secondaryRepository || q.Get("todo_authority") != "mongo-v2" || requestedBranch != expectedArrivalBranch.Load().(string) || q.Get("commit_shas") != wantedCommits {
 				t.Errorf("Reader received wrong Complete arrival query: %s", r.URL)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if removeSecondaryOnArrival.CompareAndSwap(true, false) {
 				set, readErr := store.ReadImplementationRepositories(ctx, companyID, projectID)
@@ -157,18 +186,33 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 					}
 				}
 			}
-			if arrivalFailure.Load() {
+			if changeConstitutionOnArrival.CompareAndSwap(true, false) {
+				if err := editConstitution("mvp", "Owner changed policy during Git verification", "concurrent-constitution-mode-change"); err != nil {
+					t.Errorf("change the fallback constitution during Reader proof: %v", err)
+				}
+			}
+			actualRef := "refs/heads/" + requestedBranch
+			headOutput, err := exec.Command("git", "--git-dir", gitDir, "rev-parse", "--verify", actualRef).CombinedOutput()
+			targetSHA := strings.TrimSpace(string(headOutput))
+			if err != nil || !validGitCommit(targetSHA) {
+				t.Errorf("read fixture branch %s: %v: %s", requestedBranch, err, headOutput)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			git, err := exec.Command("git", "--git-dir", gitDir, "merge-base", "--is-ancestor", wantedCommits, targetSHA).CombinedOutput()
+			if err != nil {
+				var exited *exec.ExitError
+				if !errors.As(err, &exited) || exited.ExitCode() != 1 {
+					t.Errorf("verify fixture ancestry: %v: %s", err, git)
+				}
 				w.WriteHeader(http.StatusConflict)
 				_, _ = w.Write([]byte(`{"teach":"original commit has not arrived on the selected branch"}`))
 				return
 			}
-			repoCommits := []map[string]any{}
+			repoCommits := []map[string]any{{"commit_sha": wantedCommits, "reachable": true}}
 			nodeID := "R_kgDOImmutable"
-			if arrivalRepository == repository {
-				repoCommits = append(repoCommits, map[string]any{"commit_sha": commit, "reachable": true})
-			} else {
-				repoCommits = append(repoCommits, map[string]any{"commit_sha": secondaryCommit, "reachable": true})
-				nodeID = "R_kgDOImmutable-secondary"
+			if arrivalRepository == secondaryRepository {
+				nodeID += "-secondary"
 			}
 			if arrivalIdentityMismatch.Load() {
 				nodeID += "-retargeted"
@@ -179,7 +223,12 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 					t.Errorf("seed concurrent promotion identity conflict: %v", insertErr)
 				}
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"company_id": companyID, "project_id": projectID, "repository": arrivalRepository, "repository_node_id": nodeID, "branch": targetBranch, "head_sha": head, "commits": repoCommits, "outcome": "verified"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"company_id": companyID, "project_id": projectID, "repository": arrivalRepository, "repository_node_id": nodeID, "branch": requestedBranch, "head_sha": targetSHA, "commits": repoCommits, "outcome": "verified"})
+			return
+		}
+		if r.URL.Path != "/internal/v1/proofs/commit" {
+			t.Errorf("unexpected Reader route: %s", r.URL.Path)
+			http.NotFound(w, r)
 			return
 		}
 		localRepository, localCommit, nodeID := repository, commit, "R_kgDOImmutable"
@@ -332,25 +381,67 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	}
 	if !legacyProof {
 		originalLocalProof := *redelivered.TODO.VerifiedTransitionRef
-		if !strings.Contains(originalLocalProof.Reference, "repository_node_id=") || !strings.Contains(originalLocalProof.Reference, todoConstitutionPinPrefix) {
-			t.Fatalf("new Local proof lacks repository identity or constitution pin: %+v", originalLocalProof)
+		if !strings.Contains(originalLocalProof.Reference, "repository_node_id=") || strings.Contains(originalLocalProof.Reference, todoConstitutionPinPrefix) {
+			t.Fatalf("new Local proof lacks repository identity or embeds a policy pin: %+v", originalLocalProof)
 		}
 		promotion := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &redelivered.TODORevision, OperationID: "current-proof-" + targetBranch + "-promotion", RequestedStage: "Promotion-Lane", PromotionTargets: map[string]string{repository: targetBranch, secondaryRepository: targetBranch}}
-		if _, err := store.TransitionTODO(ctx, companyID, promotion); err != nil {
-			t.Fatalf("current Complete %s arrival: %v", targetBranch, err)
+		if targetBranch == "stage" {
+			if _, err := store.TransitionTODO(ctx, companyID, promotion); err == nil || !strings.Contains(err.Error(), "builder-project set-promotion-mode") {
+				t.Fatalf("missing policy did not give actionable TEACH: %v", err)
+			}
+			configureFixturePromotionMode(t, ctx, store, companyID, projectID, "complete", 0, "set-explicit-complete")
+		} else {
+			changeConstitutionOnArrival.Store(true)
+			if _, err := store.TransitionTODO(ctx, companyID, promotion); err == nil || !strings.Contains(err.Error(), "promotion mode changed during proof verification") {
+				t.Fatalf("changed canonical policy published stale Git proof: %v", err)
+			}
+			if err := editConstitution("complete", "Owner restored Complete", "restore-canonical-mode"); err != nil {
+				t.Fatal(err)
+			}
 		}
+		refused, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+		if err != nil || refused.TODORevision != redelivered.TODORevision || *refused.TODO.VerifiedTransitionRef != originalLocalProof {
+			t.Fatalf("mode refusal changed original Local proof: %+v err=%v", refused, err)
+		}
+		registry := httptest.NewServer(NewHandler(store))
+		defer registry.Close()
+
+		// An otherwise valid deployment claim cannot bypass Complete promotion.
+		mvpAttempt := TODOActionRequest{
+			ProjectID: projectID, TODOID: todoID, ExpectedRevision: &redelivered.TODORevision,
+			OperationID: "reject-mvp-on-complete", RequestedStage: "Completed",
+			ProofReferences: []TODOProofReference{{
+				Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + heads["main"],
+				SourceDigest: redelivered.ContentDigest, VerificationState: "unverified",
+			}},
+		}
+		callsBeforeMVP := readerCalls.Load()
+		if code, body := submitFixturePromotionHTTP(t, registry, companyID, mvpAttempt); code != http.StatusConflict ||
+			!strings.Contains(string(body), "then Promotion-Lane to Completed") || readerCalls.Load() != callsBeforeMVP {
+			t.Fatalf("Complete accepted direct MVP completion: status=%d body=%s", code, body)
+		}
+
+		// Match PACED's code-promotion payload with empty proof and waiver arrays.
+		promotion.ProofReferences, promotion.WaiverReferences = []TODOProofReference{}, []TODOProofReference{}
+		assertFixturePromotionHTTP(t, registry, companyID, promotion, "Promotion-Lane")
 		promoted, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 		if err != nil || promoted.TODO.Stage != "Promotion-Lane" || promoted.TODO.VerifiedTransitionRef == nil || promoted.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" {
 			t.Fatalf("current Complete %s promotion readback: %+v err=%v", targetBranch, promoted, err)
 		}
+		assertFixtureArrival(t, *promoted.TODO.VerifiedTransitionRef, "promotion", targetBranch, heads[targetBranch])
+
+		expectedArrivalBranch.Store("main")
+		setPromotionGitRef(t, gitDir, "main", heads["main"])
 		completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &promoted.TODORevision, OperationID: "current-proof-main-arrival", RequestedStage: "Completed"}
-		if _, err := store.TransitionTODO(ctx, companyID, completed); err != nil {
-			t.Fatalf("current Complete main arrival: %v", err)
+		if targetBranch == "dev" {
+			completed.ProofReferences, completed.WaiverReferences = []TODOProofReference{}, []TODOProofReference{}
 		}
+		assertFixturePromotionHTTP(t, registry, companyID, completed, "Completed")
 		final, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 		if err != nil || final.TODO.Stage != "Completed" || final.TODO.VerifiedTransitionRef == nil || final.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, `"arrival_stage":"main"`) || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, commit) || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, secondaryCommit) {
 			t.Fatalf("current Complete main readback lost original commits: %+v err=%v", final, err)
 		}
+		assertFixtureArrival(t, *final.TODO.VerifiedTransitionRef, "main", "main", heads["main"])
 		localEventFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "kind", Value: "state_changed"}, {Key: "revision", Value: redelivered.TODORevision}, {Key: "changes.stage", Value: "Local-Implemented"}}
 		var preservedLocalEvent TODOHistoryEvent
 		if err := database.Collection(todoEventsCollection).FindOne(ctx, localEventFilter).Decode(&preservedLocalEvent); err != nil || preservedLocalEvent.Changes.VerifiedTransitionRef == nil || *preservedLocalEvent.Changes.VerifiedTransitionRef != originalLocalProof {
@@ -371,6 +462,22 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		legacyItems = append(legacyItems, item)
 	}
 	legacyLocalProof.Reference = strings.Join(legacyItems, ";")
+	if targetBranch == "stage" {
+		pin := todoConstitutionPin{
+			Mode: "mvp", GenerationID: "old-constitution-generation", RecordID: constitutionID, Revision: 1,
+			ContentDigest: sourceHash([]byte("original MVP constitution")),
+			Repositories:  todoProofRepositoryNodeIDs(redelivered.TODO.VerifiedTransitionRef.Reference),
+		}
+		pinJSON, err := json.Marshal(pin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		legacyLocalProof.Reference += ";" + todoConstitutionPinPrefix + string(pinJSON)
+		if err := editConstitution("mvp", "Legacy mode before correction", "before-explicit-correction"); err != nil {
+			t.Fatal(err)
+		}
+		configureFixturePromotionMode(t, ctx, store, companyID, projectID, "complete", 0, "explicit-mode-correction")
+	}
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: todoID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "verified_transition_ref", Value: legacyLocalProof}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -394,11 +501,6 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	legacyCurrent, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 	if err != nil || legacyCurrent.TODO.VerifiedTransitionRef == nil || *legacyCurrent.TODO.VerifiedTransitionRef != legacyLocalProof {
 		t.Fatalf("legacy fixture snapshot not installed: %+v err=%v", legacyCurrent.TODO.VerifiedTransitionRef, err)
-	}
-	if _, err := store.resolveTODOConstitutionPin(ctx, companyID, legacyCurrent.TODO, legacyCurrent.TODO.VerifiedTransitionRef); err != nil {
-		var debugEvent TODOHistoryEvent
-		_ = database.Collection(todoEventsCollection).FindOne(ctx, localEventFilter).Decode(&debugEvent)
-		t.Fatalf("legacy Local event did not resolve its historical constitution: %v; event=%+v current=%+v", err, debugEvent.Changes.VerifiedTransitionRef, legacyCurrent.TODO.VerifiedTransitionRef)
 	}
 	store.proofHTTPClient.Timeout = 5 * time.Millisecond
 	arrivalDelay.Store(int64(50 * time.Millisecond))
@@ -451,7 +553,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	}); err != nil {
 		t.Fatalf("restore alias after no-mutation assertion: %v", err)
 	}
-	arrivalFailure.Store(true)
+	setPromotionGitRef(t, gitDir, targetBranch, baseline)
 	failedPromotion := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &redelivered.TODORevision, OperationID: "reject-incomplete-promotion", RequestedStage: "Promotion-Lane", PromotionTargets: map[string]string{repository: targetBranch, secondaryRepository: targetBranch}}
 	if _, err := store.TransitionTODO(ctx, companyID, failedPromotion); err == nil || !strings.Contains(err.Error(), "remote_proof") {
 		t.Fatalf("incomplete %s arrival advanced Complete TODO: %v", targetBranch, err)
@@ -466,7 +568,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if _, err := store.TransitionTODO(ctx, companyID, extraPromotionFields); err == nil || !strings.Contains(err.Error(), "proof_refs/waiver_refs/local_proof") {
 		t.Fatalf("Complete promotion accepted caller proof fields: %v", err)
 	}
-	arrivalFailure.Store(false)
+	setPromotionGitRef(t, gitDir, targetBranch, heads[targetBranch])
 	injectPromotionIdentityConflict.Store(true)
 	failedPromotion.OperationID = "reject-partial-promotion-pin"
 	if _, err := store.TransitionTODO(ctx, companyID, failedPromotion); err == nil || !strings.Contains(err.Error(), "repository_identity.github_node_id") {
@@ -487,6 +589,8 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if err != nil || promoted.TODO.Stage != "Promotion-Lane" || promoted.TODO.VerifiedTransitionRef == nil || promoted.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" {
 		t.Fatalf("%s arrival was not recorded as Promotion-Lane: %+v err=%v", targetBranch, promoted, err)
 	}
+	assertFixtureArrival(t, *promoted.TODO.VerifiedTransitionRef, "promotion", targetBranch, heads[targetBranch])
+	expectedArrivalBranch.Store("main")
 	tamperedPromotionProof := *promoted.TODO.VerifiedTransitionRef
 	tamperedPromotionProof.Reference += ";tampered=1"
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: todoID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "verified_transition_ref", Value: tamperedPromotionProof}}}}); err != nil {
@@ -498,14 +602,31 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if _, err := database.Collection(todosCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "id", Value: todoID}}, bson.D{{Key: "$set", Value: bson.D{{Key: "verified_transition_ref", Value: *promoted.TODO.VerifiedTransitionRef}}}}); err != nil {
 		t.Fatal(err)
 	}
+	currentPromotionProof := *promoted.TODO.VerifiedTransitionRef
+	legacyPromotionProof := seedLegacyPromotionArrival(t, ctx, database, promoted)
+	assertInvalidPersistedArrivals(t, ctx, store, database, companyID, promoted, currentPromotionProof, legacyPromotionProof, &readerCalls)
 	completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &promoted.TODORevision, OperationID: "complete-main-arrival", RequestedStage: "Completed"}
+	if targetBranch == "dev" {
+		if err := editConstitution("complete", "Editorial wording after verified promotion", "constitution-editorial-change"); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		configureFixturePromotionMode(t, ctx, store, companyID, projectID, "mvp", 1, "conflicting-after-promotion")
+		if _, err := store.TransitionTODO(ctx, companyID, completed); err == nil || !strings.Contains(err.Error(), "restore the Complete mode preserved") {
+			t.Fatalf("MVP unexpectedly completed an existing Complete promotion: %v", err)
+		}
+		stillPromoted, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+		if err != nil || stillPromoted.TODORevision != promoted.TODORevision || *stillPromoted.TODO.VerifiedTransitionRef != legacyPromotionProof {
+			t.Fatalf("divergent mode changed the legacy promotion: %+v err=%v", stillPromoted, err)
+		}
+		configureFixturePromotionMode(t, ctx, store, companyID, projectID, "complete", 2, "restore-complete-after-promotion")
+	}
 	extraCompletedFields := completed
 	extraCompletedFields.OperationID = "reject-caller-main-proof"
 	extraCompletedFields.LocalProof = &LocalProofResult{SchemaVersion: "builder-local-proof-result-v3"}
-	if _, err := store.TransitionTODO(ctx, companyID, extraCompletedFields); err == nil || !strings.Contains(err.Error(), "proof_refs/waiver_refs/local_proof/promotion_targets") {
+	if _, err := store.TransitionTODO(ctx, companyID, extraCompletedFields); err == nil || !strings.Contains(err.Error(), "proof_refs/waiver_refs/local_proof") {
 		t.Fatalf("Complete main arrival accepted caller proof fields: %v", err)
 	}
-	arrivalFailure.Store(true)
 	completed.OperationID = "reject-unarrived-main"
 	if _, err := store.TransitionTODO(ctx, companyID, completed); err == nil || !strings.Contains(err.Error(), "remote_proof") {
 		t.Fatalf("unarrived main commit advanced Complete TODO: %v", err)
@@ -514,7 +635,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if err != nil || unchanged.TODO.Stage != "Promotion-Lane" || unchanged.TODORevision != promoted.TODORevision {
 		t.Fatalf("failed main arrival mutated TODO state: %+v err=%v", unchanged, err)
 	}
-	arrivalFailure.Store(false)
+	setPromotionGitRef(t, gitDir, "main", heads["main"])
 	completed.OperationID = "complete-main-arrival"
 	if _, err := store.TransitionTODO(ctx, companyID, completed); err != nil {
 		t.Fatalf("Complete main arrival: %v", err)
@@ -523,6 +644,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if err != nil || final.TODO.Stage != "Completed" || final.TODO.VerifiedTransitionRef == nil || final.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" || !strings.Contains(final.TODO.VerifiedTransitionRef.Reference, `"arrival_stage":"main"`) {
 		t.Fatalf("main arrival was not recorded as Git-only Completed: %+v err=%v", final, err)
 	}
+	assertFixtureArrival(t, *final.TODO.VerifiedTransitionRef, "main", "main", heads["main"])
 	eventsBeforeRetry, err := database.Collection(todoEventsCollection).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}})
 	if err != nil {
 		t.Fatal(err)
@@ -538,6 +660,10 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	retried, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 	if err != nil || retried.TODORevision != final.TODORevision || retried.TODO.VerifiedTransitionRef == nil || *retried.TODO.VerifiedTransitionRef != *final.TODO.VerifiedTransitionRef {
 		t.Fatalf("exact main-arrival retry changed original proof: before=%+v after=%+v err=%v", final.TODO.VerifiedTransitionRef, retried.TODO.VerifiedTransitionRef, err)
+	}
+	promotionHistory, err := store.ReadTODOAsOf(ctx, companyID, projectID, todoID, promoted.TODORevision)
+	if err != nil || promotionHistory.State.VerifiedTransitionRef == nil || *promotionHistory.State.VerifiedTransitionRef != legacyPromotionProof {
+		t.Fatalf("completion changed the historical Promotion-Lane proof: %+v err=%v", promotionHistory, err)
 	}
 	var preservedLocalEvent TODOHistoryEvent
 	if err := database.Collection(todoEventsCollection).FindOne(ctx, localEventFilter).Decode(&preservedLocalEvent); err != nil || preservedLocalEvent.Changes.VerifiedTransitionRef == nil || *preservedLocalEvent.Changes.VerifiedTransitionRef != legacyLocalProof {
@@ -582,4 +708,226 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	if err != nil || containsTODOString(setAfterRace.Items, secondaryRepository) || setAfterRace.Revision != setBeforeRace.Revision+1 {
 		t.Fatalf("concurrent owner removal did not remain the sole Project mutation: set=%+v err=%v", setAfterRace, err)
 	}
+}
+
+func createPromotionGitFixture(t *testing.T, releaseBranch string) (string, string, string, string, map[string]string) {
+	t.Helper()
+	gitDir := filepath.Join(t.TempDir(), "arrival.git")
+	git := func(args ...string) string {
+		t.Helper()
+		command := exec.Command("git", append([]string{"--git-dir", gitDir, "-c", "user.email=fixture@example.com", "-c", "user.name=Fixture"}, args...)...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git fixture %v: %v: %s", args, err, output)
+		}
+		return strings.TrimSpace(string(output))
+	}
+	git("init", "--bare", "--quiet")
+	empty := exec.Command("git", "--git-dir", gitDir, "mktree")
+	out, err := empty.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tree := strings.TrimSpace(string(out))
+	baseline := git("commit-tree", tree, "-m", "baseline")
+	primary := git("commit-tree", tree, "-p", baseline, "-m", "primary implementation")
+	secondary := git("commit-tree", tree, "-p", baseline, "-m", "secondary implementation")
+	heads := make(map[string]string, 4)
+	for _, branch := range []string{"dev", "stage", "main", releaseBranch} {
+		heads[branch] = git("commit-tree", tree, "-p", primary, "-p", secondary, "-m", "arrival on "+branch)
+	}
+	for _, branch := range []string{"dev", "stage", releaseBranch} {
+		setPromotionGitRef(t, gitDir, branch, heads[branch])
+	}
+	// The primary commit has arrived in main, while the secondary has not.
+	setPromotionGitRef(t, gitDir, "main", primary)
+	return gitDir, baseline, primary, secondary, heads
+}
+
+func setPromotionGitRef(t *testing.T, gitDir, branch, commit string) {
+	t.Helper()
+	out, err := exec.Command("git", "--git-dir", gitDir, "update-ref", "refs/heads/"+branch, commit).CombinedOutput()
+	if err != nil {
+		t.Fatalf("set fixture branch %s: %v: %s", branch, err, out)
+	}
+}
+
+func assertFixtureArrival(t *testing.T, proof TODOProofReference, stage, branch, head string) {
+	t.Helper()
+	var payload completeArrivalProof
+	if err := json.Unmarshal([]byte(proof.Reference), &payload); err != nil || payload.Stage != stage || len(payload.Repositories) != 2 {
+		t.Fatalf("invalid stored %s arrival: %+v err=%v", stage, payload, err)
+	}
+	for _, evidence := range payload.Repositories {
+		if evidence.Branch != branch || evidence.HeadSHA != head {
+			t.Fatalf("%s proof for %s used %s@%s, want %s@%s", stage, evidence.Repository, evidence.Branch, evidence.HeadSHA, branch, head)
+		}
+	}
+}
+
+func submitFixturePromotionHTTP(t *testing.T, registry *httptest.Server, companyID string, request TODOActionRequest) (int, []byte) {
+	t.Helper()
+	raw, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoint := registry.URL + "/internal/v1/companies/" + companyID + "/projects/" + request.ProjectID + "/todos/" + request.TODOID + "/transition"
+	response, err := registry.Client().Post(endpoint, "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return response.StatusCode, body
+}
+
+func assertFixturePromotionHTTP(t *testing.T, registry *httptest.Server, companyID string, request TODOActionRequest, wantStage string) {
+	t.Helper()
+	code, body := submitFixturePromotionHTTP(t, registry, companyID, request)
+	var result TODOActionResponse
+	if err := json.Unmarshal(body, &result); err != nil || code != http.StatusOK || result.Stage != wantStage ||
+		result.StageVerification != "verified" || result.TODORevision != *request.ExpectedRevision+1 {
+		t.Fatalf("verified %s via Registry HTTP: status=%d body=%s err=%v", wantStage, code, body, err)
+	}
+}
+
+func configureFixturePromotionMode(t *testing.T, ctx context.Context, store *MongoStore, companyID, projectID, mode string, revision int64, operationID string) {
+	t.Helper()
+	state, err := store.ChangeProjectPromotionMode(ctx, companyID, projectID, ProjectPromotionModeChange{
+		ProjectID: projectID, Mode: mode, ExpectedRevision: &revision, OperationID: operationID,
+		Actor: "fixture-operator", OwnerReference: "Explicit fixture owner decision",
+	})
+	if err != nil || state.EffectiveMode != mode || state.Revision != revision+1 {
+		t.Fatalf("configure %s: %+v err=%v", mode, state, err)
+	}
+}
+
+func updateFixtureTODOStageProof(t *testing.T, ctx context.Context, database *mongo.Database, read TODOReadResponse, proof TODOProofReference) {
+	t.Helper()
+	filter := bson.M{"project_id": read.TODO.ProjectID, "id": read.TODO.ID, "revision": read.TODORevision}
+	result, err := database.Collection(todosCollection).UpdateOne(ctx, filter, bson.M{"$set": bson.M{"verified_transition_ref": proof}})
+	if err != nil || result.MatchedCount != 1 {
+		t.Fatalf("seed historical proof snapshot: %+v err=%v", result, err)
+	}
+	filter = bson.M{"project_id": read.TODO.ProjectID, "todo_id": read.TODO.ID, "revision": read.TODORevision, "kind": "state_changed"}
+	result, err = database.Collection(todoEventsCollection).UpdateOne(ctx, filter, bson.M{"$set": bson.M{"changes.verified_transition_ref": proof}})
+	if err != nil || result.MatchedCount != 1 {
+		t.Fatalf("seed immutable historical proof event: %+v err=%v", result, err)
+	}
+}
+
+func seedLegacyPromotionArrival(t *testing.T, ctx context.Context, database *mongo.Database, promoted TODOReadResponse) TODOProofReference {
+	t.Helper()
+	legacy := *promoted.TODO.VerifiedTransitionRef
+	var payload completeArrivalProof
+	if err := json.Unmarshal([]byte(legacy.Reference), &payload); err != nil {
+		t.Fatal(err)
+	}
+	ids := make(map[string]string, len(payload.Repositories))
+	for _, repository := range payload.Repositories {
+		ids[repository.Repository] = repository.NodeID
+	}
+	pin := todoConstitutionPin{Mode: "complete", GenerationID: "legacy-generation", RecordID: "legacy-constitution",
+		Revision: 4, ContentDigest: sourceHash([]byte("legacy constitution content")), Repositories: ids}
+	legacyPayload := struct {
+		Stage           string                      `json:"arrival_stage"`
+		ContentRevision int64                       `json:"content_revision"`
+		ContentDigest   string                      `json:"content_digest"`
+		Constitution    todoConstitutionPin         `json:"constitution"`
+		Repositories    []completeArrivalRepository `json:"repositories"`
+	}{payload.Stage, payload.ContentRevision, payload.ContentDigest, pin, payload.Repositories}
+	payloadJSON, err := json.Marshal(legacyPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinJSON, err := json.Marshal(pin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy.Reference = string(payloadJSON) + ";" + todoConstitutionPinPrefix + string(pinJSON)
+	legacy.SourceDigest = sourceHash(payloadJSON)
+	updateFixtureTODOStageProof(t, ctx, database, promoted, legacy)
+	return legacy
+}
+
+func assertInvalidPersistedArrivals(t *testing.T, ctx context.Context, store *MongoStore, database *mongo.Database, companyID string, promoted TODOReadResponse, current, legacy TODOProofReference, readerCalls *atomic.Int64) {
+	t.Helper()
+	differentDigest := sourceHash([]byte("different immutable proof"))
+	badDigest := current
+	badDigest.SourceDigest = differentDigest
+
+	var payload completeArrivalProof
+	if err := json.Unmarshal([]byte(current.Reference), &payload); err != nil {
+		t.Fatal(err)
+	}
+	control := payload
+	payload.LocalEventRevision++
+	badRevision := fixtureArrivalWithPayload(t, current, payload)
+	payload = control
+	payload.LocalProofDigest = differentDigest
+	badLocalDigest := fixtureArrivalWithPayload(t, current, payload)
+
+	hashed, suffix, ok := strings.Cut(legacy.Reference, ";"+todoConstitutionPinPrefix)
+	var legacyPin todoConstitutionPin
+	if !ok || json.Unmarshal([]byte(suffix), &legacyPin) != nil {
+		t.Fatal("missing historical suffix fixture")
+	}
+	legacyPin.Repositories["owner/repo"] = "R_kgDOContradictory"
+	pinJSON, err := json.Marshal(legacyPin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contradictoryLegacy := legacy
+	contradictoryLegacy.Reference = hashed + ";" + todoConstitutionPinPrefix + string(pinJSON)
+
+	events := database.Collection(todoEventsCollection)
+	filter := bson.M{"project_id": promoted.TODO.ProjectID, "todo_id": promoted.TODO.ID}
+	before, err := events.CountDocuments(ctx, filter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, variant := range []struct {
+		name, expected string
+		proof          TODOProofReference
+	}{
+		{"wrong-arrival-digest", "match the immutable arrival payload", badDigest},
+		{"contradictory-legacy-pin", "match the mode and identities in the hashed payload and legacy pin", contradictoryLegacy},
+		{"wrong-local-event-revision", "match the preserved Complete mode and exact Local-Implemented event", badRevision},
+		{"wrong-local-proof-digest", "match the preserved Complete mode and exact Local-Implemented event", badLocalDigest},
+	} {
+		t.Run(variant.name, func(t *testing.T) {
+			updateFixtureTODOStageProof(t, ctx, database, promoted, variant.proof)
+			count := readerCalls.Load()
+			if _, err := store.TransitionTODO(ctx, companyID, TODOActionRequest{
+				ProjectID: promoted.TODO.ProjectID, TODOID: promoted.TODO.ID, ExpectedRevision: &promoted.TODORevision,
+				OperationID: variant.name, RequestedStage: "Completed",
+			}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), variant.expected) {
+				t.Fatalf("contradictory immutable proof failed at the wrong boundary: %v", err)
+			}
+			if readerCalls.Load() != count {
+				t.Fatal("invalid persisted proof reached the Reader")
+			}
+			after, err := store.ReadTODO(ctx, companyID, promoted.TODO.ProjectID, promoted.TODO.ID, nil)
+			afterEvents, countErr := events.CountDocuments(ctx, filter)
+			if err != nil || countErr != nil || afterEvents != before || after.TODORevision != promoted.TODORevision ||
+				after.ContentDigest != promoted.ContentDigest || after.TODO.Stage != "Promotion-Lane" ||
+				after.TODO.VerifiedTransitionRef == nil || *after.TODO.VerifiedTransitionRef != variant.proof {
+				t.Fatalf("invalid persisted proof changed TODO state or history: %+v, events %d -> %d, read=%v count=%v", after, before, afterEvents, err, countErr)
+			}
+		})
+	}
+	updateFixtureTODOStageProof(t, ctx, database, promoted, legacy)
+}
+
+func fixtureArrivalWithPayload(t *testing.T, proof TODOProofReference, payload completeArrivalProof) TODOProofReference {
+	t.Helper()
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof.Reference, proof.SourceDigest = string(data), sourceHash(data)
+	return proof
 }

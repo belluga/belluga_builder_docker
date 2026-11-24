@@ -91,6 +91,7 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 const maxProjectDocumentBytes = 128 << 10
 
 type projectDocument struct {
+	PromotionMode                           *projectPromotionModeConfiguration     `bson:"promotion_mode,omitempty"`
 	ObjectID                                bson.ObjectID                          `bson:"_id,omitempty"`
 	ID                                      string                                 `bson:"id"`
 	Name                                    string                                 `bson:"name"`

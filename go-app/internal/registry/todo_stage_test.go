@@ -29,71 +29,23 @@ func TestMVPRepositoryComesFromApprovedMongoDiffScope(t *testing.T) {
 	}
 }
 
-func TestTODOCompletionRequiresActiveConstitutionMode(t *testing.T) {
-	for _, mode := range []string{"", "caller-selected", "complete"} {
-		if err := requireTODOCompletionMode(mode); err == nil {
-			t.Fatalf("mode %q allowed direct Local-Implemented to Completed", mode)
-		}
-	}
-	if err := requireTODOCompletionMode("mvp"); err != nil {
-		t.Fatalf("MVP completion behavior changed: %v", err)
-	}
-}
-
-func TestMVPConstitutionMismatchTeachExplainsGovernedRecovery(t *testing.T) {
-	local := todoConstitutionPin{Mode: "mvp", GenerationID: "generation-a", RecordID: "constitution-old", Revision: 5, ContentDigest: sourceHash([]byte("local constitution"))}
-	active := todoConstitutionPin{Mode: "mvp", GenerationID: "generation-a", RecordID: "constitution-new", Revision: 7, ContentDigest: sourceHash([]byte("active constitution"))}
-	err := mvpConstitutionMismatchTeach(local, active)
-	if !errors.Is(err, ErrConflict) {
-		t.Fatalf("constitution drift did not remain a conflict: %v", err)
-	}
-	for _, expected := range []string{
-		"local_proof.constitution",
-		"generation generation-a, record constitution-old",
-		fmt.Sprintf("revision 5 (%s)", local.ContentDigest),
-		"generation generation-a, record constitution-new",
-		fmt.Sprintf("revision 7 (%s)", active.ContentDigest),
-		"Preserve the historical proof",
-		"If compatible",
-		"if incompatible",
-		"builder-project update-todo",
-		"reopens Planning",
-		"owner APROVADO",
-		"new Local-Implemented proof",
-		"identical content update is a no-op",
-	} {
-		if !strings.Contains(err.Error(), expected) {
-			t.Fatalf("mismatch TEACH omits %q: %v", expected, err)
-		}
-	}
-	active.Revision = local.Revision
-	active.ContentDigest = local.ContentDigest
-	if !strings.Contains(mvpConstitutionMismatchTeach(local, active).Error(), "record constitution-new") {
-		t.Fatal("same-revision record identity drift is hidden by the TEACH")
-	}
-}
-
-func TestCompleteLocalPinRejectsModeAndConstitutionDrift(t *testing.T) {
-	digest := sourceHash([]byte("active constitution"))
-	pin := todoConstitutionPin{Mode: "complete", GenerationID: "g1", RecordID: "builder", Revision: 3, ContentDigest: digest}
-	proof, err := bindTODOConstitutionPin(TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", Reference: "repository_node_id=owner/repo:R_kgDOImmutable", SourceDigest: sourceHash([]byte("local proof")), VerificationState: "verified"}, pin)
+func TestLocalProofRepositoryIdentitiesPreserveLegacyPins(t *testing.T) {
+	legacy := todoConstitutionPin{Mode: "mvp", GenerationID: "g1", RecordID: "builder", Revision: 3,
+		ContentDigest: sourceHash([]byte("historical constitution")), Repositories: map[string]string{"owner/repo": "R_kgDOImmutable"}}
+	pin, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := requireTODOConstitutionPin(&proof, pin); err != nil {
-		t.Fatalf("matching immutable Complete pin rejected: %v", err)
+	for _, prefix := range []string{"legacy-tuple", "repository_node_id=owner/repo:R_kgDOImmutable"} {
+		proof := TODOProofReference{Reference: prefix + ";" + todoConstitutionPinPrefix + string(pin)}
+		got, err := localProofRepositoryIdentities(proof)
+		if err != nil || !reflect.DeepEqual(got, legacy.Repositories) {
+			t.Fatalf("historical repository identities = %+v, err=%v", got, err)
+		}
 	}
-	for name, drifted := range map[string]todoConstitutionPin{
-		"mode":       {Mode: "mvp", GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: pin.ContentDigest},
-		"generation": {Mode: pin.Mode, GenerationID: "g2", RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: pin.ContentDigest},
-		"revision":   {Mode: pin.Mode, GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision + 1, ContentDigest: pin.ContentDigest},
-		"digest":     {Mode: pin.Mode, GenerationID: pin.GenerationID, RecordID: pin.RecordID, Revision: pin.Revision, ContentDigest: sourceHash([]byte("changed constitution"))},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := requireTODOConstitutionPin(&proof, drifted); err == nil {
-				t.Fatalf("%s drift accepted", name)
-			}
-		})
+	ref := "repository_node_id=owner/repo:R_kgDOOther;" + todoConstitutionPinPrefix + string(pin)
+	if _, err := localProofRepositoryIdentities(TODOProofReference{Reference: ref}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("contradictory historical repository IDs were accepted: %v", err)
 	}
 }
 

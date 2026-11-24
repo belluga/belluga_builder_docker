@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -734,25 +736,29 @@ func recordPlanningReviewSubjects(t *testing.T, ctx context.Context, store *Mong
 
 func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, branch, digest string) {
 	t.Helper()
-	canonical := CanonicalImport{ProjectID: projectID, GenerationID: "mvp-delivery-fixture", SourceRevision: strings.Repeat("a", 40), OperationID: "mvp-delivery-canonical-import", Actor: "fixture-owner", Records: []CanonicalImportRecord{
-		canonicalTestRecord(FamilyMandate, projectID, `{"purpose":"Exercise MVP delivery","scope":["project"]}`),
-		canonicalTestRecord(FamilyDomain, projectID, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
-		canonicalTestRecord(FamilyConstitution, projectID, `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Project API records verified delivery"}]}`),
-		canonicalTestRecord(FamilyRoadmap, projectID, `{"stages":[{"id":"delivery","name":"Delivery","status":"planned"}]}`),
-		canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-PROJECT-01","status":"current","statement":"Project owns TODO delivery"}],"schemas":[{"id":"todo","name":"todos","kind":"collection","fields":[{"name":"stage","type":"string"}]}]}`),
-		canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-PROJECT-01"}]}`),
-	}}
-	for i := range canonical.Records {
-		canonical.Records[i].Record.ProjectID = projectID
-		canonical.Records[i].Record.GenerationID = canonical.GenerationID
-	}
-	if _, err := store.ImportCanonicalDraft(ctx, "company-a", canonical); err != nil {
-		t.Fatalf("import MVP fixture constitution: %v", err)
-	}
-	if _, err := store.ActivateCanonical(ctx, "company-a", projectID, canonical.GenerationID, "mvp-delivery-canonical-activate", "fixture-owner"); err != nil {
-		t.Fatalf("activate MVP fixture constitution: %v", err)
+	if projectID == "builder" {
+		canonical := CanonicalImport{ProjectID: projectID, GenerationID: "mvp-delivery-fixture", SourceRevision: strings.Repeat("a", 40), OperationID: "mvp-delivery-canonical-import", Actor: "fixture-owner", Records: []CanonicalImportRecord{
+			canonicalTestRecord(FamilyMandate, projectID, `{"purpose":"Exercise MVP delivery","scope":["project"]}`),
+			canonicalTestRecord(FamilyDomain, projectID, `{"entities":[{"id":"Project","name":"Project","description":""}],"relations":[{"id":"OWNS","from":"Project","to":"Project","kind":"owns"}],"distinctions":[]}`),
+			canonicalTestRecord(FamilyConstitution, projectID, `{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Project API records verified delivery"}]}`),
+			canonicalTestRecord(FamilyRoadmap, projectID, `{"stages":[{"id":"delivery","name":"Delivery","status":"planned"}]}`),
+			canonicalTestRecord(FamilyModule, "projects", `{"purpose":"Owns project work","decisions":[{"id":"DEC-PROJECT-01","status":"current","statement":"Project owns TODO delivery"}],"schemas":[{"id":"todo","name":"todos","kind":"collection","fields":[{"name":"stage","type":"string"}]}]}`),
+			canonicalTestRecord(FamilyPolicy, "access-policy", `{"rules":[{"id":"retention","status":"current","statement":"Keep audit records"}],"ownership":[{"owner_kind":"module","owner_id":"projects","decision_id":"DEC-PROJECT-01"}]}`),
+		}}
+		for i := range canonical.Records {
+			canonical.Records[i].Record.ProjectID = projectID
+			canonical.Records[i].Record.GenerationID = canonical.GenerationID
+		}
+		if _, err := store.ImportCanonicalDraft(ctx, "company-a", canonical); err != nil {
+			t.Fatalf("import MVP fixture constitution: %v", err)
+		}
+		if _, err := store.ActivateCanonical(ctx, "company-a", projectID, canonical.GenerationID, "mvp-delivery-canonical-activate", "fixture-owner"); err != nil {
+			t.Fatalf("activate MVP fixture constitution: %v", err)
+		}
 	}
 	commit, root := strings.Repeat("a", 40), strings.Repeat("d", 40)
+	var switchModeDuringProduction atomic.Bool
+	var productionUnavailable atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if strings.HasSuffix(r.URL.Path, "/commit") {
@@ -760,6 +766,21 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 				t.Errorf("wrong typed Reader request: %s", r.URL)
 			}
 			_ = json.NewEncoder(w).Encode(remoteCommitResult{CompanyID: "company-a", ProjectID: projectID, Repository: "owner/repo", Branch: branch, CommitSHA: commit, BaselineSHA: q.Get("baseline_sha"), RemoteHead: commit, ParentSHA: strings.Repeat("b", 40), Paths: []string{"go-app/internal/registry/todo_access.go"}, RepositoryNodeID: "R_kgDOImmutable", Outcome: "verified"})
+			return
+		}
+		if switchModeDuringProduction.CompareAndSwap(true, false) {
+			rev := int64(1)
+			_, err := store.ChangeProjectPromotionMode(ctx, "company-a", projectID, ProjectPromotionModeChange{
+				ProjectID: projectID, Mode: "complete", ExpectedRevision: &rev, OperationID: "production-policy-change",
+				Actor: "fixture-operator", OwnerReference: "Owner changed the mode during production proof",
+			})
+			if err != nil {
+				t.Errorf("change explicit policy while verifying production: %v", err)
+			}
+		}
+		if productionUnavailable.Load() {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = fmt.Fprint(w, `{"teach":"The fixture deployment was not published in production"}`)
 			return
 		}
 		if q.Get("docker_repository_id") != "owner/repo" {
@@ -805,7 +826,7 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 	if projectID == "builder" {
 		localCompetitor.OperationID = "competing-local-delivery"
 	}
-	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, local, localCompetitor)
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, local, localCompetitor, nil)
 	revision++
 	after, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
 	if err != nil || after.TODO.Stage != "Local-Implemented" || after.TODO.VerifiedTransitionRef == nil || after.TODO.VerifiedTransitionRef.Kind != "remote-code-delivery" || after.TODO.VerifiedTransitionRef.Source != "private-reader" || after.TODO.VerifiedTransitionRef.VerificationState != "verified" {
@@ -825,57 +846,115 @@ func assertTypedDelivery(t *testing.T, ctx context.Context, store *MongoStore, p
 	}
 	deployment := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
 	completed := TODOActionRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "production-delivery", RequestedStage: "Completed", ProofReferences: []TODOProofReference{deployment}}
+	database := store.client.Database(store.tenantDatabase("company-a"))
+	readPromotionFence := func() int64 {
+		t.Helper()
+		var state struct {
+			Fence int64 `bson:"promotion_policy_fence"`
+		}
+		if err := database.Collection(projectsCollection).FindOne(ctx, bson.M{"id": projectID, "company_id": "company-a"}).Decode(&state); err != nil {
+			t.Fatal(err)
+		}
+		return state.Fence
+	}
+	fenceBefore := readPromotionFence()
+
 	if projectID == "builder" {
 		constitution, readErr := store.ReadCanonical(ctx, "company-a", projectID, FamilyConstitution, projectID)
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
 		constitution.Payload = json.RawMessage(`{"promotion_mode":"mvp","capability_namespaces":["go"],"rules":[{"id":"authority","status":"current","statement":"Updated Project API delivery"}]}`)
-		activeConstitution, editErr := store.EditCanonical(ctx, "company-a", CanonicalMutation{ProjectID: projectID, Family: FamilyConstitution, Record: constitution, ExpectedRevision: constitution.Revision, OperationID: "mvp-constitution-drift", Actor: "fixture-owner"})
-		if editErr != nil {
-			t.Fatalf("revise active Constitution: %v", editErr)
+		if _, err := store.EditCanonical(ctx, "company-a", CanonicalMutation{ProjectID: projectID, Family: FamilyConstitution, Record: constitution, ExpectedRevision: constitution.Revision, OperationID: "mvp-constitution-editorial-edit", Actor: "fixture-owner"}); err != nil {
+			t.Fatalf("revise active Constitution: %v", err)
 		}
-		originalContent := contentFromTODO(after.TODO)
-		noOp, noOpErr := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-identical-content", Content: originalContent, Reason: "An identical edit cannot reopen Local-Implemented"})
-		if noOpErr != nil || !noOp.NoOp || noOp.Revision != revision {
-			t.Fatalf("Local identical edit changed the stage: %+v, %v", noOp, noOpErr)
+	} else {
+		original := *after.TODO.VerifiedTransitionRef
+		legacy := original
+		legacy.Reference, _, _ = strings.Cut(legacy.Reference, ";repository_node_id=")
+		if legacy == original {
+			t.Fatal("fixture did not produce a pinned Local proof")
 		}
-		database := store.client.Database(store.tenantDatabase("company-a"))
-		eventFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}}
-		eventsBefore, countErr := database.Collection(todoEventsCollection).CountDocuments(ctx, eventFilter)
-		if countErr != nil {
-			t.Fatal(countErr)
+		after.TODO.VerifiedTransitionRef = &legacy
+		updateFixtureTODOStageProof(t, ctx, database, after, legacy)
+
+		// A refused transition can be submitted again with the original revision
+		// and operation after Project configuration. The TODO stage stays fixed.
+		missing := httptest.NewRecorder()
+		requestBody, err := json.Marshal(completed)
+		if err != nil {
+			t.Fatal(err)
 		}
-		_, completionErr := store.TransitionTODO(ctx, "company-a", completed)
-		if !errors.Is(completionErr, ErrConflict) || !strings.Contains(completionErr.Error(), "local_proof.constitution") || !strings.Contains(completionErr.Error(), fmt.Sprintf("revision %d (%s)", activeConstitution.Revision, activeConstitution.ContentDigest)) {
-			t.Fatalf("MVP Constitution drift did not yield actionable conflict: %v", completionErr)
+		transitionURL := "/internal/v1/companies/company-a/projects/" + projectID + "/todos/" + todoID + "/transition"
+		NewHandler(store).ServeHTTP(missing, httptest.NewRequest(http.MethodPost, transitionURL, bytes.NewReader(requestBody)))
+		var failed errorResponse
+		if err := json.Unmarshal(missing.Body.Bytes(), &failed); err != nil || missing.Code != http.StatusConflict ||
+			failed.TeachDetail == nil || failed.TeachDetail.Code != "promotion_mode_required" ||
+			failed.TeachDetail.Retry != TeachRetrySameOperation || failed.TeachDetail.OperationID != completed.OperationID ||
+			failed.TeachDetail.Effects != TeachEffectsNone || !strings.Contains(failed.TeachDetail.NextAction, "builder-project set-promotion-mode") {
+			t.Fatalf("expected actionable mode TEACH: code=%d body=%s err=%v", missing.Code, missing.Body.String(), err)
 		}
-		unchanged, readErr := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-		eventsAfter, countErr := database.Collection(todoEventsCollection).CountDocuments(ctx, eventFilter)
-		if readErr != nil || countErr != nil || unchanged.TODORevision != revision || unchanged.TODO.Stage != "Local-Implemented" || unchanged.TODO.VerifiedTransitionRef == nil || *unchanged.TODO.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef || eventsAfter != eventsBefore {
-			t.Fatalf("failed completion altered Local proof or history: %+v, events %d -> %d, read=%v count=%v", unchanged, eventsBefore, eventsAfter, readErr, countErr)
+		zero := int64(0)
+		configuration := ProjectPromotionModeChange{
+			ProjectID: projectID, Mode: "mvp", ExpectedRevision: &zero, OperationID: "configure-mvp",
+			Actor: "fixture-operator", OwnerReference: "Owner confirmed MVP for this fixture",
 		}
-		updatedContent := contentFromTODO(unchanged.TODO)
-		updatedContent.Context += " Constitution revision reviewed for compatibility."
-		reopened, reopenErr := store.EditTODOContent(ctx, "company-a", TODOContentEditRequest{ProjectID: projectID, TODOID: todoID, ExpectedRevision: &revision, OperationID: "local-compatibility-review", Content: updatedContent, Reason: "Record compatibility assessment and return to Planning"})
-		if reopenErr != nil || reopened.NoOp || reopened.Revision != revision+1 {
-			t.Fatalf("effective compatibility edit did not reopen: %+v, %v", reopened, reopenErr)
+		if state, err := store.ChangeProjectPromotionMode(ctx, "company-a", projectID, configuration); err != nil || state.Revision != 1 {
+			t.Fatalf("configure MVP without Knowledge: %+v err=%v", state, err)
 		}
-		planning, readErr := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
-		historical, historyErr := store.ReadTODOAsOf(ctx, "company-a", projectID, todoID, revision)
-		if readErr != nil || historyErr != nil || planning.TODO.Stage != "Planning" || planning.TODO.StageVerification != "verified" || historical.State.Stage != "Local-Implemented" || historical.State.VerifiedTransitionRef == nil || *historical.State.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef {
-			t.Fatalf("Planning reentry lost immutable Local proof: planning=%+v historical=%+v read=%v history=%v", planning, historical, readErr, historyErr)
+
+		switchModeDuringProduction.Store(true)
+		if _, err := store.TransitionTODO(ctx, "company-a", completed); err == nil || !strings.Contains(err.Error(), "promotion mode changed during proof verification") {
+			t.Fatalf("mode race allowed a stale production proof: %v", err)
 		}
-		return
+		two := int64(2)
+		configuration.ExpectedRevision, configuration.OperationID = &two, "restore-mvp"
+		if state, err := store.ChangeProjectPromotionMode(ctx, "company-a", projectID, configuration); err != nil || state.Revision != 3 {
+			t.Fatalf("restore MVP for exact retry: %+v err=%v", state, err)
+		}
 	}
+	withoutClaim := completed
+	withoutClaim.OperationID = "reject-empty-mvp-claim"
+	withoutClaim.ProofReferences, withoutClaim.WaiverReferences = []TODOProofReference{}, []TODOProofReference{}
+	if _, err := store.TransitionTODO(ctx, "company-a", withoutClaim); !errors.Is(err, ErrConflict) ||
+		!strings.Contains(err.Error(), "provide one exact MVP deployment claim") {
+		t.Fatalf("direct MVP accepted empty proof arrays: %v", err)
+	}
+	productionUnavailable.Store(true)
+	if _, err := store.TransitionTODO(ctx, "company-a", completed); err == nil || !strings.Contains(err.Error(), "production_proof") {
+		t.Fatalf("unverified production advanced the TODO: %v", err)
+	}
+	productionUnavailable.Store(false)
+	current, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
+	if err != nil || current.TODORevision != revision || current.TODO.Stage != "Local-Implemented" ||
+		current.TODO.VerifiedTransitionRef == nil || *current.TODO.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef {
+		t.Fatalf("refused completion changed original Local proof: %+v err=%v", current, err)
+	}
+
+	if currentFence := readPromotionFence(); currentFence != fenceBefore {
+		t.Fatalf("refused production transition advanced the Project fence from %d to %d", fenceBefore, currentFence)
+	}
+
 	competitor := completed
 	if projectID == "no-foundation" {
 		competitor.OperationID = "competing-production-delivery"
 	}
-	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, completed, competitor)
+	assertConcurrentStageTransition(t, ctx, store, projectID, todoID, revision, completed, competitor, func() {
+		if currentFence := readPromotionFence(); currentFence != fenceBefore+1 {
+			t.Fatalf("committing MVP advanced the Project fence by %d, want 1", currentFence-fenceBefore)
+		}
+	})
+	if currentFence := readPromotionFence(); currentFence != fenceBefore+1 {
+		t.Fatalf("replaying MVP changed the committed Project fence from %d to %d", fenceBefore+1, currentFence)
+	}
+	history, err := store.ReadTODOAsOf(ctx, "company-a", projectID, todoID, revision)
+	if err != nil || history.State.Stage != "Local-Implemented" ||
+		history.State.VerifiedTransitionRef == nil || *history.State.VerifiedTransitionRef != *after.TODO.VerifiedTransitionRef {
+		t.Fatalf("production completion changed historical Local proof: %+v err=%v", history, err)
+	}
 }
 
-func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, first, second TODOActionRequest) {
+func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *MongoStore, projectID, todoID string, revision int64, first, second TODOActionRequest, afterCommit func()) {
 	t.Helper()
 	type outcome struct {
 		operationID string
@@ -917,6 +996,9 @@ func assertConcurrentStageTransition(t *testing.T, ctx context.Context, store *M
 	current, err := store.ReadTODO(ctx, "company-a", projectID, todoID, nil)
 	if err != nil || current.TODORevision != revision+1 || current.TODO.Stage != first.RequestedStage || current.TODO.StageVerification != "verified" {
 		t.Fatalf("concurrent %s left wrong aggregate: %+v, %v", first.RequestedStage, current, err)
+	}
+	if afterCommit != nil {
+		afterCommit()
 	}
 	company, err := store.company(ctx, "company-a")
 	if err != nil {

@@ -3,7 +3,7 @@
 The Registry owner publishes `teach_diagnostic.schema.json` and uses
 `TeachDiagnostic` for additive TEACH v1 guidance. Error responses from
 `Handler.writeError` cover identity, tenant/project resolution, repository
-binding, TODO/planning, Knowledge, Overview, Design System, prototype,
+binding, Project promotion mode, TODO/planning, Knowledge, Overview, Design System, prototype,
 landing, and artifact operations. The session guard and TODO body-size rejection
 write through the same bounded error envelope while retaining their legacy
 status and fields.
@@ -34,7 +34,7 @@ Registry matrix records server emission only. Binary media, HEAD/304, internal
 Reader formats, and framework-generated unknown-route/method responses do not
 use this JSON diagnostic contract.
 
-## Evidence keys referenced by all 94 route rows
+## Evidence keys referenced by all 96 route rows
 
 The static route list is cross-checked against `NewHandler`. Each row references a concrete owner-family proof below. The shared emitter path is `handler -> respond/respondMutation (where applicable) -> writeError -> writeErrorEnvelope`; `bindSession` and the TODO body-size guard use `writeSessionGuardError` / `writeTODOTooLarge`, both ending at `writeErrorEnvelope`. A route-specific handler assertion is listed when present. Other routes in that family share the same emitter or response constructor and are explicitly representative coverage, not individual route executions.
 
@@ -47,13 +47,14 @@ The static route list is cross-checked against `NewHandler`. Each row references
 | `P-OVERVIEW` | `overview_test.go:TestMongoOverviewFreshTenantHTTPPublicationAndReadback`, `TestMongoOverviewIdenticalReplayPrecedesCurrentManifestValidation`, `TestMongoOverviewHTTPRejectsIncompatibleIndexWithoutRepair`, `TestOverviewHTTPRoutesAreProjectScopedAndServeExactMedia` | Real Mongo/HTTP not-authored, invalid/stale, replay, media, and mutation boundaries; media success bytes and HEAD/304 are excluded from JSON-detail assertions. |
 | `P-PORTFOLIO` | `portfolio_git_test.go:TestMongoPortfolioCatalogEmitsTEACHForNotAuthoredInvalidAndUnavailable`; `builder-app/service/portfolio_api_test.go:TestPortfolioSuccessfulRowsProjectLegacyTeachAndFiniteAcceptedValues` | ReadPortfolioCatalog real owner and public 2xx projection; file success remains binary and is excluded from JSON success payload TEACH. |
 | `P-DS` | `design_system_http_test.go:TestDesignSystemMutationHTTPRoutesPersistVerifyAndFinalizeDisposableGit`, `http_test.go:TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree` | Pending/success/uncertain mutation and recovery contexts; asset success responses are binary. |
+| `P-PROMOTION-MODE` | `project_promotion_mode_test.go:TestMongoProjectPromotionModeHTTPAndCAS`, `todo_admission_test.go:TestMongoImportedEditedTODOStageFlow` | Project scope, input validation, revision conflict, and missing-mode transition guidance. |
 | `P-TODO` | `http_test.go:TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP`, `TestTODOBodyLimitReturnsActionable413OnBothDecoderReads`, `todo_images_integration_test.go:TestMongoTODOImageUploadLinksOnlyVerifiedGitBytes`, `todo_test.go` Roadmap/diagnostic owner assertions | TODO/planning errors, image owner output, and explicit transition path; image GET/HEAD success bodies are binary. |
 | `P-ROADMAP` | `todo_test.go` Roadmap diagnostic assertions; `builder-app/service/teach_proxy_test.go:TestRoadmapProxyDoesNotForwardRawRegistryClientErrors` | Roadmap JSON owner errors and proxy projection; mutation success keeps existing payload/status. |
 | `P-ARTIFACT` | `builder-app/service/teach_proxy_test.go:TestLandingPortfolioAndPrototypeProjectTEACHDetails`, `TestProxyTeachFiltersEveryTextFieldWithoutDroppingSafeDetails`, `TestReadProxyTeachBoundsCompleteEnvelopeAndProjectsSafeFields` | Landing/Prototype/Portfolio viewer families; published asset/file success is binary and not a TEACH-bearing JSON body. |
 
-## Static route-to-consumer matrix (94 registered routes)
+## Static route-to-consumer matrix (96 registered routes)
 
-This inventory is the complete route map from `NewHandler` at the approved checkpoint. Evidence entries identify executed representative owner/handler tests or explain common-path coverage; the table does not claim that all 94 routes were individually executed. Successful binary/media bytes and HEAD/304 responses are excluded from TEACH detail assertions. A HEAD request that returns a JSON error still uses the common writer when its handler emits that error; method-not-allowed and router-level unknown-path responses are excluded because they bypass the owner JSON emitter.
+This inventory is the complete route map from `NewHandler` at the approved checkpoint. Evidence entries identify executed representative owner/handler tests or explain common-path coverage; the table does not claim that all 96 routes were individually executed. Successful binary/media bytes and HEAD/304 responses are excluded from TEACH detail assertions. A HEAD request that returns a JSON error still uses the common writer when its handler emits that error; method-not-allowed and router-level unknown-path responses are excluded because they bypass the owner JSON emitter.
 
 | Method | Route | Owner | Diagnostic scenario / emitter | Proof key | Consumer |
 | --- | --- | --- | --- | --- | --- |
@@ -83,6 +84,8 @@ This inventory is the complete route map from `NewHandler` at the approved check
 | `POST` | `/internal/v1/companies/{companyID}/projects/{projectID}/binding/first` | Project / company Registry (`bindFirst`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-REGISTRY` | Registry API; no separate UI proxy |
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/binding` | Repository binding (`readRepositoryBinding`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-REGISTRY` | PACED private client/CLI where consumed |
 | `PUT` | `/internal/v1/companies/{companyID}/projects/{projectID}/binding` | Repository binding (`changeRepositoryBinding`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-REGISTRY` | PACED private client/CLI where consumed |
+| `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/promotion-mode` | Project promotion mode (`readProjectPromotionMode`) | Effective mode, source and revision. Lookup and invalid-state errors use the bounded writer. | `P-PROMOTION-MODE` | PACED CLI |
+| `PUT` | `/internal/v1/companies/{companyID}/projects/{projectID}/promotion-mode` | Project promotion mode (`changeProjectPromotionMode`) | Scoped owner decision and revision CAS. Conflicting revisions include the current explicit revision. | `P-PROMOTION-MODE` | PACED CLI |
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories` | Project / company Registry (`readImplementationRepositories`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-REGISTRY` | PACED private client/CLI where consumed |
 | `PUT` | `/internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories` | Implementation repository (`changeImplementationRepository`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-REGISTRY` | PACED private client/CLI where consumed |
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/design-system/state` | Design System (`readDesignSystemState`) | Typed read state/error; pending, invalid, stale and unavailable details at owner constructor | `P-DS` | Viewer projection; PACED private client where consumed |
@@ -138,7 +141,7 @@ This inventory is the complete route map from `NewHandler` at the approved check
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/images/{imageID}` | TODO lifecycle (`readTODOImage`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-TODO` | PACED private client/CLI where consumed |
 | `HEAD` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/images/{imageID}` | TODO lifecycle (`readTODOImage`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-TODO` | PACED private client/CLI where consumed |
 | `POST` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove` | TODO lifecycle (`removeTODO`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-TODO` | PACED private client/CLI where consumed |
-| `POST` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition` | TODO lifecycle (`transitionTODO`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-TODO` | PACED private client/CLI where consumed |
+| `POST` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition` | TODO lifecycle (`transitionTODO`) | Missing mode provides the Project configuration path and exact retry with `effects=none`. Other mutation errors carry owner-known effects. | `P-TODO` | PACED private client/CLI where consumed |
 | `POST` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage` | TODO lifecycle (`verifyCurrentTODOStage`) | Mutation failure: causal detail plus owner-known effect; ambiguous outcomes unknown; success body unchanged | `P-TODO` | PACED private client/CLI where consumed |
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare` | TODO lifecycle (`compareTODOHistory`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-TODO` | PACED private client/CLI where consumed |
 | `GET` | `/internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}` | TODO lifecycle (`readTODOAsOf`) | Validation/lookup/unavailable error through common bounded writer; successful payload unchanged | `P-TODO` | PACED private client/CLI where consumed |
