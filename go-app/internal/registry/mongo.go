@@ -38,6 +38,11 @@ const (
 var mongoDatabaseName = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
 
 type MongoStore struct {
+	scopedProofReaderToken           string
+	githubProofBindingReader         func(context.Context, string, string, string) (githubProofBinding, error)
+	githubApp                        *githubAppClient
+	githubVisualSnapshotReader       func(context.Context, string, string) (githubVisualSnapshot, error)
+	githubAdminHTTP                  *githubAdminHTTP
 	client                           *mongo.Client
 	control                          *mongo.Database
 	beforeProjectWrite               func() error
@@ -85,6 +90,7 @@ type projectDocument struct {
 	RoadmapRevision                         int64                                  `bson:"roadmap_revision,omitempty"`
 	RoadmapLastOperation                    *roadmapOperation                      `bson:"roadmap_last_operation,omitempty"`
 	Binding                                 *Binding                               `bson:"binding,omitempty"`
+	GitHubVisualConnection                  *githubVisualConnectionPin             `bson:"github_visual_connection,omitempty"`
 	BindingRevision                         int64                                  `bson:"binding_revision,omitempty"`
 	BindingOperation                        string                                 `bson:"binding_operation,omitempty"`
 	BindingActor                            string                                 `bson:"binding_actor,omitempty"`

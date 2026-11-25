@@ -80,6 +80,15 @@ var companySchemaCatalog = []companySchemaStep{{
 	verify: func(ctx context.Context, m *MongoStore, company Company) error {
 		return verifyTODOHistoryCollections(ctx, m.client.Database(company.DatabaseName))
 	},
+}, {
+	version:    4,
+	definition: "company-schema-v4:github-repository-connection-identity-operation-identity-intent-ttl-create-reservation",
+	apply: func(ctx context.Context, m *MongoStore, company Company) error {
+		return ensureGitHubConnectionIndexes(ctx, m.client.Database(company.DatabaseName))
+	},
+	verify: func(ctx context.Context, m *MongoStore, company Company) error {
+		return verifyGitHubConnectionIndexes(ctx, m.client.Database(company.DatabaseName))
+	},
 }}
 
 func (m *MongoStore) schemaCatalog() []companySchemaStep {
@@ -180,6 +189,10 @@ func normalizeCompanyBSON(value any) any {
 }
 
 func verifyCompanyIndex(ctx context.Context, collection *mongo.Collection, name string, keys bson.D, unique bool, partial ...bson.M) error {
+	return verifyCompanyIndexOptions(ctx, collection, name, keys, unique, nil, partial...)
+}
+
+func verifyCompanyIndexOptions(ctx context.Context, collection *mongo.Collection, name string, keys bson.D, unique bool, expirySeconds *int32, partial ...bson.M) error {
 	cursor, err := collection.Indexes().List(ctx)
 	if err != nil {
 		return ErrUnavailable
@@ -221,7 +234,18 @@ func verifyCompanyIndex(ctx context.Context, collection *mongo.Collection, name 
 				return todoTeach(collection.Name()+"."+name, "match the frozen partial filter", ErrConflict)
 			}
 		}
-		for _, option := range []string{"sparse", "expireAfterSeconds", "collation", "hidden"} {
+		expiry := raw.Lookup("expireAfterSeconds")
+		if expirySeconds == nil {
+			if expiry.Type != 0 {
+				return todoTeach(collection.Name()+"."+name, "contain no unexpected index options", ErrConflict)
+			}
+		} else {
+			value, integral := expiry.AsInt64OK()
+			if !integral || (expiry.Type != bson.TypeInt32 && expiry.Type != bson.TypeInt64) || value != int64(*expirySeconds) {
+				return todoTeach(collection.Name()+"."+name, "match the frozen index expiry in seconds", ErrConflict)
+			}
+		}
+		for _, option := range []string{"sparse", "collation", "hidden"} {
 			if raw.Lookup(option).Type != 0 {
 				return todoTeach(collection.Name()+"."+name, "contain no unexpected index options", ErrConflict)
 			}

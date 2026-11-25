@@ -123,6 +123,12 @@ func (m *MongoStore) resolveDesignSystemSource(ctx context.Context, companyID, p
 }
 
 func (m *MongoStore) ReadDesignSystem(ctx context.Context, companyID, projectID, requestedSHA string) (DesignSystemReadResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (DesignSystemReadResponse, error) {
+		return m.readDesignSystem(ctx, companyID, projectID, requestedSHA)
+	})
+}
+
+func (m *MongoStore) readDesignSystem(ctx context.Context, companyID, projectID, requestedSHA string) (DesignSystemReadResponse, error) {
 	resolved, err := m.resolveDesignSystemSource(ctx, companyID, projectID, requestedSHA)
 	if err != nil {
 		return DesignSystemReadResponse{}, err
@@ -138,6 +144,12 @@ func (m *MongoStore) ReadDesignSystem(ctx context.Context, companyID, projectID,
 }
 
 func (m *MongoStore) ListDesignSystemHistory(ctx context.Context, companyID, projectID string, limit int) (DesignSystemHistoryResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (DesignSystemHistoryResponse, error) {
+		return m.listDesignSystemHistory(ctx, companyID, projectID, limit)
+	})
+}
+
+func (m *MongoStore) listDesignSystemHistory(ctx context.Context, companyID, projectID string, limit int) (DesignSystemHistoryResponse, error) {
 	selection, binding, err := m.loadBoundDesignSystemHistory(ctx, companyID, projectID)
 	if err != nil {
 		return DesignSystemHistoryResponse{}, err
@@ -161,6 +173,12 @@ func (m *MongoStore) ListDesignSystemHistory(ctx context.Context, companyID, pro
 }
 
 func (m *MongoStore) ReadDesignSystemAsOf(ctx context.Context, companyID, projectID, revision string) (DesignSystemAsOfResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (DesignSystemAsOfResponse, error) {
+		return m.readDesignSystemAsOf(ctx, companyID, projectID, revision)
+	})
+}
+
+func (m *MongoStore) readDesignSystemAsOf(ctx context.Context, companyID, projectID, revision string) (DesignSystemAsOfResponse, error) {
 	if !validFullGitSHA(revision) {
 		return DesignSystemAsOfResponse{}, todoTeach("revision", "be an exact full Git commit SHA", ErrInvalid)
 	}
@@ -237,6 +255,12 @@ func designSystemSelectionMatchesBinding(selection DesignSystemSelection, bindin
 }
 
 func (m *MongoStore) ReadDesignSystemAsset(ctx context.Context, companyID, projectID, requestedSHA, assetPath string) (designSystemAssetResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (designSystemAssetResponse, error) {
+		return m.readDesignSystemAsset(ctx, companyID, projectID, requestedSHA, assetPath)
+	})
+}
+
+func (m *MongoStore) readDesignSystemAsset(ctx context.Context, companyID, projectID, requestedSHA, assetPath string) (designSystemAssetResponse, error) {
 	if ac.ValidateRelativePath(assetPath) != nil || len([]byte(assetPath)) > ac.MaxPathBytes {
 		return designSystemAssetResponse{}, todoTeach("asset_path", "use a safe relative path declared by the Design System", ErrInvalid)
 	}
@@ -308,7 +332,7 @@ func writeDesignSystemAsset(w http.ResponseWriter, r *http.Request, asset design
 	w.Header().Set("Content-Type", asset.ContentType)
 	w.Header().Set("Content-Length", fmt.Sprint(len(asset.Data)))
 	w.Header().Set("ETag", asset.ETag)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	setVisualFileDefaultCache(w)
 	w.Header().Set("X-Design-System-Revision", asset.Revision)
 	w.Header().Set("X-Design-System-Inventory-Digest", asset.InventoryDigest)
 	if r.Header.Get("If-None-Match") == asset.ETag {

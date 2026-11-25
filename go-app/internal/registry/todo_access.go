@@ -376,7 +376,13 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 				return TODOActionResponse{}, err
 			}
 		}
-		proof, err = m.mongoBornTransitionProof(ctx, companyID, project, current, request)
+		proofCtx := ctx
+		var leases map[string]*githubProofLease
+		if m.githubApp != nil && record.Stage == "In-Progress" && request.RequestedStage == "Local-Implemented" {
+			leases = make(map[string]*githubProofLease)
+			proofCtx = context.WithValue(ctx, githubProofLeasesKey{}, leases)
+		}
+		proof, err = m.mongoBornTransitionProof(proofCtx, companyID, project, current, request)
 		if err != nil {
 			return TODOActionResponse{}, err
 		}
@@ -391,7 +397,11 @@ func (m *MongoStore) TransitionTODO(ctx context.Context, companyID string, reque
 				if nodeID == "" {
 					return TODOActionResponse{}, todoTeach("local_proof.repository_identity", "pin the Reader-verified GitHub ID for every exact approved repository alias", ErrConflict)
 				}
-				identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: scope.RepositoryID, GitHubNodeID: nodeID, ProofDigest: proof.SourceDigest})
+				lease := leases[scope.RepositoryID]
+				if leases != nil && lease == nil {
+					return TODOActionResponse{}, githubProofBindingChanged()
+				}
+				identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: scope.RepositoryID, GitHubNodeID: nodeID, ProofDigest: proof.SourceDigest, githubLease: lease})
 			}
 			company, companyErr := m.company(ctx, companyID)
 			if companyErr != nil {
@@ -1058,6 +1068,11 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 		for _, pin := range identityPins {
 			if pin.ProjectID != record.ProjectID {
 				return nil, ErrInvalid
+			}
+			if pin.githubLease != nil {
+				if err := guardGitHubProofLease(txCtx, database, *pin.githubLease); err != nil {
+					return nil, err
+				}
 			}
 			guardedRepositories = append(guardedRepositories, pin.RepositoryID)
 		}

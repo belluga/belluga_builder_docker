@@ -546,7 +546,7 @@ function ProjectCard({ project, portfolio, onOpen }: { project: Project; portfol
   </button>;
 }
 
-export function Projects() {
+export function Projects({ behindGitHubAdmin = false }: { behindGitHubAdmin?: boolean } = {}) {
   const [selection, setSelection] = useState(route);
   const [catalog, setCatalog] = useState<Catalog>({ companies: [], projects: [] });
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
@@ -556,6 +556,7 @@ export function Projects() {
   const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; bindingUnavailable?: boolean; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
   const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
+  const [githubAdminProject, setGitHubAdminProject] = useState("");
   useEffect(() => {
     const update = () => { setSelection(route()); setPendingCompanyID(""); };
     addEventListener("popstate", update);
@@ -573,6 +574,25 @@ export function Projects() {
   const company = catalog.companies.find((item) => item.id === selection.companyID);
   const project = catalog.projects.find((item) => item.company_id === selection.companyID && item.id === selection.projectID);
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
+  const githubAdminPath = project && !behindGitHubAdmin
+    ? `/admin/github/companies/${encodeURIComponent(project.company_id)}/projects/${encodeURIComponent(project.id)}`
+    : "";
+  useEffect(() => {
+    if (!githubAdminPath) return;
+    const controller = new AbortController();
+    fetch(githubAdminPath, { signal: controller.signal }).then((response) => {
+      if (!response.ok) return null;
+      return response.json();
+    }).then((roles) => {
+      if (!controller.signal.aborted && Number.isInteger(roles?.visual?.revision) && Number.isInteger(roles?.implementation?.revision)) {
+        setGitHubAdminProject(githubAdminPath);
+      }
+    }).catch(() => {});
+    return () => {
+      controller.abort();
+      setGitHubAdminProject("");
+    };
+  }, [githubAdminPath]);
   useEffect(() => {
     if (!selection.companyID || selection.projectID || !catalog.companies.some((item) => item.id === selection.companyID)) return;
     const controller = new AbortController();
@@ -677,7 +697,9 @@ export function Projects() {
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
     </div>
-    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
+    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a>
+      {githubAdminPath && githubAdminProject === githubAdminPath && <a className="github-admin-project-link" href={`/admin/github?${new URLSearchParams({ company_id: selection.companyID, project_id: selection.projectID })}`}>Gerenciar conexão GitHub</a>}
+    </header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
       <section className="project-content">{page !== "design-system" && themeDiagnostic && !themeRead.bindingUnavailable && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial read={overviewRead.key === viewKey ? overviewRead : { key: viewKey, state: "loading" }} projectName={project?.name || "Project"} companyID={selection.companyID} projectID={selection.projectID} />

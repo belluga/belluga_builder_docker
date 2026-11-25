@@ -124,7 +124,7 @@ func (v gitDesignSystemVerifier) openHistory(ctx context.Context, repositoryID, 
 	if err != nil {
 		return "", "", "", "", ErrUnavailable
 	}
-	remote = v.repositoryURL(repositoryID)
+	remote = v.readRemote(ctx, repositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		removeGitWorkspace(workspace)
 		return "", "", "", "", ErrUnavailable

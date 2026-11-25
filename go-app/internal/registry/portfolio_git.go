@@ -50,8 +50,9 @@ type ProjectPortfolio struct {
 }
 
 type PortfolioCatalogResponse struct {
-	CompanyID string             `json:"company_id"`
-	Projects  []ProjectPortfolio `json:"projects"`
+	CompanyID   string             `json:"company_id"`
+	Projects    []ProjectPortfolio `json:"projects"`
+	TeachDetail *TeachDiagnostic   `json:"teach_detail,omitempty"`
 }
 
 type portfolioFileResponse struct {
@@ -87,6 +88,10 @@ func (m *MongoStore) ReadPortfolioCatalog(ctx context.Context, companyID string)
 			return PortfolioCatalogResponse{}, ErrUnavailable
 		}
 		item, readErr := m.ReadProjectPortfolio(ctx, companyID, record.ID)
+		if errors.Is(readErr, errGitHubVisualAccessDenied) {
+			result.TeachDetail = readTeach("portfolio_access_filtered", "repository_binding", "Restore GitHub App access for any missing Project portfolios.")
+			continue
+		}
 		if readErr != nil {
 			item = ProjectPortfolio{CompanyID: companyID, ProjectID: record.ID, State: portfolioErrorState(readErr), Teach: portfolioTeach(readErr), TeachDetail: portfolioTeachDetail(readErr)}
 		}
@@ -99,6 +104,9 @@ func (m *MongoStore) ReadPortfolioCatalog(ctx context.Context, companyID string)
 }
 
 func portfolioTeachDetail(err error) *TeachDiagnostic {
+	if detail := explicitTeachDiagnostic(err); detail != nil {
+		return detail
+	}
 	code, field, action := "portfolio_unavailable", "portfolio", "Restore verifiable Portfolio Git access, then read the catalog again."
 	switch {
 	case errors.Is(err, ErrNotFound):
@@ -132,6 +140,12 @@ func portfolioTeach(err error) string {
 }
 
 func (m *MongoStore) ReadProjectPortfolio(ctx context.Context, companyID, projectID string) (ProjectPortfolio, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (ProjectPortfolio, error) {
+		return m.readProjectPortfolio(ctx, companyID, projectID)
+	})
+}
+
+func (m *MongoStore) readProjectPortfolio(ctx context.Context, companyID, projectID string) (ProjectPortfolio, error) {
 	if !validID(companyID) || !validID(projectID) {
 		return ProjectPortfolio{}, ErrInvalid
 	}
@@ -271,6 +285,12 @@ func decodeStrictPortfolio(data []byte, target *portfolioSummaryV1) error {
 }
 
 func (m *MongoStore) ReadProjectPortfolioFile(ctx context.Context, companyID, projectID string, bindingRevision int64, revision, inventoryDigest, requestedPath string) (portfolioFileResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (portfolioFileResponse, error) {
+		return m.readProjectPortfolioFile(ctx, companyID, projectID, bindingRevision, revision, inventoryDigest, requestedPath)
+	})
+}
+
+func (m *MongoStore) readProjectPortfolioFile(ctx context.Context, companyID, projectID string, bindingRevision int64, revision, inventoryDigest, requestedPath string) (portfolioFileResponse, error) {
 	if !validID(companyID) || !validID(projectID) || bindingRevision < 0 || !validFullGitSHA(revision) || !validSourceDigest(inventoryDigest) || ac.ValidateRelativePath(requestedPath) != nil || portfolioMIMEType(requestedPath) == "" {
 		return portfolioFileResponse{}, ErrInvalid
 	}

@@ -74,6 +74,7 @@ func registeredHandler(stateRoot, webRoot, publicHost string) http.Handler {
 	mux.HandleFunc("/api/portfolios", consumer.portfolioAPIHandler)
 	mux.HandleFunc("/api/portfolios/file/", consumer.portfolioAPIHandler)
 	mux.HandleFunc("/snapshot/", retiredSnapshotHandler)
+	registerGitHubAdmin(mux, newGitHubAdminProxy(webRoot))
 	mux.Handle("/", localStaticHandler(webRoot))
 	return secureHeaders(previewHostOnly(mux, publicHost))
 }

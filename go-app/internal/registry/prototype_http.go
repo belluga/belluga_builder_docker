@@ -7,6 +7,7 @@ import (
 )
 
 func (h *Handler) readPrototypes(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(prototypeReader)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -17,6 +18,7 @@ func (h *Handler) readPrototypes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) readPrototype(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(prototypeReader)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -27,6 +29,7 @@ func (h *Handler) readPrototype(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) readPrototypeFile(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(prototypeReader)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -43,7 +46,7 @@ func (h *Handler) readPrototypeFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Prototype-Revision", value.Revision)
 	w.Header().Set("X-Prototype-Inventory-Digest", value.InventoryDigest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	setVisualFileDefaultCache(w)
 	if r.Header.Get("If-None-Match") == value.ETag {
 		w.WriteHeader(http.StatusNotModified)
 		return

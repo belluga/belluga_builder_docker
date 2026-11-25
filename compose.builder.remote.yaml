@@ -1,0 +1,120 @@
+# Image-only Builder release package. Use the same file and image digests in
+# rehearsal and on the dedicated server; each uses its own runtime inputs.
+x-registry-image: &registry-image ghcr.io/belluga/builder-registry@sha256:${BUILDER_REGISTRY_DIGEST:?set the approved Registry digest (64 hex digits)}
+
+services:
+  builder-viewer:
+    image: ghcr.io/belluga/builder-viewer@sha256:${BUILDER_VIEWER_DIGEST:?set the approved Viewer digest (64 hex digits)}
+    platform: linux/amd64
+    environment:
+      LISTEN_ADDR: 0.0.0.0:8080
+      ALLOW_CONTAINER_BIND: "true"
+      # Selects Registry-backed mode. Viewer needs no state or host checkout mount.
+      DELPHI_BUILDER_STATE_ROOT: /state
+      DELPHI_BUILDER_REGISTRY_URL: http://builder-registry:8080
+      PUBLIC_PREVIEW_HOST: ${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
+      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
+    depends_on:
+      builder-registry:
+        condition: service_started
+    networks:
+      tunnel-ingress:
+        aliases: [builder-remote-viewer]
+      viewer-registry: {}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    restart: unless-stopped
+
+  builder-registry:
+    image: *registry-image
+    platform: linux/amd64
+    environment:
+      REGISTRY_MONGODB_URI: ${REGISTRY_MONGODB_URI:?set the remote MongoDB replica set or Atlas URI}
+      REGISTRY_CONTROL_DATABASE: ${REGISTRY_CONTROL_DATABASE:?set the isolated Builder control database}
+      DELPHI_PROJECT_READER_URL: http://project-reader:8099
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set the private Reader legacy bearer}
+      DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN: ${DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN:?set a distinct App-backed proof bearer}
+      DELPHI_PROTOTYPE_GIT_CACHE_ROOT: /prototype-cache
+      BUILDER_GITHUB_APP_ID: ${BUILDER_GITHUB_APP_ID:?set GitHub App ID}
+      BUILDER_GITHUB_APP_SLUG: ${BUILDER_GITHUB_APP_SLUG:?set GitHub App slug}
+      BUILDER_GITHUB_APP_CLIENT_ID: ${BUILDER_GITHUB_APP_CLIENT_ID:?set GitHub App client ID}
+      BUILDER_GITHUB_APP_CLIENT_SECRET: ${BUILDER_GITHUB_APP_CLIENT_SECRET:?set GitHub App client secret}
+      BUILDER_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app-key.pem
+      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
+      BUILDER_GITHUB_ACCESS_ISSUER: ${BUILDER_GITHUB_ACCESS_ISSUER:?set the verified Cloudflare Access issuer}
+      BUILDER_GITHUB_ACCESS_AUDIENCE: ${BUILDER_GITHUB_ACCESS_AUDIENCE:?set the exact Access application audience}
+      BUILDER_GITHUB_ACCESS_OPERATORS: ${BUILDER_GITHUB_ACCESS_OPERATORS:?set the JSON subject-to-Company allowlist}
+    depends_on:
+      registry-migrate:
+        condition: service_completed_successfully
+      project-reader:
+        condition: service_started
+    networks: [viewer-registry, registry-reader]
+    volumes:
+      - type: bind
+        source: ${BUILDER_GITHUB_APP_KEY_PATH:?set the protected server-side PEM path}
+        target: /run/secrets/github-app-key.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: prototype-git-cache
+        target: /prototype-cache
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=128m,noexec,nosuid"]
+    restart: unless-stopped
+
+  project-reader:
+    image: ghcr.io/belluga/builder-project-reader@sha256:${BUILDER_READER_DIGEST:?set the approved PACED Reader digest (64 hex digits)}
+    platform: linux/amd64
+    user: "65532:65532"
+    environment:
+      DELPHI_PROJECT_READER_LISTEN: :8099
+      DELPHI_PROJECT_READER_STATE_ROOT: /state
+      DELPHI_PROJECT_READER_TOKEN: ${DELPHI_PROJECT_READER_TOKEN:?set the private Reader legacy bearer}
+      DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN: ${DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN:?set a distinct App-backed proof bearer}
+      DELPHI_BUILDER_REGISTRY_CUTOVER: "true"
+      DELPHI_BUILDER_REGISTRY_URL: http://builder-registry:8080
+    networks: [registry-reader]
+    volumes:
+      - type: bind
+        source: ${BUILDER_READER_STATE_PATH:?set the dedicated server Reader state path}
+        target: /state
+        bind:
+          create_host_path: false
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=32m,noexec,nosuid"]
+    restart: unless-stopped
+
+  registry-migrate:
+    image: *registry-image
+    platform: linux/amd64
+    command: [migrate-all]
+    environment:
+      REGISTRY_MONGODB_URI: ${REGISTRY_MONGODB_URI:?set the remote MongoDB replica set or Atlas URI}
+      REGISTRY_CONTROL_DATABASE: ${REGISTRY_CONTROL_DATABASE:?set the isolated Builder control database}
+    networks: [migration-egress]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    restart: "no"
+
+networks:
+  tunnel-ingress:
+    external: true
+    name: ${BUILDER_TUNNEL_NETWORK:?set the dedicated Tunnel connector Docker network}
+  # These project-scoped bridges need outbound connectivity to Mongo and GitHub.
+  # No application service publishes a host port.
+  viewer-registry:
+  registry-reader:
+  migration-egress:
+
+volumes:
+  prototype-git-cache:

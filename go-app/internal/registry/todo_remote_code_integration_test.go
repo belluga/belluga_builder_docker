@@ -136,6 +136,8 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	var removeSecondaryOnArrival atomic.Bool
 	var arrivalDelay atomic.Int64
 	var changeConstitutionOnArrival atomic.Bool
+	var scopedReader, relinkFirstOnSecondArrival atomic.Bool
+	const scopedFixtureBearer = "scoped-fixture-reader-proof-bearer-01234567"
 	editConstitution := func(mode, statement, operationID string) error {
 		current, err := store.ReadCanonical(ctx, companyID, projectID, FamilyConstitution, constitutionID)
 		if err != nil {
@@ -150,7 +152,18 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	}
 	reader := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		readerCalls.Add(1)
-		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer fixture-token" {
+		readerBearer := "fixture-token"
+		if scopedReader.Load() {
+			readerBearer = scopedFixtureBearer
+			wantToken := "repo-a-token"
+			if r.URL.Query().Get("repository") == secondaryRepository {
+				wantToken = "repo-b-token"
+			}
+			if r.Header.Get(githubScopedProofTokenHeader) != wantToken {
+				t.Error("Reader did not receive the exact repository's GitHub App credential")
+			}
+		}
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+readerBearer {
 			t.Error("Reader request must be an authenticated GET")
 			w.WriteHeader(http.StatusUnauthorized)
 			return
@@ -170,6 +183,13 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 				t.Errorf("Reader received wrong Complete arrival query: %s", r.URL)
 				w.WriteHeader(http.StatusBadRequest)
 				return
+			}
+			if arrivalRepository == secondaryRepository && relinkFirstOnSecondArrival.CompareAndSwap(true, false) {
+				first := githubRepositoryConnection{ProjectID: projectID, GitHubRepositoryID: 33, RepositoryNodeID: "R_kgDOImmutable",
+					RepositoryFullName: repository, AccountID: 18, InstallationID: 10}
+				if err := writeGitHubRepositoryConnectionCAS(ctx, database, first, 1, time.Now().UTC()); err != nil {
+					t.Errorf("relink first repository during second Reader request: %v", err)
+				}
 			}
 			if removeSecondaryOnArrival.CompareAndSwap(true, false) {
 				set, readErr := store.ReadImplementationRepositories(ctx, companyID, projectID)
@@ -419,6 +439,55 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		if code, body := submitFixturePromotionHTTP(t, registry, companyID, mvpAttempt); code != http.StatusConflict ||
 			!strings.Contains(string(body), "then Promotion-Lane to Completed") || readerCalls.Load() != callsBeforeMVP {
 			t.Fatalf("Complete accepted direct MVP completion: status=%d body=%s", code, body)
+		}
+
+		store.githubApp = githubAppTestClient(t, func(r *http.Request) (*http.Response, error) {
+			switch r.URL.Path {
+			case "/app/installations/9/access_tokens", "/app/installations/10/access_tokens":
+				var scope struct {
+					RepositoryIDs []int64 `json:"repository_ids"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&scope); err != nil || len(scope.RepositoryIDs) != 1 {
+					return nil, ErrInvalid
+				}
+				token := "repo-a-token"
+				if scope.RepositoryIDs[0] == 34 {
+					token = "repo-b-token"
+				}
+				return githubAppTestResponse(201, fmt.Sprintf(`{"token":%q,"expires_at":"2026-11-25T01:00:00Z"}`, token)), nil
+			case "/repositories/33":
+				return githubAppTestResponse(200, `{"id":33,"node_id":"R_kgDOImmutable","full_name":"owner/repo","owner":{"id":18}}`), nil
+			case "/repositories/34":
+				return githubAppTestResponse(200, `{"id":34,"node_id":"R_kgDOImmutable-secondary","full_name":"owner/secondary","owner":{"id":18}}`), nil
+			default:
+				t.Errorf("unexpected GitHub lookup %s", r.URL.Path)
+				return nil, ErrUnavailable
+			}
+		})
+		if err := store.ConfigureScopedProofReader(scopedFixtureBearer); err != nil {
+			t.Fatal(err)
+		}
+		for _, conn := range []githubRepositoryConnection{
+			{ProjectID: projectID, GitHubRepositoryID: 33, RepositoryNodeID: "R_kgDOImmutable", RepositoryFullName: repository, AccountID: 18, InstallationID: 9},
+			{ProjectID: projectID, GitHubRepositoryID: 34, RepositoryNodeID: "R_kgDOImmutable-secondary", RepositoryFullName: secondaryRepository, AccountID: 18, InstallationID: 9},
+		} {
+			if err := writeGitHubRepositoryConnectionCAS(ctx, database, conn, 0, time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+		}
+		scopedReader.Store(true)
+		relinkFirstOnSecondArrival.Store(true)
+		relinkAttempt := promotion
+		relinkAttempt.OperationID = "reject-concurrent-installation-change"
+		callsBeforeRelink := readerCalls.Load()
+		if code, body := submitFixturePromotionHTTP(t, registry, companyID, relinkAttempt); code != http.StatusConflict ||
+			!strings.Contains(string(body), "reload the current Project repository confirmation and connection") || readerCalls.Load()-callsBeforeRelink != 2 ||
+			relinkFirstOnSecondArrival.Load() {
+			t.Fatalf("promotion did not reject stale connection after both proofs: status=%d body=%s", code, body)
+		}
+		afterRelink, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+		if err != nil || afterRelink.TODORevision != redelivered.TODORevision || afterRelink.TODO.Stage != "Local-Implemented" {
+			t.Fatalf("rejected promotion mutated the TODO: %+v err=%v", afterRelink, err)
 		}
 
 		// Match PACED's code-promotion payload with empty proof and waiver arrays.

@@ -256,7 +256,11 @@ func (p *registeredPreview) proxyPrototypeFile(w http.ResponseWriter, r *http.Re
 	copyHeaderSafe(w, "ETag", etag)
 	w.Header().Set("X-Prototype-Revision", revision)
 	w.Header().Set("X-Prototype-Inventory-Digest", digest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if response.Header.Get("Cache-Control") == "no-store" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	}
 	w.Header().Set("Content-Security-Policy", prototypeFilePolicy(filePath, contentType))
 	if response.StatusCode == http.StatusNotModified {
 		w.WriteHeader(http.StatusNotModified)

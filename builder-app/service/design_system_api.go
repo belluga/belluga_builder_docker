@@ -187,7 +187,11 @@ func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, resp
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-Design-System-Revision", revision)
 	w.Header().Set("X-Design-System-Inventory-Digest", digest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if response.Header.Get("Cache-Control") == "no-store" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	}
 	w.Header().Set("Content-Security-Policy", designSystemFilePolicy(presentation, contentType))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)

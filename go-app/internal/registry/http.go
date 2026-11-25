@@ -265,6 +265,9 @@ func NewHandler(service Service) http.Handler {
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step", h.editTODONextStep)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership", h.normalizeTODOSectionOwnership)
 	mux.HandleFunc("POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore", h.restoreTODOContent)
+	if store, ok := service.(*MongoStore); ok && store.githubAdminHTTP != nil {
+		store.githubAdminHTTP.register(mux)
+	}
 	return sessionScopeGuard(mux, h.service)
 }
 
@@ -899,6 +902,7 @@ func (h *Handler) recoverDesignSystemMutation(w http.ResponseWriter, r *http.Req
 	h.respond(w, designSystemResultResponse{DesignSystemMutationResult: value, TeachDetail: &detail}, nil)
 }
 func (h *Handler) readDesignSystem(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.designSystemReadService(w)
 	if !ok {
 		return
@@ -914,6 +918,7 @@ func (h *Handler) readDesignSystem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listDesignSystemHistory(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.designSystemHistoryService(w)
 	if !ok {
 		return
@@ -939,6 +944,7 @@ func (h *Handler) listDesignSystemHistory(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) readDesignSystemAsOf(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.designSystemHistoryService(w)
 	if !ok {
 		return
@@ -961,6 +967,7 @@ func (h *Handler) designSystemHistoryService(w http.ResponseWriter) (designSyste
 	return service, ok
 }
 func (h *Handler) readDesignSystemAsset(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.designSystemReadService(w)
 	if !ok {
 		return

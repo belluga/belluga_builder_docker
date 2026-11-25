@@ -7,6 +7,7 @@ import (
 )
 
 func (h *Handler) readPortfolioCatalog(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(portfolioReader)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -17,6 +18,7 @@ func (h *Handler) readPortfolioCatalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) readPortfolioFile(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(portfolioReader)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -43,7 +45,7 @@ func (h *Handler) readPortfolioFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Portfolio-Revision", value.Revision)
 	w.Header().Set("X-Portfolio-Inventory-Digest", value.InventoryDigest)
 	w.Header().Set("X-Portfolio-Content-Digest", value.Digest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	setVisualFileDefaultCache(w)
 	if r.Header.Get("If-None-Match") == value.ETag {
 		w.WriteHeader(http.StatusNotModified)
 		return

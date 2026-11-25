@@ -266,7 +266,7 @@ func testCompanyTODOValidatorMigration(t *testing.T, fromV2 bool) {
 	}
 	migrateCompanyFixture(t, ctx, store)
 	company, err = store.rawCompany(ctx, company.ID)
-	if err != nil || len(company.SchemaMigrations) != 3 || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != frozenCompanySchemaV2Digest || company.SchemaMigrations[2].Digest != companySchemaCatalog[2].digest() {
+	if err != nil || len(company.SchemaMigrations) != len(companySchemaCatalog) || company.SchemaMigrations[0].Digest != companySchemaV1Digest || company.SchemaMigrations[1].Digest != frozenCompanySchemaV2Digest || company.SchemaMigrations[2].Digest != companySchemaCatalog[2].digest() {
 		t.Fatalf("migration history: %+v, %v", company, err)
 	}
 	if fromV2 && !reflect.DeepEqual(company.SchemaMigrations[:2], priorHistory) {
@@ -274,7 +274,7 @@ func testCompanyTODOValidatorMigration(t *testing.T, fromV2 bool) {
 	}
 	if fromV2 {
 		afterHistoryBytes, readErr := rawCompanyMigrationEntries(ctx, store, company.ID)
-		if readErr != nil || len(afterHistoryBytes) != 3 || !bytes.Equal(priorHistoryBytes[0], afterHistoryBytes[0]) || !bytes.Equal(priorHistoryBytes[1], afterHistoryBytes[1]) {
+		if readErr != nil || len(afterHistoryBytes) != len(companySchemaCatalog) || !bytes.Equal(priorHistoryBytes[0], afterHistoryBytes[0]) || !bytes.Equal(priorHistoryBytes[1], afterHistoryBytes[1]) {
 			t.Fatalf("v3 did not preserve the exact stored v1/v2 migration entry bytes: before=%x after=%x err=%v", priorHistoryBytes, afterHistoryBytes, readErr)
 		}
 	}
@@ -388,5 +388,91 @@ func TestPrototypeRequestDetectsRemovedMigrationCollectionWithoutDDL(t *testing.
 	names, err := db.ListCollectionNames(ctx, bson.D{{Key: "name", Value: prototypeItemsCollection}})
 	if err != nil || len(names) != 0 {
 		t.Fatalf("Project request recreated a tenant collection: %v, %v", names, err)
+	}
+}
+
+func TestCompanyGitHubConnectionMigrationUpgradesStampedV3AndFreshCompanies(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		if os.Getenv("REGISTRY_REQUIRE_MONGO_INTEGRATION") == "1" {
+			t.Fatal("required Mongo integration fixture unavailable")
+		}
+		t.Skip("requires isolated Mongo integration fixture")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	control := fmt.Sprintf("builder_github_migration_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, control)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = control
+	t.Cleanup(func() {
+		cleanup, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		_ = store.client.Database(store.tenantDatabase("company-existing")).Drop(cleanup)
+		_ = store.client.Database(store.tenantDatabase("company-fresh")).Drop(cleanup)
+		_ = store.control.Drop(cleanup)
+		_ = store.Close(cleanup)
+	})
+	store.schemaMigrations = append([]companySchemaStep{}, companySchemaCatalog[:3]...)
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-existing", CompanyName: "Existing", ProjectID: "project-a", ProjectName: "Project A"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := rawCompanyMigrationEntries(ctx, store, "company-existing")
+	if err != nil || len(before) != 3 {
+		t.Fatalf("v3 history: %d entries, %v", len(before), err)
+	}
+	existing, err := store.rawCompany(ctx, "company-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := store.client.Database(existing.DatabaseName)
+	names, err := db.ListCollectionNames(ctx, bson.M{"name": bson.M{"$in": bson.A{githubRepositoryConnectionsCollection, githubConnectionOperationsCollection}}})
+	if err != nil || len(names) != 0 {
+		t.Fatalf("v1-v3 unexpectedly provisioned v4 collections: %v, %v", names, err)
+	}
+	store.schemaMigrations = nil
+	if _, err := store.Project(ctx, "company-existing", "project-a"); err == nil || !strings.Contains(err.Error(), "migrate-all") {
+		t.Fatalf("v3 Company should require migrate-all: %v", err)
+	}
+	migrateCompanyFixture(t, ctx, store)
+	after, err := rawCompanyMigrationEntries(ctx, store, "company-existing")
+	if err != nil || len(after) != 4 || !reflect.DeepEqual(before, after[:3]) {
+		t.Fatalf("v4 did not append to unchanged v1-v3 history: %d entries, %v", len(after), err)
+	}
+	existing, err = store.rawCompany(ctx, "company-existing")
+	if err != nil || len(existing.SchemaMigrations) != 4 || existing.SchemaMigrations[3].Version != 4 ||
+		existing.SchemaMigrations[3].Digest != companySchemaCatalog[3].digest() {
+		t.Fatalf("missing v4 digest: %+v, %v", existing.SchemaMigrations, err)
+	}
+	if err := verifyGitHubConnectionIndexes(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	migrateCompanyFixture(t, ctx, store)
+	afterRetry, err := rawCompanyMigrationEntries(ctx, store, "company-existing")
+	if err != nil || !reflect.DeepEqual(after, afterRetry) {
+		t.Fatalf("migration retry changed stored history: %v", err)
+	}
+
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-fresh", CompanyName: "Fresh", ProjectID: "project-a", ProjectName: "Project A"}); err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := store.rawCompany(ctx, "company-fresh")
+	if err != nil || len(fresh.SchemaMigrations) != 4 || fresh.SchemaMigrations[3].Digest != companySchemaCatalog[3].digest() {
+		t.Fatalf("fresh Company missing v4: %+v, %v", fresh.SchemaMigrations, err)
+	}
+	if err := verifyGitHubConnectionIndexes(ctx, store.client.Database(fresh.DatabaseName)); err != nil {
+		t.Fatal(err)
+	}
+
+	// A same-name TTL index must not be considered the frozen v4 definition
+	// just because the keys, uniqueness and partial filters still match.
+	if err := db.RunCommand(ctx, bson.D{{Key: "collMod", Value: githubConnectionOperationsCollection},
+		{Key: "index", Value: bson.D{{Key: "name", Value: "github_intent_expiry"}, {Key: "expireAfterSeconds", Value: 60}}}}).Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyGitHubConnectionIndexes(ctx, db); !errors.Is(err, ErrConflict) {
+		t.Fatalf("unexpected TTL accepted: %v", err)
 	}
 }

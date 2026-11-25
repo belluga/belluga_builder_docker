@@ -7,6 +7,7 @@ import (
 )
 
 func (h *Handler) readLanding(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(landingService)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -17,6 +18,7 @@ func (h *Handler) readLanding(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) readLandingFile(w http.ResponseWriter, r *http.Request) {
+	h.githubVisualNoStore(w)
 	service, ok := h.service.(landingService)
 	if !ok {
 		h.writeError(w, ErrUnavailable)
@@ -42,7 +44,7 @@ func (h *Handler) readLandingFile(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Landing-Revision", value.Revision)
 	w.Header().Set("X-Landing-Inventory-Digest", value.InventoryDigest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	setVisualFileDefaultCache(w)
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	if strings.HasPrefix(value.ContentType, "text/html") || value.ContentType == "image/svg+xml" {
 		w.Header().Set("Content-Security-Policy", landingCSP)

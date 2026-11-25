@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	ac "belluga-builder-viewer/artifact_catalog"
 )
@@ -200,7 +201,7 @@ func (v gitDesignSystemVerifier) ResolveDesignSystemBranch(ctx context.Context, 
 	if !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || v.repositoryURL == nil {
 		return "", ErrUnavailable
 	}
-	remote := v.repositoryURL(binding.RepositoryID)
+	remote := v.readRemote(ctx, binding.RepositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		return "", ErrUnavailable
 	}
@@ -212,7 +213,11 @@ func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID
 	if !validID(projectID) || !validID(companyID) || !validGitRepositoryIdentity(repositoryID) || !validFullGitSHA(revision) || v.repositoryURL == nil || level != "project" {
 		return ac.DesignSystemResponse{}, nil, ErrUnavailable
 	}
-	cacheKey := designSystemReadCacheKey(projectID, companyID, repositoryID, revision, level)
+	suffix, sameScope := githubVisualCacheSuffix(ctx, companyID, projectID, repositoryID)
+	if !sameScope {
+		return ac.DesignSystemResponse{}, nil, ErrConflict
+	}
+	cacheKey := designSystemReadCacheKey(projectID, companyID, repositoryID, revision, level) + suffix
 	if cached, ok := v.readCache.get(cacheKey); ok {
 		if assetPath == "" {
 			return cached.evaluation, nil, nil
@@ -319,7 +324,7 @@ func (v gitDesignSystemVerifier) fetchExactDesignSystemRevision(ctx context.Cont
 	if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
 		return prototypeGitSource{}, err
 	}
-	remote := v.repositoryURL(repositoryID)
+	remote := v.readRemote(ctx, repositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -493,7 +498,14 @@ func (v gitDesignSystemVerifier) gitLimited(ctx context.Context, dir string, lim
 	}
 	command := exec.CommandContext(ctx, executable, args...)
 	command.Dir = dir
-	command.Env = designSystemGitEnvironment(credentialed)
+	if lease, scoped := githubVisualLeaseFrom(ctx); scoped {
+		if credentialed && !lease.token.expiresAt.After(time.Now()) {
+			return nil, githubVisualUnavailable()
+		}
+		command.Env = githubVisualGitEnvironment(lease, credentialed)
+	} else {
+		command.Env = designSystemGitEnvironment(credentialed)
+	}
 	var output limitedGitBuffer
 	output.limit = limit
 	command.Stdout = &output
@@ -522,7 +534,7 @@ func designSystemGitEnvironment(credentialed bool) []string {
 	filtered := make([]string, 0, len(os.Environ())+7)
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS" || key == "DELPHI_GITHUB_READ_TOKEN" {
+		if strings.HasPrefix(key, "GIT_") || key == "SSH_ASKPASS" || key == "DELPHI_GITHUB_READ_TOKEN" || key == "BUILDER_GITHUB_APP_CLIENT_SECRET" {
 			continue
 		}
 		filtered = append(filtered, entry)

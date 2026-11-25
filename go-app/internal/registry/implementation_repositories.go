@@ -24,6 +24,7 @@ type ImplementationRepositorySet struct {
 const implementationRepositoryIdentityCollection = "project_implementation_repository_identities"
 
 type implementationRepositoryIdentity struct {
+	githubLease  *githubProofLease
 	ProjectID    string    `bson:"project_id"`
 	RepositoryID string    `bson:"repository_id"`
 	GitHubNodeID string    `bson:"github_node_id"`

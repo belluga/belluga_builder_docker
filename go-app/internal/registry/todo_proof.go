@@ -494,14 +494,9 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 			target = targets[alias]
 		}
 		query := url.Values{"company_id": {companyID}, "project_id": {record.ProjectID}, "repository": {alias}, "branch": {target}, "commit_shas": {strings.Join(commits.Repositories[alias], ",")}, "todo_authority": {"mongo-v2"}}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/arrival?"+query.Encode(), nil)
+		response, lease, err := m.requestReaderProof(ctx, "/internal/v1/proofs/arrival", query, true)
 		if err != nil {
-			return TODOProofReference{}, nil, ErrUnavailable
-		}
-		request.Header.Set("Authorization", "Bearer "+m.proofReaderToken)
-		response, err := m.proofHTTPClient.Do(request)
-		if err != nil {
-			return TODOProofReference{}, nil, todoTeach("remote_proof", "retry when the private Reader is available", ErrUnavailable)
+			return TODOProofReference{}, nil, err
 		}
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 		_ = response.Body.Close()
@@ -540,7 +535,10 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 			}
 			commitSHAs[i] = item.CommitSHA
 		}
-		identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest})
+		if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
+			return TODOProofReference{}, nil, err
+		}
+		identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest, githubLease: lease})
 		verified = append(verified, completeArrivalRepository{Repository: alias, NodeID: result.RepositoryNodeID, Branch: target, HeadSHA: result.HeadSHA, Commits: commitSHAs})
 	}
 	payload, err := json.Marshal(completeArrivalProof{
