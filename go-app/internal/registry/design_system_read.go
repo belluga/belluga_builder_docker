@@ -54,11 +54,14 @@ type designSystemGitReader interface {
 	ReadDesignSystem(context.Context, string, string, string, string, string, string, string) (ac.DesignSystemResponse, []byte, error)
 }
 
+type designSystemBranchResolver interface {
+	ResolveDesignSystemBranch(context.Context, Binding) (string, error)
+}
+
 type resolvedDesignSystemSource struct {
 	RepositoryID string
 	Revision     string
 	Branch       string
-	Level        string
 	Inventory    string
 	Selection    DesignSystemSelection
 }
@@ -82,48 +85,41 @@ func (m *MongoStore) resolveDesignSystemSource(ctx context.Context, companyID, p
 	if stored.CompanyID != companyID || stored.ObjectID.IsZero() {
 		return resolvedDesignSystemSource{}, ErrNotFound
 	}
+	binding := stored.Binding
+	if !validDesignSystemReadBinding(binding) {
+		return resolvedDesignSystemSource{}, designSystemReadBindingTEACH()
+	}
 	state, err := m.ReadDesignSystemState(ctx, companyID, projectID)
 	if err != nil {
 		return resolvedDesignSystemSource{}, err
 	}
 	selection := state.Selection
-	bound := stored.Binding != nil && stored.Binding.RepositoryID != "" && stored.Binding.PublicationBranch != ""
-	if !designSystemSelectionMatchesBinding(selection, stored.BindingRevision, stored.Binding) {
+	if !designSystemSelectionMatchesBinding(selection, stored.BindingRevision, binding) {
 		return resolvedDesignSystemSource{}, todoTeach("selection", "reload the Project binding after a concurrent repository change", ErrConflict)
 	}
+	resolved := resolvedDesignSystemSource{
+		RepositoryID: binding.RepositoryID,
+		Revision:     requestedSHA,
+		Branch:       binding.PublicationBranch,
+		Selection:    selection,
+	}
 	if selection.State == "selected" {
-		if !bound || !validBinding(*stored.Binding) || !validFullGitSHA(selection.SHA) || !validSourceDigest(selection.InventoryDigest) {
-			return resolvedDesignSystemSource{}, ErrUnavailable
-		}
 		if requestedSHA != "" && requestedSHA != selection.SHA {
 			return resolvedDesignSystemSource{}, todoTeach("revision", "read only the currently selected exact Design System SHA", ErrConflict)
 		}
-		return resolvedDesignSystemSource{RepositoryID: stored.Binding.RepositoryID, Revision: selection.SHA, Branch: stored.Binding.PublicationBranch, Level: "project", Inventory: selection.InventoryDigest, Selection: selection}, nil
+		resolved.Revision = selection.SHA
+		resolved.Inventory = selection.InventoryDigest
+	} else if requestedSHA == "" {
+		reader, ok := m.designSystemVerifier.(designSystemBranchResolver)
+		if !ok {
+			return resolvedDesignSystemSource{}, ErrUnavailable
+		}
+		resolved.Revision, err = reader.ResolveDesignSystemBranch(ctx, *binding)
+		if err != nil {
+			return resolvedDesignSystemSource{}, err
+		}
 	}
-	if m.designSystemSourceMapRoot == "" || stored.Binding == nil {
-		return resolvedDesignSystemSource{}, todoTeach("source_bindings", "be available from the private pinned Design System source map", ErrUnavailable)
-	}
-	bindings, err := (fileDesignSystemSourceMapProvider{root: m.designSystemSourceMapRoot}).Read(ctx, projectID, companyID, *stored.Binding)
-	if err != nil {
-		return resolvedDesignSystemSource{}, todoTeach("source_bindings", "be available and valid in the private pinned Design System source map", ErrUnavailable)
-	}
-	// Once a Project repository has ever been bound, its private Foundation slot
-	// is masked before validation or remote access. Only never-bound Projects may
-	// select that slot; unbind and delete deliberately inherit Company/default.
-	if selection.State != "never_bound" {
-		bindings.Sources.Project = nil
-	}
-	if len(ac.ValidateSourceBindingsFor(bindings, "committed", projectID, companyID)) != 0 {
-		return resolvedDesignSystemSource{}, todoTeach("source_bindings", "contain only valid pinned source entries after applying Project masking", ErrUnavailable)
-	}
-	level, source := ac.SelectSourceBinding(bindings)
-	if source == nil || source.Revision == nil || !validFullGitSHA(*source.Revision) || !validGitRepositoryIdentity(source.RepositoryID) {
-		return resolvedDesignSystemSource{}, todoTeach("design_system_source", "no exact pinned Design System source is available at the selected precedence level", ErrUnavailable)
-	}
-	if requestedSHA != "" && requestedSHA != *source.Revision {
-		return resolvedDesignSystemSource{}, todoTeach("revision", "read only the exact SHA pinned for the selected Design System source", ErrConflict)
-	}
-	return resolvedDesignSystemSource{RepositoryID: source.RepositoryID, Revision: *source.Revision, Level: level, Selection: selection}, nil
+	return resolved, nil
 }
 
 func (m *MongoStore) ReadDesignSystem(ctx context.Context, companyID, projectID, requestedSHA string) (DesignSystemReadResponse, error) {
@@ -205,6 +201,9 @@ func (m *MongoStore) loadBoundDesignSystemHistory(ctx context.Context, companyID
 	if stored.CompanyID != companyID || stored.ObjectID.IsZero() {
 		return DesignSystemSelection{}, Binding{}, ErrNotFound
 	}
+	if !validDesignSystemReadBinding(stored.Binding) {
+		return DesignSystemSelection{}, Binding{}, designSystemReadBindingTEACH()
+	}
 	state, err := m.ReadDesignSystemState(ctx, companyID, projectID)
 	if err != nil {
 		return DesignSystemSelection{}, Binding{}, err
@@ -215,10 +214,15 @@ func (m *MongoStore) loadBoundDesignSystemHistory(ctx context.Context, companyID
 	if state.PendingOperation != nil {
 		return DesignSystemSelection{}, Binding{}, todoTeach("pending_operation", "be recovered before listing or reading branch history", ErrConflict)
 	}
-	if stored.Binding == nil || !validBinding(*stored.Binding) || stored.Binding.RepositoryID == "" || stored.Binding.PublicationBranch == "" {
-		return DesignSystemSelection{}, Binding{}, todoTeach("repository_binding", "be configured before reading Project Git history; Company/default pins do not imply a branch", ErrUnavailable)
-	}
 	return state.Selection, *stored.Binding, nil
+}
+
+func validDesignSystemReadBinding(binding *Binding) bool {
+	return binding != nil && binding.RepositoryID != "" && binding.PublicationBranch != "" && validBinding(*binding)
+}
+
+func designSystemReadBindingTEACH() error {
+	return todoTeach("repository_binding", "be configured with a valid Project visual repository and publication branch before reading the Design System; use bind when absent or replace to repair an invalid binding", ErrUnavailable)
 }
 
 func designSystemSelectionMatchesBinding(selection DesignSystemSelection, bindingRevision int64, binding *Binding) bool {
@@ -234,7 +238,7 @@ func designSystemSelectionMatchesBinding(selection DesignSystemSelection, bindin
 
 func (m *MongoStore) ReadDesignSystemAsset(ctx context.Context, companyID, projectID, requestedSHA, assetPath string) (designSystemAssetResponse, error) {
 	if ac.ValidateRelativePath(assetPath) != nil || len([]byte(assetPath)) > ac.MaxPathBytes {
-		return designSystemAssetResponse{}, todoTeach("asset_path", "use a safe relative path declared by the selected Design System", ErrInvalid)
+		return designSystemAssetResponse{}, todoTeach("asset_path", "use a safe relative path declared by the Design System", ErrInvalid)
 	}
 	resolved, err := m.resolveDesignSystemSource(ctx, companyID, projectID, requestedSHA)
 	if err != nil {
@@ -282,19 +286,19 @@ func (m *MongoStore) readResolvedDesignSystem(ctx context.Context, projectID, co
 	if !ok {
 		return ac.DesignSystemResponse{}, nil, ErrUnavailable
 	}
-	evaluation, asset, err := reader.ReadDesignSystem(ctx, projectID, companyID, resolved.RepositoryID, resolved.Revision, resolved.Branch, resolved.Level, assetPath)
+	evaluation, asset, err := reader.ReadDesignSystem(ctx, projectID, companyID, resolved.RepositoryID, resolved.Revision, resolved.Branch, "project", assetPath)
 	if err != nil {
 		if assetPath != "" && errors.Is(err, ErrNotFound) {
-			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only an asset registered by the selected Design System", ErrNotFound)
+			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only an asset registered by the Design System", ErrNotFound)
 		}
 		return ac.DesignSystemResponse{}, nil, err
 	}
 	if evaluation.Outcome != "go" || evaluation.DesignSystemValidation != "valid" || len(evaluation.Items) != 1 || evaluation.InventoryDigest == nil || resolved.Inventory != "" && *evaluation.InventoryDigest != resolved.Inventory {
-		return ac.DesignSystemResponse{}, nil, todoTeach("design_system_source", "the exact selected Design System revision is unavailable or fails shared structural validation", ErrUnavailable)
+		return ac.DesignSystemResponse{}, nil, todoTeach("design_system_source", "the exact Design System revision is unavailable or fails shared structural validation", ErrUnavailable)
 	}
 	if assetPath != "" {
 		if !designSystemAssetRegistered(evaluation, assetPath) {
-			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only a file registered by the selected Design System", ErrNotFound)
+			return ac.DesignSystemResponse{}, nil, todoTeach("asset_path", "request only a file registered by the Design System", ErrNotFound)
 		}
 	}
 	return evaluation, asset, nil

@@ -80,12 +80,6 @@ func main() {
 	if err := store.ConfigureProofReader(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_TOKEN"))); err != nil {
 		log.Fatal("private proof Reader is unavailable")
 	}
-	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_STATE_ROOT")); stateRoot != "" {
-		if err := store.ConfigureDesignSystemSourceMapRoot(stateRoot); err != nil {
-			log.Fatal("private Design System source-map state is unavailable")
-		}
-	}
-
 	address := strings.TrimSpace(os.Getenv("LISTEN_ADDR"))
 	if address == "" {
 		address = "0.0.0.0:8080"

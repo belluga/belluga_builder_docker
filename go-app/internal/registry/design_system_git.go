@@ -23,9 +23,9 @@ const (
 // structure, and inventory bytes. Full Design System semantic evaluation stays
 // with artifact_catalog and is deliberately not duplicated here.
 type gitDesignSystemVerifier struct {
-	repositoryURL func(string) string
-	gitExecutable string
-	readCache     *designSystemReadCache
+	repositoryURL      func(string) string
+	gitExecutable      string
+	readCache          *designSystemReadCache
 	prototypeCacheRoot string
 }
 
@@ -192,11 +192,20 @@ func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context,
 	return state, nil
 }
 
-// ReadDesignSystem evaluates one immutable remote commit. The revision must be
-// supplied by Mongo selection or the verified private source map; this method
-// never resolves a branch head or falls back to another source.
-func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID, companyID, repositoryID, revision, branch, level, assetPath string) (ac.DesignSystemResponse, []byte, error) {
-	if !validID(projectID) || !validID(companyID) || !validGitRepositoryIdentity(repositoryID) || !validFullGitSHA(revision) || v.repositoryURL == nil || level != "project" && level != "company" && level != "default" {
+func (v gitDesignSystemVerifier) ResolveDesignSystemBranch(ctx context.Context, binding Binding) (string, error) {
+	if !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || v.repositoryURL == nil {
+		return "", ErrUnavailable
+	}
+	remote := v.repositoryURL(binding.RepositoryID)
+	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
+		return "", ErrUnavailable
+	}
+	return v.readRemoteHead(ctx, remote, binding.PublicationBranch)
+}
+
+// ReadDesignSystem evaluates one immutable commit from the Project visual repository.
+func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID, companyID, repositoryID, revision, _, level, assetPath string) (ac.DesignSystemResponse, []byte, error) {
+	if !validID(projectID) || !validID(companyID) || !validGitRepositoryIdentity(repositoryID) || !validFullGitSHA(revision) || v.repositoryURL == nil || level != "project" {
 		return ac.DesignSystemResponse{}, nil, ErrUnavailable
 	}
 	cacheKey := designSystemReadCacheKey(projectID, companyID, repositoryID, revision, level)
@@ -329,6 +338,21 @@ func (v gitDesignSystemVerifier) confirmRemoteHead(ctx context.Context, remote, 
 		return ErrUnavailable
 	}
 	return nil
+}
+
+func (v gitDesignSystemVerifier) readRemoteHead(ctx context.Context, remote, branch string) (string, error) {
+	ref := "refs/heads/" + branch
+	output, err := v.git(ctx, "", true, "ls-remote", "--exit-code", remote, ref)
+	if err != nil {
+		return "", ErrUnavailable
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		sha, remoteRef, _ := strings.Cut(line, "\t")
+		if remoteRef == ref && validFullGitSHA(sha) {
+			return sha, nil
+		}
+	}
+	return "", ErrUnavailable
 }
 
 func hasExactGitTrailer(message, trailer string) bool {

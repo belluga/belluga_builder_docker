@@ -753,33 +753,28 @@ describe("single root Project experience", () => {
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("#32bbdd");
     expect(screen.getByText("Overview for builder")).toBeInTheDocument();
   });
-  it("keeps a selected v1 system structurally readable without inventing a Project theme", async () => {
-    const selected = designSystemRead("belluga", "builder");
-    selected.evaluation.items[0].schema_version = "1";
-    selected.evaluation.presentation_validation = "not_ready";
+  it.each([["selected", "Revisão selecionada"], ["unselected", "Revisão lida"]])("shows the %s v1 revision without a Project theme", async (state, revisionLabel) => {
+    const read = designSystemRead("belluga", "builder");
+    const { sha, inventory_digest, ...binding } = read.selection;
+    const selection = state === "selected" ? read.selection : { ...binding, state };
+    read.evaluation.items[0].schema_version = "1";
+    read.evaluation.presentation_validation = "not_ready";
     const fallback = globalThis.fetch;
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => new URL(String(input), location.origin).pathname === "/api/design-system"
-      ? Promise.resolve({ ok: true, json: async () => selected }) : fallback(input)));
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
+      ? Promise.resolve({ ok: true, json: async () => ({ ...read, selection }) }) : fallback(input)));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
-    expect(await screen.findByText(/Design System indisponível:/)).toHaveTextContent("presentation is not ready");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("presentation is not ready");
+    if (state === "unselected") {
+      expect(alert).toHaveTextContent("The Project Design System");
+      expect(alert).not.toHaveTextContent(/selected Design System/i);
+    }
+    expect(within(screen.getByText(revisionLabel, { exact: false })).getByTitle(designRevision)).toHaveTextContent(designRevision.slice(0, 12));
     expect((document.querySelector(".projects-project") as HTMLElement).style.getPropertyValue("--project-accent")).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
     expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
-  });
-  it("keeps Roadmap and Documents navigable when the Design System is invalid", async () => {
-    const saved = detail("belluga", "builder", [{ path: "project_mandate.md", url: `/snapshot/belluga/builder/${fingerprint}/project_mandate.md` }]);
-    saved.artifacts[0] = { ...saved.artifacts[0], state: "invalid" };
-    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => saved.roadmap };
-      return { ok: true, json: async () => url.searchParams.has("project_id") ? saved : { companies, projects } };
-    }));
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=roadmap");
-    render(<Projects />);
-    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Design System");
-    fireEvent.click(screen.getByRole("button", { name: "Documents / decisions" }));
-    expect(await screen.findByRole("heading", { name: "Documentação" })).toBeInTheDocument();
+    expect(screen.getByText(/Design System indisponível:.*presentation is not ready.*Os demais artefatos publicados continuam navegáveis/)).toHaveAttribute("role", "status");
   });
   it("renders the Registry Overview narrative and revision-pinned media", async () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
@@ -1271,7 +1266,6 @@ describe("single root Project experience", () => {
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
     render(<Projects />);
     expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText(/Design System indisponível:/)).not.toBeInTheDocument());
     expect(screen.getByRole("main")).toHaveStyle({ "--project-accent": "#32bbdd" });
     expect(fetcher.mock.calls.some(([input]) => {
       const url = new URL(String(input), location.origin);
@@ -1279,28 +1273,19 @@ describe("single root Project experience", () => {
     })).toBe(true);
     expect(fetcher.mock.calls.some(([input]) => String(input).includes("/design/system/design-system.json"))).toBe(false);
   });
-  it("uses a valid inherited Company Design System without a Project selection", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/catalog") return { ok: true, json: async () => ({ companies, projects }) };
-      if (url.pathname === "/api/overview") return { ok: true, json: async () => overviewRead("belluga", "builder") };
-      if (url.pathname === "/api/design-system") {
-        const inherited = designSystemRead("belluga", "builder");
-        inherited.selection.state = "never_bound";
-        inherited.evaluation.selected_level = "company";
-        inherited.evaluation.items[0].owner = { level: "company", id: "belluga" };
-        return { ok: true, json: async () => inherited };
-      }
-      if (url.pathname === "/api/local-preview" && !url.searchParams.has("project_id")) return { ok: true, json: async () => ({ companies, projects }) };
-      if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
-      return { ok: true, json: async () => theme };
-    });
-    vi.stubGlobal("fetch", fetcher);
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+  it("applies the bound branch Design System and labels its revision when nothing is selected", async () => {
+    const current = designSystemRead("belluga", "builder");
+    const { sha, inventory_digest, ...binding } = current.selection;
+    const fallback = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => new URL(String(input), location.origin).pathname === "/api/design-system"
+      ? Promise.resolve({ ok: true, json: async () => ({ ...current, selection: { ...binding, state: "unselected" } }) }) : fallback(input)));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
-    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
-    await waitFor(() => expect(screen.queryByText(/Design System indisponível:/)).not.toBeInTheDocument());
+    expect(await screen.findByRole("heading", { name: "Builder System" })).toBeInTheDocument();
+    expect(screen.getByText("Revisão lida", { exact: false })).toHaveTextContent(designRevision.slice(0, 12));
+    expect(screen.queryByText("Revisão selecionada", { exact: false })).not.toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveStyle({ "--project-accent": "#32bbdd" });
+    expect(screen.getByRole("link", { name: "Abrir Design System ↗" })).toHaveAttribute("href", `/api/design-system/presentation/belluga/builder/${designRevision}/examples.html`);
   });
   it("refuses a Design System response from a different selected revision", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -1316,10 +1301,9 @@ describe("single root Project experience", () => {
       if (url.pathname === "/api/local-preview") return { ok: true, json: async () => detail("belluga", "builder") };
       return { ok: true, json: async () => theme };
     }));
-    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
-    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
-    expect(await screen.findByText(/Design System indisponível:/)).toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Design System mismatch");
     expect(screen.getByRole("main").style.getPropertyValue("--project-accent")).toBe("");
   });
   it("loads Design System independently for a source-unbound Project", async () => {
@@ -1352,17 +1336,59 @@ describe("single root Project experience", () => {
     expect(screen.queryByText(/não foi possível ler os dados publicados/)).not.toBeInTheDocument();
     expect(fetcher.mock.calls.some(([input]) => String(input).startsWith("/api/design-system?"))).toBe(true);
   });
-  it("shows bounded Registry TEACH within the Design System section", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+  it("shows the missing visual binding TEACH only in Design System and keeps the other Project pages usable", async () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false })));
+    const teach = "TEACH: repository_binding must be configured with a valid Project visual repository and publication branch before reading the Design System";
+    const failure = {
+      error: "design_system_unavailable", teach,
+      teach_detail: { schema_version: "1", code: "registry_validation", field_path: "repository_binding", next_action: "Configure the Project visual repository and publication branch." },
+    };
+    const registryRoadmap = roadmap("builder");
+    registryRoadmap.backlog.todos.push({ id: "binding-study", title: "Binding study", path: "", kind: "executable", todo_revision: 0, record_state: "active", objective: "Inspect bindings", objective_state: "complete", next_step: "Review fields", next_step_state: "complete", ...verifiedStage("Planning") } as typeof registryRoadmap.backlog.todos[number]);
+    const exact = { company_id: "belluga", project_id: "builder", todo_revision: 0, content_revision: 0, content_digest: `sha256:${"a".repeat(64)}`, todo: { id: "binding-study", project_id: "builder", revision: 0, title: "Binding study", objective: "Exact TODO objective", next_exact_step: "Review fields", stage: "Planning", sections: [] } };
+    const fallback = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input), location.origin);
-      if (url.pathname === "/api/design-system") return { ok: false, status: 409, json: async () => ({ teach: "TEACH: A seleção mudou; recarregue a revisão." }) };
-      return { ok: true, json: async () => ({ companies, projects }) };
-    });
-    vi.stubGlobal("fetch", fetcher);
+      if (url.pathname === "/api/design-system") return { ok: false, status: 503, json: async () => failure };
+      if (url.pathname === "/api/roadmap") return { ok: true, json: async () => url.searchParams.has("todo_id") ? exact : registryRoadmap };
+      return fallback(input);
+    }));
     history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=design-system");
     render(<Projects />);
-    expect(await screen.findByRole("alert")).toHaveTextContent("TEACH: A seleção mudou; recarregue a revisão.");
+    expect(await screen.findByRole("alert")).toHaveTextContent(teach);
     expect(screen.getByRole("button", { name: "Tentar novamente" })).toBeInTheDocument();
+    const projectPages = within(screen.getByRole("navigation", { name: "Project pages" }));
+    fireEvent.click(projectPages.getByRole("button", { name: "Overview" }));
+    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
+    expect(screen.queryByText(/repository_binding must be configured/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Design System indisponível:|Os demais artefatos publicados continuam navegáveis/)).not.toBeInTheDocument();
+    fireEvent.click(projectPages.getByRole("button", { name: "Roadmap" }));
+    expect(await screen.findByRole("heading", { name: "Roadmap" })).toBeInTheDocument();
+    expect(screen.queryByText(/repository_binding must be configured/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Design System indisponível:|Os demais artefatos publicados continuam navegáveis/)).not.toBeInTheDocument();
+    fireEvent.click(projectPages.getByRole("button", { name: "Backlog" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Binding study/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Abrir TODO completo/ }));
+    expect(await screen.findByText("Exact TODO objective")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Binding study" })).toBeInTheDocument();
+    expect(screen.queryByText(/repository_binding must be configured/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Design System indisponível:|Os demais artefatos publicados continuam navegáveis/)).not.toBeInTheDocument();
+  });
+  it("keeps the global warning for a Registry 503 with a Design System source diagnostic", async () => {
+    const failure = {
+      error: "design_system_unavailable", teach: "TEACH: The bound Design System revision could not be read.",
+      teach_detail: { schema_version: "1", code: "registry_validation", field_path: "design_system_source", next_action: "Check the bound Design System revision." },
+    };
+    const fallback = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), location.origin);
+      if (url.pathname === "/api/design-system") return { ok: false, status: 503, json: async () => failure };
+      return fallback(input);
+    }));
+    history.replaceState({}, "", "/?company_id=belluga&project_id=builder&page=overview");
+    render(<Projects />);
+    expect(await screen.findByText("Overview for builder")).toBeInTheDocument();
+    expect(await screen.findByText(/Design System indisponível:.*bound Design System revision could not be read.*Os demais artefatos publicados continuam navegáveis/)).toHaveAttribute("role", "status");
   });
   it("retries a failed Design System read and renders the successful retry", async () => {
     let designSystemCalls = 0;

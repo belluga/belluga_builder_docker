@@ -553,7 +553,7 @@ export function Projects() {
   const [portfolioRead, setPortfolioRead] = useState<{ companyID: string; projects: PortfolioProject[] }>({ companyID: "", projects: [] });
   const [roadmapRead, setRoadmapRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: RoadmapProjection }>({ key: "", state: "loading" });
   const [overviewRead, setOverviewRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: OverviewRead }>({ key: "", state: "loading" });
-  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
+  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; bindingUnavailable?: boolean; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
   const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
   useEffect(() => {
@@ -609,20 +609,30 @@ export function Projects() {
     const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
     fetch(`/api/design-system?${query}`, { signal: controller.signal }).then(async (response) => {
       if (!response.ok) {
-        const failure = await response.json().catch(() => null) as { teach?: unknown } | null;
+        const failure = await response.json().catch(() => null) as { teach?: unknown; teach_detail?: { field_path?: unknown } } | null;
         const teach = failure?.teach;
-        throw new Error(typeof teach === "string" && teach.length <= 512 && teach.startsWith("TEACH: ") && !/[\u0000-\u001f\u007f/\\]|:\/\//.test(teach) ? teach : "TEACH: The selected Design System is unavailable; reload its Registry selection.");
+        const diagnostic = typeof teach === "string" && teach.length <= 512 && teach.startsWith("TEACH: ") && !/[\u0000-\u001f\u007f/\\]|:\/\//.test(teach) ? teach : "TEACH: The Project Design System is unavailable. Try again.";
+        if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic, bindingUnavailable: failure?.teach_detail?.field_path === "repository_binding" });
+        return;
       }
-      const selected = await response.json() as DesignSystemReadResponse;
-      const evaluation = selected.evaluation;
-      if (!evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
+      const read = await response.json() as DesignSystemReadResponse;
+      const evaluation = read.evaluation;
+      if (!read.selection || !evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.selected_level !== "project" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || read.selection.state === "selected" && (read.selection.sha !== evaluation.revision || read.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
       const definition = evaluation.items[0];
-      if (!definition || typeof definition.name !== "string" || !definition.owner || typeof definition.owner.level !== "string" || !Array.isArray(definition.tokens) || !Array.isArray(definition.components) || !Array.isArray(definition.assets) || definition.components.some((component) => !component || typeof component.id !== "string" || typeof component.name !== "string" || !Array.isArray(component.states) || !Array.isArray(component.examples))) throw new Error("Design System response shape is invalid");
+      if (!definition || typeof definition.name !== "string" || !Array.isArray(definition.tokens) || !Array.isArray(definition.components) || !Array.isArray(definition.assets) || definition.components.some((component) => !component || typeof component.id !== "string" || typeof component.name !== "string" || !Array.isArray(component.states) || !Array.isArray(component.examples))) throw new Error("Design System response shape is invalid");
       if ((definition.schema_version === "2" && evaluation.presentation_validation !== "ready") || (definition.schema_version === "1" && evaluation.presentation_validation !== "not_ready")) throw new Error("Design System presentation state mismatch");
       const resolved = resolveProjectTheme(definition);
-      return { resolved, selected };
-    }).then(({ resolved, selected }) => { if (!controller.signal.aborted) setThemeRead({ key, state: "ready", theme: resolved.style, diagnostic: resolved.diagnostic || selected.evaluation.presentation_teach?.message, response: selected }); })
-      .catch((error: unknown) => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: error instanceof Error ? error.message : "TEACH: The selected Design System definition could not be read." }); });
+      return { resolved, read };
+    }).then((result) => {
+      if (!result || controller.signal.aborted) return;
+      const { resolved, read } = result;
+      const diagnostic = resolved.diagnostic || read.evaluation.presentation_teach?.message;
+      setThemeRead({
+        key, state: "ready", theme: resolved.style, response: read,
+        diagnostic: read.selection.state === "selected" ? diagnostic : diagnostic?.replace("The selected Design System", "The Project Design System"),
+      });
+    })
+      .catch((error: unknown) => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: error instanceof Error ? error.message : "TEACH: The Project Design System definition could not be read." }); });
     return () => controller.abort();
   }, [viewKey, reloadCounter]);
   useEffect(() => {
@@ -669,7 +679,7 @@ export function Projects() {
     </div>
     <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{page !== "design-system" && themeDiagnostic && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
+      <section className="project-content">{page !== "design-system" && themeDiagnostic && !themeRead.bindingUnavailable && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial read={overviewRead.key === viewKey ? overviewRead : { key: viewKey, state: "loading" }} projectName={project?.name || "Project"} companyID={selection.companyID} projectID={selection.projectID} />
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}</div>}
         {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -62,19 +61,6 @@ type MongoStore struct {
 	landingManifestReader            func(context.Context, string, string) (CanonicalManifest, error)
 	prototypeIdentityReader          func(context.Context, string, string) (Project, error)
 	prototypeCanonicalManifestReader func(context.Context, string, string) (CanonicalManifest, error)
-	designSystemSourceMapRoot        string
-}
-
-func (m *MongoStore) ConfigureDesignSystemSourceMapRoot(root string) error {
-	if root == "" || !filepath.IsAbs(root) {
-		return fmt.Errorf("%w: private Design System source-map root must be absolute", ErrInvalid)
-	}
-	info, err := os.Lstat(root)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("%w: private Design System source-map root is unavailable", ErrInvalid)
-	}
-	m.designSystemSourceMapRoot = filepath.Clean(root)
-	return nil
 }
 
 func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
@@ -176,10 +162,14 @@ func projectToDocument(project Project, objectID bson.ObjectID) (projectDocument
 }
 
 func (p projectDocument) toAPI() Project {
+	binding := p.Binding
+	if binding != nil && !validBinding(*binding) {
+		binding = nil
+	}
 	return Project{
 		ID: p.ID, Name: p.Name, CompanyID: p.CompanyID,
 		RoadmapRevision:  p.RoadmapRevision,
-		Binding:          p.Binding,
+		Binding:          binding,
 		BindingRevision:  p.BindingRevision,
 		RegisteredAt:     time.UnixMilli(p.RegisteredAt.UnixMilli()).UTC().Format(time.RFC3339Nano),
 		PreparationState: p.PreparationState, PreparationDiagnostic: p.PreparationDiagnostic,
@@ -312,7 +302,7 @@ func (m *MongoStore) Catalog(ctx context.Context) (Catalog, error) {
 		}
 		for projects.Next(ctx) {
 			var record projectDocument
-			if projects.Decode(&record) != nil || record.ObjectID.IsZero() || record.CompanyID != company.ID || record.Binding != nil && !validBinding(*record.Binding) {
+			if projects.Decode(&record) != nil || record.ObjectID.IsZero() || record.CompanyID != company.ID {
 				projects.Close(ctx)
 				return Catalog{}, ErrUnavailable
 			}
@@ -534,18 +524,28 @@ func (m *MongoStore) BindFirst(ctx context.Context, companyID, id string, input 
 }
 
 func repositoryBindingFromProject(project Project) RepositoryBinding {
-	if project.Binding == nil || project.Binding.RepositoryID == "" || project.Binding.PublicationBranch == "" {
+	if project.Binding == nil || project.Binding.RepositoryID == "" || project.Binding.PublicationBranch == "" || !validBinding(*project.Binding) {
 		return RepositoryBinding{State: "absent", Revision: project.BindingRevision}
 	}
 	return RepositoryBinding{RepositoryID: project.Binding.RepositoryID, PublicationBranch: project.Binding.PublicationBranch, State: "configured", Revision: project.BindingRevision}
 }
 
 func (m *MongoStore) ReadRepositoryBinding(ctx context.Context, companyID, id string) (RepositoryBinding, error) {
-	project, err := m.Project(ctx, companyID, id)
+	if !validID(companyID) || !validID(id) {
+		return RepositoryBinding{}, ErrInvalid
+	}
+	company, err := m.company(ctx, companyID)
 	if err != nil {
 		return RepositoryBinding{}, err
 	}
-	return repositoryBindingFromProject(project), nil
+	stored, err := m.readProjectDocument(ctx, company, id)
+	if err != nil {
+		return RepositoryBinding{}, err
+	}
+	if stored.Binding != nil && !validBinding(*stored.Binding) {
+		return RepositoryBinding{}, todoTeach("repository_binding", "be repaired with action replace and a valid Project repository and publication branch", ErrUnavailable)
+	}
+	return repositoryBindingFromProject(stored.toAPI()), nil
 }
 
 func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id string, input RepositoryBindingRequest) (RepositoryBinding, error) {
@@ -570,15 +570,20 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		return RepositoryBinding{}, err
 	}
 	collection := m.client.Database(company.DatabaseName).Collection(projectsCollection)
+	found := collection.FindOne(ctx, bson.D{{Key: "id", Value: id}})
 	var stored projectDocument
-	if err := collection.FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&stored); err != nil {
+	if err := found.Decode(&stored); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return RepositoryBinding{}, ErrNotFound
 		}
 		return RepositoryBinding{}, ErrUnavailable
 	}
-	if stored.CompanyID != companyID || stored.ObjectID.IsZero() || stored.Binding != nil && !validBinding(*stored.Binding) {
+	if stored.CompanyID != companyID || stored.ObjectID.IsZero() {
 		return RepositoryBinding{}, ErrUnavailable
+	}
+	invalidStoredBinding := stored.Binding != nil && !validBinding(*stored.Binding)
+	if input.Action != "replace" && invalidStoredBinding {
+		return RepositoryBinding{}, todoTeach("repository_binding", "be repaired with action replace and a valid Project repository and publication branch", ErrUnavailable)
 	}
 	if stored.BindingOperation == input.OperationID {
 		if stored.BindingRequestDigest == requestDigest {
@@ -593,13 +598,13 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		return RepositoryBinding{}, todoTeach("expected_revision", "reload the current repository binding and retry with its revision", ErrConflict)
 	}
 	currentlyBound := stored.Binding != nil && stored.Binding.RepositoryID != "" && stored.Binding.PublicationBranch != ""
-	if input.Action == "bind" && currentlyBound || input.Action == "replace" && !currentlyBound || input.Action == "unbind" && !currentlyBound {
+	if input.Action == "bind" && currentlyBound || input.Action == "replace" && !currentlyBound && !invalidStoredBinding || input.Action == "unbind" && !currentlyBound {
 		field, expected := "action", "use bind only when absent, replace only when configured, or unbind only when configured"
 		if input.Action == "bind" {
 			field, expected = "repository_id/publication_branch", "use replace for an already configured Project repository"
 		}
 		if input.Action == "replace" || input.Action == "unbind" {
-			field, expected = "repository_binding", "reload state; replace and unbind require a configured repository"
+			field, expected = "repository_binding", "use bind when absent; replace repairs invalid settings or updates a configured repository, and unbind requires a configured repository"
 		}
 		return RepositoryBinding{}, todoTeach(field, expected, ErrConflict)
 	}
@@ -617,6 +622,9 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 	}
 	var nextBinding *Binding
 	if updated != (Binding{}) {
+		if !validBinding(updated) {
+			return RepositoryBinding{}, todoTeach("repository_binding", "contain valid Project repository configuration after this change; repair the stored binding metadata", ErrUnavailable)
+		}
 		nextBinding = &updated
 	}
 	nextRevision := stored.BindingRevision + 1
@@ -629,7 +637,16 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 	if stored.Binding == nil {
 		filter = append(filter, bson.E{Key: "binding", Value: bson.M{"$in": []any{nil, bson.M{}}}})
 	} else {
-		filter = append(filter, bson.E{Key: "binding", Value: *stored.Binding})
+		raw, err := found.Raw()
+		if err != nil {
+			return RepositoryBinding{}, normalizeMongoError(err)
+		}
+		// Compare the exact stored document, including omitted legacy fields.
+		previous, ok := raw.Lookup("binding").DocumentOK()
+		if !ok {
+			return RepositoryBinding{}, ErrUnavailable
+		}
+		filter = append(filter, bson.E{Key: "binding", Value: bson.D{{Key: "$eq", Value: previous}}})
 	}
 	filter = append(filter, bson.E{Key: "pending_design_system_mutation", Value: bson.M{"$exists": false}})
 	set := bson.M{"binding_revision": nextRevision, "binding_operation": input.OperationID, "binding_actor": input.Actor, "binding_request_digest": requestDigest, "preparation_state": "not_ready", "preparation_diagnostic": ""}
@@ -664,14 +681,7 @@ func (m *MongoStore) ChangeRepositoryBinding(ctx context.Context, companyID, id 
 		}
 		return RepositoryBinding{}, todoTeach("expected_revision", "reload the current repository binding after a concurrent change and retry", ErrConflict)
 	}
-	return RepositoryBinding{RepositoryID: updated.RepositoryID, PublicationBranch: updated.PublicationBranch, State: repositoryBindingState(updated), Revision: nextRevision}, nil
-}
-
-func repositoryBindingState(binding Binding) string {
-	if binding.RepositoryID != "" && binding.PublicationBranch != "" {
-		return "configured"
-	}
-	return "absent"
+	return repositoryBindingFromProject(Project{Binding: nextBinding, BindingRevision: nextRevision}), nil
 }
 
 func validGitRepositoryIdentity(value string) bool {
@@ -953,17 +963,25 @@ func (m *MongoStore) company(ctx context.Context, id string) (Company, error) {
 }
 
 func (m *MongoStore) readProject(ctx context.Context, company Company, id string) (Project, error) {
+	stored, err := m.readProjectDocument(ctx, company, id)
+	if err != nil {
+		return Project{}, err
+	}
+	return stored.toAPI(), nil
+}
+
+func (m *MongoStore) readProjectDocument(ctx context.Context, company Company, id string) (projectDocument, error) {
 	var stored projectDocument
 	if err := m.client.Database(company.DatabaseName).Collection(projectsCollection).FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&stored); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return Project{}, ErrNotFound
+			return projectDocument{}, ErrNotFound
 		}
-		return Project{}, ErrUnavailable
+		return projectDocument{}, ErrUnavailable
 	}
-	if stored.ID != id || stored.CompanyID != company.ID || stored.ObjectID.IsZero() || stored.Binding != nil && !validBinding(*stored.Binding) {
-		return Project{}, ErrUnavailable
+	if stored.ID != id || stored.CompanyID != company.ID || stored.ObjectID.IsZero() {
+		return projectDocument{}, ErrUnavailable
 	}
-	return stored.toAPI(), nil
+	return stored, nil
 }
 
 func (m *MongoStore) writeProject(ctx context.Context, company Company, project Project) error {
