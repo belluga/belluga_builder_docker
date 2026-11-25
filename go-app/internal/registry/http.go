@@ -22,7 +22,7 @@ const maxRequestBody = maxProjectDocumentBytes
 const maxTODOImportRequestBytes = 4 << 20
 const maxDesignSystemMutationRequestBytes = 8 << 10
 const designSystemRecoveryTimeout = 15 * time.Second
-const designSystemReadTimeout = 15 * time.Second
+const designSystemReadTimeout = 90 * time.Second
 const overviewReadTimeout = 15 * time.Second
 
 type Handler struct{ service Service }

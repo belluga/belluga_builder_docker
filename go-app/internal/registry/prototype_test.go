@@ -71,6 +71,21 @@ func TestPrototypeGitCacheStaysInsideGoStoreAndReusesExactRevision(t *testing.T)
 	if reused := open("company-a", "project-a", first, "first"); reused != workspace {
 		t.Fatalf("same repository used a new cache directory: %s != %s", reused, workspace)
 	}
+	for _, identity := range [][2]string{{"company-a", "project-b"}, {"company-b", "project-a"}} {
+		if isolated := open(identity[0], identity[1], first, "first"); isolated == workspace {
+			t.Fatalf("Company/Project identity reused another persistent Git cache: %v", identity)
+		}
+	}
+	otherRepositoryBinding := RepositoryBinding{State: "configured", RepositoryID: "owner/other", PublicationBranch: "main"}
+	otherRepository, err := reader.OpenRevision(context.Background(), "company-a", "project-a", otherRepositoryBinding, first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherRepository.workspace == workspace {
+		otherRepository.close()
+		t.Fatal("repository identity reused another persistent Git cache")
+	}
+	otherRepository.close()
 	second := writeRevision("second")
 	otherWorkspace := open("company-b", "project-b", second, "second")
 	if otherWorkspace == workspace {

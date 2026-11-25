@@ -51,6 +51,49 @@ func (v *observedDesignSystemGit) ReadDesignSystem(ctx context.Context, projectI
 	return v.gitDesignSystemVerifier.ReadDesignSystem(ctx, projectID, companyID, repositoryID, revision, branch, level, assetPath)
 }
 
+type designSystemDeadlineHTTPService struct {
+	Service
+	detailRemaining time.Duration
+	assetRemaining  time.Duration
+}
+
+func (s *designSystemDeadlineHTTPService) ReadDesignSystem(ctx context.Context, _, _, _ string) (DesignSystemReadResponse, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.detailRemaining = time.Until(deadline)
+	}
+	return DesignSystemReadResponse{}, nil
+}
+
+func (s *designSystemDeadlineHTTPService) ReadDesignSystemAsset(ctx context.Context, _, _, _, _ string) (designSystemAssetResponse, error) {
+	if deadline, ok := ctx.Deadline(); ok {
+		s.assetRemaining = time.Until(deadline)
+	}
+	return designSystemAssetResponse{Data: []byte("asset"), ContentType: "text/plain", ETag: `"asset"`}, nil
+}
+
+func TestDesignSystemReadRoutesUseNinetySecondDeadline(t *testing.T) {
+	if designSystemRecoveryTimeout != 15*time.Second {
+		t.Fatalf("Design System recovery timeout changed: %s", designSystemRecoveryTimeout)
+	}
+	service := &designSystemDeadlineHTTPService{}
+	handler := NewHandler(service)
+	for _, path := range []string{
+		"/internal/v1/companies/company-a/projects/project-a/design-system",
+		"/internal/v1/companies/company-a/projects/project-a/design-system/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/assets/design/system/assets/mark.svg",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("Design System read route %s returned %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+	for name, remaining := range map[string]time.Duration{"detail": service.detailRemaining, "asset": service.assetRemaining} {
+		if remaining < 89*time.Second || remaining > 90*time.Second {
+			t.Errorf("%s read deadline has %s remaining; want close to 90s", name, remaining)
+		}
+	}
+}
+
 func TestDesignSystemMutationHTTPRoutesPersistVerifyAndFinalizeDisposableGit(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {

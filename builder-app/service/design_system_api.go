@@ -52,7 +52,7 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 	} else if revisionOK {
 		endpoint += "/" + url.PathEscape(revision)
 	}
-	response, err := p.designSystemGet(r, endpoint)
+	response, err := p.registryReadGet(r, endpoint, 100*time.Second)
 	if err != nil {
 		designSystemError(w, http.StatusServiceUnavailable, "design_system_unavailable", "TEACH: A leitura atual do Design System está indisponível. Verifique a Registry e tente novamente.")
 		return
@@ -80,6 +80,10 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 }
 
 func (p *registeredPreview) designSystemGet(r *http.Request, endpoint string) (*http.Response, error) {
+	return p.registryReadGet(r, endpoint, 0)
+}
+
+func (p *registeredPreview) registryReadGet(r *http.Request, endpoint string, timeout time.Duration) (*http.Response, error) {
 	base := strings.TrimRight(strings.TrimSpace(p.registryURL), "/")
 	if base == "" {
 		base = strings.TrimRight(strings.TrimSpace(env("DELPHI_BUILDER_REGISTRY_URL", "http://builder-registry:8080")), "/")
@@ -101,6 +105,9 @@ func (p *registeredPreview) designSystemGet(r *http.Request, endpoint string) (*
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	boundedClient := *client
+	if timeout > 0 {
+		boundedClient.Timeout = timeout
+	}
 	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return boundedClient.Do(request)
 }

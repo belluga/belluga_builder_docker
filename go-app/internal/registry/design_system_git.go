@@ -30,7 +30,11 @@ type gitDesignSystemVerifier struct {
 }
 
 func newGitDesignSystemVerifier() designSystemRemoteVerifier {
-	return gitDesignSystemVerifier{repositoryURL: func(id string) string { return "https://github.com/" + id + ".git" }, readCache: newDesignSystemReadCache()}
+	return gitDesignSystemVerifier{
+		repositoryURL:      func(id string) string { return "https://github.com/" + id + ".git" },
+		readCache:          newDesignSystemReadCache(),
+		prototypeCacheRoot: os.Getenv("DELPHI_PROTOTYPE_GIT_CACHE_ROOT"),
+	}
 }
 
 func (v gitDesignSystemVerifier) VerifyDesignSystemMutation(ctx context.Context, companyID, projectID string, binding Binding, intent DesignSystemMutationIntent) (designSystemRemoteState, error) {
@@ -204,7 +208,7 @@ func (v gitDesignSystemVerifier) ResolveDesignSystemBranch(ctx context.Context, 
 }
 
 // ReadDesignSystem evaluates one immutable commit from the Project visual repository.
-func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID, companyID, repositoryID, revision, _, level, assetPath string) (ac.DesignSystemResponse, []byte, error) {
+func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID, companyID, repositoryID, revision, branch, level, assetPath string) (ac.DesignSystemResponse, []byte, error) {
 	if !validID(projectID) || !validID(companyID) || !validGitRepositoryIdentity(repositoryID) || !validFullGitSHA(revision) || v.repositoryURL == nil || level != "project" {
 		return ac.DesignSystemResponse{}, nil, ErrUnavailable
 	}
@@ -222,42 +226,41 @@ func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID
 		}
 		return cached.evaluation, append([]byte(nil), data...), nil
 	}
-	workspace, err := os.MkdirTemp("", ".builder-design-system-read-*")
+	gitSource, err := v.openDesignSystemRevision(ctx, companyID, projectID, repositoryID, branch, revision)
 	if err != nil {
-		return ac.DesignSystemResponse{}, nil, ErrUnavailable
-	}
-	defer os.RemoveAll(workspace)
-	if err := os.Chmod(workspace, 0o700); err != nil {
-		return ac.DesignSystemResponse{}, nil, ErrUnavailable
-	}
-	if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
 		return ac.DesignSystemResponse{}, nil, err
 	}
-	remote := v.repositoryURL(repositoryID)
-	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
-		return ac.DesignSystemResponse{}, nil, ErrUnavailable
-	}
-	if _, err := v.git(ctx, workspace, false, "remote", "add", "origin", remote); err != nil {
-		return ac.DesignSystemResponse{}, nil, err
-	}
-	// Fetch the exact shallow commit with its blobs. The evaluator reads blobs
-	// after fetch using sanitized local Git commands; a partial clone would
-	// trigger a lazy remote fetch without the private credential header.
-	if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", revision); err != nil {
-		return ac.DesignSystemResponse{}, nil, ErrUnavailable
-	}
-	actual, err := v.git(ctx, workspace, false, "rev-parse", "--verify", revision+"^{commit}")
-	if err != nil || strings.TrimSpace(string(actual)) != revision {
-		return ac.DesignSystemResponse{}, nil, ErrUnavailable
-	}
-	source, err := ac.NewGitTreeContext(ctx, workspace, revision)
-	if err != nil {
+	if gitSource.sha != revision || gitSource.workspace == "" {
+		gitSource.close()
 		return ac.DesignSystemResponse{}, nil, ErrUnavailable
 	}
 	revisionRef := revision
-	evaluation := ac.EvaluateDesignSystem(source, projectID, companyID, level, ac.SourceBinding{
-		RepositoryID: repositoryID, Revision: &revisionRef, DefinitionPath: designSystemDefinitionPath,
-	})
+	evaluate := func(gitSource prototypeGitSource) (ac.DesignSystemResponse, *ac.GitTree, error) {
+		source, err := ac.NewGitTreeContext(ctx, gitSource.workspace, revision)
+		if err != nil {
+			return ac.DesignSystemResponse{}, nil, ErrUnavailable
+		}
+		evaluation := ac.EvaluateDesignSystem(source, projectID, companyID, level, ac.SourceBinding{
+			RepositoryID: repositoryID, Revision: &revisionRef, DefinitionPath: designSystemDefinitionPath,
+		})
+		return evaluation, source, nil
+	}
+	evaluation, source, err := evaluate(gitSource)
+	if !gitSource.transient && (err != nil || (evaluation.Outcome != "go" && !v.designSystemRevisionObjectsComplete(ctx, gitSource.workspace, revision))) {
+		gitSource.close()
+		if err := ctx.Err(); err != nil {
+			return ac.DesignSystemResponse{}, nil, err
+		}
+		gitSource, err = v.fetchExactDesignSystemRevision(ctx, repositoryID, revision)
+		if err != nil {
+			return ac.DesignSystemResponse{}, nil, err
+		}
+		evaluation, source, err = evaluate(gitSource)
+	}
+	defer gitSource.close()
+	if err != nil {
+		return ac.DesignSystemResponse{}, nil, err
+	}
 	if evaluation.Outcome != "go" || evaluation.DesignSystemValidation != "valid" || len(evaluation.Items) != 1 || evaluation.InventoryDigest == nil {
 		return evaluation, nil, nil
 	}
@@ -279,6 +282,67 @@ func (v gitDesignSystemVerifier) ReadDesignSystem(ctx context.Context, projectID
 		return evaluation, nil, ErrUnavailable
 	}
 	return evaluation, data, nil
+}
+
+func (v gitDesignSystemVerifier) openDesignSystemRevision(ctx context.Context, companyID, projectID, repositoryID, branch, revision string) (prototypeGitSource, error) {
+	if v.prototypeCacheRoot != "" {
+		cached, err := v.openCachedPrototypeRevision(ctx, companyID, projectID, RepositoryBinding{
+			State: "configured", RepositoryID: repositoryID, PublicationBranch: branch,
+		}, revision)
+		if err == nil {
+			if cached.sha == revision && cached.workspace != "" {
+				return cached, nil
+			}
+			cached.close()
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return prototypeGitSource{}, err
+	}
+	return v.fetchExactDesignSystemRevision(ctx, repositoryID, revision)
+}
+
+func (v gitDesignSystemVerifier) fetchExactDesignSystemRevision(ctx context.Context, repositoryID, revision string) (prototypeGitSource, error) {
+	workspace, err := os.MkdirTemp("", ".builder-design-system-read-*")
+	if err != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = os.RemoveAll(workspace)
+		}
+	}()
+	if err := os.Chmod(workspace, 0o700); err != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
+		return prototypeGitSource{}, err
+	}
+	remote := v.repositoryURL(repositoryID)
+	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	if _, err := v.git(ctx, workspace, false, "remote", "add", "origin", remote); err != nil {
+		return prototypeGitSource{}, err
+	}
+	// Fetch the exact shallow commit with its blobs. The evaluator reads blobs
+	// after fetch using sanitized local Git commands; a partial clone would
+	// trigger a lazy remote fetch without the private credential header.
+	if _, err := v.git(ctx, workspace, true, "fetch", "--quiet", "--no-tags", "--depth=1", "origin", revision); err != nil {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	actual, err := v.git(ctx, workspace, false, "rev-parse", "--verify", revision+"^{commit}")
+	if err != nil || strings.TrimSpace(string(actual)) != revision {
+		return prototypeGitSource{}, ErrUnavailable
+	}
+	failed = false
+	return prototypeGitSource{workspace: workspace, sha: revision, transient: true}, nil
+}
+
+func (v gitDesignSystemVerifier) designSystemRevisionObjectsComplete(ctx context.Context, workspace, revision string) bool {
+	_, err := v.git(ctx, workspace, false, "rev-list", "--quiet", "--objects", "--missing=error", revision)
+	return err == nil
 }
 
 func designSystemAssetRegistered(evaluation ac.DesignSystemResponse, assetPath string) bool {

@@ -108,7 +108,16 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, pr
 		return prototypeGitSource{}, ErrUnavailable
 	}
 	if v.prototypeCacheRoot != "" {
-		return v.openCachedPrototypeRevision(ctx, companyID, projectID, binding, revision)
+		cached, err := v.openCachedPrototypeRevision(ctx, companyID, projectID, binding, revision)
+		if err != nil {
+			return prototypeGitSource{}, err
+		}
+		cached.source, err = ac.NewGitTree(cached.workspace, revision)
+		if err != nil {
+			cached.close()
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		return cached, nil
 	}
 	workspace, err := os.MkdirTemp("", ".builder-prototype-read-*")
 	if err != nil {
@@ -156,6 +165,9 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, pr
 // checkout. Git's immutable objects are retained across container restarts;
 // a new branch SHA fetches only objects absent from this repository.
 func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context, companyID, projectID string, binding RepositoryBinding, revision string) (prototypeGitSource, error) {
+	if !validGitBranch(binding.PublicationBranch) {
+		return prototypeGitSource{}, ErrUnavailable
+	}
 	root := v.prototypeCacheRoot
 	if !filepath.IsAbs(root) || ac.RejectSymlinkComponents(root) != nil {
 		return prototypeGitSource{}, ErrUnavailable
@@ -166,15 +178,23 @@ func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context
 	}
 	key := sha256.Sum256([]byte(companyID + "\x00" + projectID + "\x00" + binding.RepositoryID + "\x00" + remote))
 	workspace := filepath.Join(root, hex.EncodeToString(key[:]))
-	lockValue, _ := prototypeRepositoryLocks.LoadOrStore(workspace, &sync.Mutex{})
-	lock := lockValue.(*sync.Mutex)
-	lock.Lock()
+	lockValue, _ := prototypeRepositoryLocks.LoadOrStore(workspace, make(chan struct{}, 1))
+	lock := lockValue.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+	case <-ctx.Done():
+		return prototypeGitSource{}, ctx.Err()
+	}
+	release := func() { <-lock }
 	failed := true
 	defer func() {
 		if failed {
-			lock.Unlock()
+			release()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return prototypeGitSource{}, err
+	}
 	if err := os.Mkdir(workspace, 0o700); err != nil && !os.IsExist(err) {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -184,12 +204,19 @@ func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context
 	}
 	gitPath := filepath.Join(workspace, ".git")
 	if _, err := os.Lstat(gitPath); os.IsNotExist(err) {
+		initialized := false
+		defer func() {
+			if !initialized {
+				_ = os.RemoveAll(gitPath)
+			}
+		}()
 		if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
 			return prototypeGitSource{}, ErrUnavailable
 		}
 		if _, err := v.git(ctx, workspace, false, "remote", "add", "origin", remote); err != nil {
 			return prototypeGitSource{}, ErrUnavailable
 		}
+		initialized = true
 	} else if err != nil {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -221,12 +248,8 @@ func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context
 			return prototypeGitSource{}, ErrUnavailable
 		}
 	}
-	source, err := ac.NewGitTree(workspace, revision)
-	if err != nil {
-		return prototypeGitSource{}, ErrUnavailable
-	}
 	failed = false
-	return prototypeGitSource{workspace: workspace, source: source, sha: revision, release: lock.Unlock}, nil
+	return prototypeGitSource{workspace: workspace, sha: revision, release: release}, nil
 }
 
 func canonicalManifestForPrototype(manifest CanonicalManifest, projectID string) (*ac.CanonicalManifest, string, error) {
