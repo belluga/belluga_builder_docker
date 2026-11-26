@@ -36,11 +36,14 @@ func TestMongoAdminOnboardingRetainsExactCreatorGrants(t *testing.T) {
 	}
 	store.tenantPrefix = prefix
 	const company, project, withImage = "company-a", "project-a", "company-image"
+	const sharedPlain, sharedImage = "shared-plain", "shared-image"
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
 		_ = store.client.Database(store.tenantDatabase(company)).Drop(cleanup)
 		_ = store.client.Database(store.tenantDatabase(withImage)).Drop(cleanup)
+		_ = store.client.Database(store.tenantDatabase(sharedPlain)).Drop(cleanup)
+		_ = store.client.Database(store.tenantDatabase(sharedImage)).Drop(cleanup)
 		_ = store.control.Drop(cleanup)
 		_ = store.Close(cleanup)
 	})
@@ -234,6 +237,83 @@ func TestMongoAdminOnboardingRetainsExactCreatorGrants(t *testing.T) {
 	}
 	if _, err := store.createAdminCompany(ctx, owner, imageReq, nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("image change replayed the original registration: %v", err)
+	}
+
+	// Shared creation does not require a prior grant, even for an existing Company.
+	shared := *handler
+	shared.sharedAuthenticatedAccess = true
+	spy := &githubAdminHTTPSpy{}
+	shared.admin = spy
+	sharedMux := http.NewServeMux()
+	shared.register(sharedMux)
+	send := func(path, assertion, contentType string, body []byte) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
+		if assertion != "" {
+			request.Header.Set(githubAccessAssertionHeader, assertion)
+		}
+		request.Header.Set("Origin", githubAccessTestOrigin)
+		request.Header.Set("Content-Type", contentType)
+		response := httptest.NewRecorder()
+		sharedMux.ServeHTTP(response, request)
+		return response
+	}
+	for _, candidate := range []struct {
+		slug  string
+		image []byte
+	}{
+		{sharedPlain, nil}, {sharedImage, png},
+	} {
+		var body bytes.Buffer
+		form := multipart.NewWriter(&body)
+		for field, value := range map[string]string{"name": candidate.slug, "slug": candidate.slug, "operation_id": "create-" + candidate.slug} {
+			if err := form.WriteField(field, value); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if candidate.image != nil {
+			image, err := form.CreateFormFile("image", "company.png")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := image.Write(candidate.image); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := form.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if got := send(endpoint, "", form.FormDataContentType(), body.Bytes()); got.Code != http.StatusUnauthorized {
+			t.Fatalf("shared mode admitted unsigned creation: %d", got.Code)
+		}
+		if got := send(endpoint, otherJWT, form.FormDataContentType(), body.Bytes()); got.Code != http.StatusOK {
+			t.Fatalf("shared Company creation as second identity: %d %s", got.Code, got.Body.String())
+		}
+		created, err := store.rawCompany(ctx, candidate.slug)
+		if err != nil || !created.CreatedBy.permits(other) || created.HasAdminImage != (candidate.image != nil) {
+			t.Fatalf("Company image or creator claim not persisted for %s: %+v %v", candidate.slug, created, err)
+		}
+	}
+	if got := send(endpoint+"/"+company+"/projects", otherJWT, "application/json",
+		[]byte(`{"name":"Shared Project","slug":"shared-project","operation_id":"shared-project-operation"}`)); got.Code != http.StatusOK {
+		t.Fatalf("shared Project creation as second identity: %d %s", got.Code, got.Body.String())
+	}
+	activeCompany, err := store.company(ctx, company)
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdProject, err := store.readProjectDocument(ctx, activeCompany, "shared-project")
+	if err != nil || !createdProject.CreatedBy.permits(other) {
+		t.Fatalf("shared Project creator claim not persisted: %+v %v", createdProject, err)
+	}
+	operationPath := "/internal/v1/companies/" + company + "/projects/"
+	operationSuffix := "/github-connections/operations"
+	intent := []byte(`{"operation_id":"authorized-start","action":"discover"}`)
+	if got := send(operationPath+project+operationSuffix, otherJWT, "application/json", intent); got.Code != http.StatusForbidden || spy.starts != 0 {
+		t.Fatalf("shared mode elevated unrelated Project GitHub authority: HTTP %d, starts %d", got.Code, spy.starts)
+	}
+	if got := send(operationPath+"shared-project"+operationSuffix, otherJWT, "application/json", intent); got.Code != http.StatusOK || spy.starts != 1 {
+		t.Fatalf("shared Project creator lacks GitHub authority: HTTP %d, starts %d, %s", got.Code, spy.starts, got.Body.String())
 	}
 
 }

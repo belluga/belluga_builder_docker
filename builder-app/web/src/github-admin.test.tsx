@@ -57,6 +57,61 @@ describe('GitHub administration', () => {
     expect(screen.getByText(/Se a organização solicitada não aparecer/)).toBeInTheDocument();
   });
 
+  it.each([false, true])('keeps the receipt while selecting an organization (eligible repository: %s)', async eligible => {
+    history.replaceState(null, '', entry);
+    const receipt = { operation_id: 'github-original', state: 'awaiting_organization_approval' };
+    const repository = { github_repository_id: 5, repository_full_name: 'requested/app', default_branch: 'main' };
+    const installations = [
+      { installation_id: 1, type: 'User', login: 'personal' },
+      { installation_id: 2, type: 'Organization', login: 'requested' },
+      { installation_id: 3, type: 'Organization', login: 'unrelated' },
+    ];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private notify: IntersectionObserverCallback) {}
+      observe() {
+        queueMicrotask(() => this.notify([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver));
+      }
+      disconnect() {}
+    });
+    let discovery = '';
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === prefix) return reply(roles);
+      if (path === prefix + '/pending-installation') return reply({ operation: receipt });
+      if (path.endsWith('/repositories?page=1')) {
+        expect(path).toBe(prefix + '/operations/' + discovery + '/repositories?page=1');
+        return reply({ repositories: eligible ? [repository] : [], has_next: false });
+      }
+      expect(path).toBe(prefix + '/operations');
+      const body = JSON.parse(String(init?.body));
+      if (body.action === 'resume-discovery') return reply({ state: 'pending' });
+      if (body.action === 'discover') {
+        discovery = body.operation_id;
+        expect(discovery).not.toBe(receipt.operation_id);
+        return reply({ operation_id: discovery, state: 'pending', installations });
+      }
+      expect(body).toEqual({ action: 'select-installation', operation_id: discovery, installation_id: 2 });
+      return reply({ operation_id: discovery, state: 'verified', github_account_login: 'requested', github_account_type: 'Organization' });
+    });
+    vi.stubGlobal('fetch', request);
+    render(<GitHubAdmin />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Atualizar instalações' }));
+    expect(await screen.findByRole('button', { name: /@requested.*Organização/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /@personal.*Conta pessoal/ })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /@unrelated.*Organização/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: /@requested.*Organização/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /Selecionar repositório existente/ }));
+    const save = screen.getByRole('button', { name: 'Confirmar vínculo' });
+    expect(save).toBeDisabled();
+    if (eligible) {
+      fireEvent.click(await screen.findByRole('radio', { name: /requested\/app/ }));
+      expect(save).toBeEnabled();
+    } else {
+      expect(await screen.findByText('Nenhum repositório nesta busca.')).toBeInTheDocument();
+      expect(save).toBeDisabled();
+    }
+    expect(screen.getByText('Aguardando aprovação da organização')).toBeInTheDocument();
+  });
+
   it('does not restart discovery while a separate binding is active', async () => {
     history.replaceState(null, '', entry + '&operation_id=github-binding');
     const receipt = { operation_id: 'github-original', state: 'awaiting_organization_approval' };
