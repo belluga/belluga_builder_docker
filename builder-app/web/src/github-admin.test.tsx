@@ -46,26 +46,50 @@ describe('GitHub administration', () => {
       disconnect() {}
     });
     let load = 0;
+    let operationID = '';
     let lateSignal: AbortSignal | null | undefined;
+    let overlappingSignal: AbortSignal | null | undefined;
+    let switchedSignal: AbortSignal | null | undefined;
     let returnLate: (value: Response) => void = () => {};
+    let returnOverlapping: (value: Response) => void = () => {};
+    let returnSwitched: (value: Response) => void = () => {};
     const late = new Promise<Response>(resolve => { returnLate = resolve; });
-    const repo = (id: number, name: string) => ({ github_repository_id: id, repository_full_name: 'requested/' + name, default_branch: 'main' });
+    const overlapping = new Promise<Response>(resolve => { returnOverlapping = resolve; });
+    const switched = new Promise<Response>(resolve => { returnSwitched = resolve; });
+    const repo = (id: number, name: string) => ({ github_repository_id: id, repository_full_name: name, default_branch: 'main' });
     const request = vi.fn(async (path: string, init?: RequestInit) => {
       if (path === prefix) return reply(roles);
-      if (path.endsWith('/repositories?page=1')) {
+      const repositoriesPath = prefix + '/operations/' + operationID + '/repositories?page=';
+      if (path === repositoriesPath + '1') {
         load++;
-        if (load === 3) return reply({ error: 'github_user_authorization_required' }, 409);
-        return reply({ repositories: [load === 1 ? repo(10, 'old') : repo(11, 'new')], has_next: load === 1 });
+        if (load === 1) return reply({ repositories: [repo(10, 'requested/old')], has_next: true });
+        if (load === 3) {
+          overlappingSignal = init?.signal;
+          return overlapping;
+        }
+        if (load === 4) return reply({ teach: 'GitHub temporariamente indisponível.' }, 503);
+        if (load === 5) return reply({ error: 'github_user_authorization_required' }, 409);
+        if (load === 6) {
+          switchedSignal = init?.signal;
+          return switched;
+        }
+        if (load === 7) return reply({ repositories: [repo(20, 'personal/available')], has_next: false });
+        return reply({ repositories: [repo(11, 'requested/new')], has_next: false });
       }
-      if (path.endsWith('/repositories?page=2')) {
+      if (path === repositoriesPath + '2') {
         lateSignal = init?.signal;
         return late;
       }
       expect(path).toBe(prefix + '/operations');
       const form = JSON.parse(String(init?.body));
-      if (form.action === 'discover') return reply({ state: 'pending', operation_id: form.operation_id, installations });
-      expect(form).toMatchObject({ action: 'select-installation', installation_id: 2 });
-      return reply({ state: 'verified', operation_id: form.operation_id, github_account_login: 'requested', github_account_type: 'Organization', settings_url: orgSettings });
+      if (form.action === 'discover') {
+        if (operationID) expect(form.operation_id).not.toBe(operationID);
+        operationID = form.operation_id;
+        return reply({ state: 'pending', operation_id: operationID, installations });
+      }
+      expect(form).toMatchObject({ action: 'select-installation', operation_id: operationID, installation_id: load === 6 ? 1 : 2 });
+      const selected = installations.find(installation => installation.installation_id === form.installation_id)!;
+      return reply({ state: 'verified', operation_id: operationID, github_account_login: selected.login, github_account_type: selected.type, settings_url: selected.settings_url });
     });
     stubFetch(request);
     render(<GitHubAdmin />);
@@ -86,15 +110,35 @@ describe('GitHub administration', () => {
     expect(lateSignal?.aborted).toBe(true);
     expect(screen.getByRole('button', { name: 'Confirmar vínculo' })).toBeDisabled();
     expect(await screen.findByRole('radio', { name: /requested\/new/ })).not.toBeChecked();
-    await act(async () => { returnLate(reply({ repositories: [repo(12, 'stale')], has_next: false })); });
+    await act(async () => { returnLate(reply({ repositories: [repo(12, 'requested/stale')], has_next: false })); });
     expect(screen.queryByRole('radio', { name: /requested\/(old|stale)/ })).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Buscar repositórios' })).toHaveValue('requested');
     expect(screen.getByRole('combobox', { name: 'Papel do repositório' })).toHaveValue('implementation');
     expect(load).toBe(2);
     fireEvent.click(screen.getByRole('radio', { name: /requested\/new/ }));
-    fireEvent.click(screen.getByRole('button', { name: 'Atualizar repositórios' }));
+    const refresh = screen.getByRole('button', { name: 'Atualizar repositórios' });
+    fireEvent.click(refresh);
+    expect(overlappingSignal).toBeDefined();
+    fireEvent.click(refresh);
+    expect(overlappingSignal?.aborted).toBe(true);
+    expect(await screen.findByText('GitHub temporariamente indisponível.')).toHaveAttribute('role', 'alert');
+    await act(async () => { returnOverlapping(reply({ repositories: [repo(13, 'requested/obsolete')], has_next: false })); });
+    expect(screen.queryByRole('radio', { name: /requested\/(new|obsolete)/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar vínculo' })).toBeDisabled();
+
+    fireEvent.click(refresh);
     expect(await screen.findByRole('button', { name: 'Retomar autorização' })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: /requested\/new/ })).not.toBeInTheDocument();
+    fireEvent.click(refresh);
+    expect(switchedSignal).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Trocar conta' }));
+    expect(switchedSignal?.aborted).toBe(true);
+    fireEvent.click(await screen.findByRole('button', { name: /@personal.*Conta pessoal/ }));
+    expect(await screen.findByRole('link', { name: 'Configurar acesso' })).toHaveAttribute('href', personalSettings);
+    fireEvent.click(screen.getByRole('radio', { name: /Selecionar repositório existente/ }));
+    expect(await screen.findByRole('radio', { name: /personal\/available/ })).not.toBeChecked();
+    await act(async () => { returnSwitched(reply({ repositories: [repo(14, 'requested/previous-account')], has_next: false })); });
+    expect(screen.queryByRole('radio', { name: /requested\// })).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /personal\/available/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Confirmar vínculo' })).toBeDisabled();
   });
 
