@@ -12,6 +12,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 const githubConnectionIntentLifetime = 15 * time.Minute
@@ -22,6 +23,7 @@ type githubOperator struct {
 }
 
 type githubConnectionStartRequest struct {
+	InstallationID             int64  `json:"installation_id,omitempty"`
 	OperationID                string `json:"operation_id"`
 	Role                       string `json:"role"`
 	Action                     string `json:"action"`
@@ -30,6 +32,9 @@ type githubConnectionStartRequest struct {
 	TargetAccountID            int64  `json:"target_account_id"`
 	TargetRepositoryName       string `json:"target_repository_name,omitempty"`
 	PublicationBranch          string `json:"publication_branch,omitempty"`
+	DiscoveryOperation         string `json:"discovery_operation_id,omitempty"`
+	Visibility                 string `json:"visibility,omitempty"`
+	allowCompanyDiscovery      bool
 }
 
 type githubConnectionFinalizeRequest struct {
@@ -46,14 +51,25 @@ type githubConnectionRepository struct {
 	ConnectionRevision int64  `json:"connection_revision,omitempty"`
 }
 
+type githubInstallationChoice struct {
+	ID    int64  `json:"installation_id"`
+	Login string `json:"login"`
+	Type  string `json:"type"`
+}
+
 type githubConnectionStatus struct {
-	State              githubConnectionState       `json:"state"`
-	OperationID        string                      `json:"operation_id"`
-	CompanyID          string                      `json:"company_id"`
-	ProjectID          string                      `json:"project_id"`
-	AuthorizationURL   string                      `json:"authorization_url,omitempty"`
-	GitHubAccountLogin string                      `json:"github_account_login,omitempty"`
-	Repository         *githubConnectionRepository `json:"repository,omitempty"`
+	InstallationRequestedAt *time.Time                  `json:"installation_requested_at,omitempty"`
+	ExpiresAt               *time.Time                  `json:"expires_at,omitempty"`
+	DiscoveryExpired        bool                        `json:"discovery_expired,omitempty"`
+	Installations           *[]githubInstallationChoice `json:"installations,omitempty"`
+	State                   githubConnectionState       `json:"state"`
+	OperationID             string                      `json:"operation_id"`
+	CompanyID               string                      `json:"company_id"`
+	ProjectID               string                      `json:"project_id"`
+	AuthorizationURL        string                      `json:"authorization_url,omitempty"`
+	GitHubAccountLogin      string                      `json:"github_account_login,omitempty"`
+	GitHubAccountType       string                      `json:"github_account_type,omitempty"`
+	Repository              *githubConnectionRepository `json:"repository,omitempty"`
 }
 
 type githubConnectionRepositoryPage struct {
@@ -78,16 +94,26 @@ type githubEphemeralOAuth struct {
 	expires  time.Time
 }
 
+type githubUserScope struct {
+	company, issuer, subject string
+}
+
+type githubUserAuthorization struct {
+	token        githubAppToken
+	githubUserID int64
+}
+
 type githubConnectionAdmin struct {
-	store *MongoStore
-	app   *githubAppClient
-	mu    sync.Mutex
-	oauth map[githubOperationKey]githubEphemeralOAuth
-	users map[githubOperationKey]githubAppToken
+	store          *MongoStore
+	app            *githubAppClient
+	mu             sync.Mutex
+	oauth          map[githubOperationKey]githubEphemeralOAuth
+	users          map[githubOperationKey]githubAppToken
+	authorizations map[githubUserScope]githubUserAuthorization
 }
 
 func newGitHubConnectionAdmin(store *MongoStore, app *githubAppClient) *githubConnectionAdmin {
-	return &githubConnectionAdmin{store: store, app: app, oauth: make(map[githubOperationKey]githubEphemeralOAuth), users: make(map[githubOperationKey]githubAppToken)}
+	return &githubConnectionAdmin{store: store, app: app, oauth: make(map[githubOperationKey]githubEphemeralOAuth), users: make(map[githubOperationKey]githubAppToken), authorizations: make(map[githubUserScope]githubUserAuthorization)}
 }
 
 func githubAdminKey(companyID string, op githubConnectionOperation) githubOperationKey {
@@ -112,7 +138,7 @@ func parseGitHubState(value string) (githubConnectionLocator, error) {
 		return state, ErrInvalid
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	if err != nil || json.Unmarshal(decoded, &state) != nil || !validID(state.CompanyID) || !validID(state.ProjectID) || !validID(state.OperationID) {
+	if err != nil || json.Unmarshal(decoded, &state) != nil || !validID(state.CompanyID) || (state.ProjectID != "" && !validID(state.ProjectID)) || !validID(state.OperationID) {
 		return state, ErrInvalid
 	}
 	random, err := base64.RawURLEncoding.DecodeString(state.Random)
@@ -128,7 +154,12 @@ func githubRequestDigest(value any) string {
 }
 
 func githubOperationStatus(company string, op githubConnectionOperation) githubConnectionStatus {
-	out := githubConnectionStatus{CompanyID: company, ProjectID: op.ProjectID, OperationID: op.OperationID, State: op.State, GitHubAccountLogin: op.GitHubAccountLogin}
+	out := githubConnectionStatus{CompanyID: company, ProjectID: op.ProjectID, OperationID: op.OperationID, State: op.State, GitHubAccountLogin: op.GitHubAccountLogin, GitHubAccountType: op.GitHubAccountType}
+	if op.State == githubConnectionAwaitingOrganizationApproval {
+		out.InstallationRequestedAt, out.ExpiresAt = op.InstallationRequestedAt, op.ExpiresAt
+		out.GitHubAccountLogin, out.GitHubAccountType = "", ""
+		return out
+	}
 	if op.ResultRepositoryID > 0 {
 		out.Repository = &githubConnectionRepository{ID: op.ResultRepositoryID, NodeID: op.ResultRepositoryNodeID, FullName: op.ResultRepositoryFullName, Branch: op.ResultRepositoryDefaultBranch}
 	}
@@ -140,7 +171,7 @@ func githubOperatorFilter(project string, operator githubOperator, operation str
 }
 
 func (a *githubConnectionAdmin) database(ctx context.Context, company, project string, operator githubOperator) (*mongo.Database, error) {
-	if !validID(company) || !validID(project) || !validSummaryField(operator.Issuer, 256) || !validSummaryField(operator.Subject, 256) {
+	if !validID(company) || (project != "" && !validID(project)) || !validSummaryField(operator.Issuer, 256) || !validSummaryField(operator.Subject, 256) {
 		return nil, ErrInvalid
 	}
 	tenant, err := a.store.company(ctx, company)
@@ -180,7 +211,7 @@ func (a *githubConnectionAdmin) load(ctx context.Context, company, project strin
 	}
 	err = db.Collection(githubConnectionOperationsCollection).FindOne(ctx, githubOperatorFilter(project, operator, operation)).Decode(&op)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, op, ErrNotFound
+		return db, op, ErrNotFound
 	}
 	if err != nil {
 		return nil, op, normalizeMongoError(err)
@@ -190,13 +221,26 @@ func (a *githubConnectionAdmin) load(ctx context.Context, company, project strin
 
 func (a *githubConnectionAdmin) start(ctx context.Context, company, project string, operator githubOperator, request githubConnectionStartRequest) (githubConnectionStatus, error) {
 	var zero githubConnectionStatus
-	if !validID(request.OperationID) || request.ExpectedRoleRevision == nil || request.ExpectedConnectionRevision == nil ||
-		*request.ExpectedRoleRevision < 0 || *request.ExpectedConnectionRevision < 0 || request.TargetAccountID <= 0 ||
+	switch request.Action {
+	case "discover":
+		return a.openDiscovery(ctx, company, project, operator, request.OperationID, true)
+	case "resume-discovery":
+		return a.openDiscovery(ctx, company, project, operator, request.OperationID, false)
+	case "install-app":
+		return a.installDiscovery(ctx, company, project, operator, request.OperationID)
+	case "select-installation":
+		return a.selectDiscoveryInstallation(ctx, company, project, operator, request.OperationID, request.InstallationID)
+	}
+	if !validID(project) || !validID(request.OperationID) || request.ExpectedRoleRevision == nil || request.ExpectedConnectionRevision == nil ||
+		*request.ExpectedRoleRevision < 0 || *request.ExpectedConnectionRevision < 0 ||
+		(request.DiscoveryOperation == "" && request.TargetAccountID <= 0) ||
+		(request.DiscoveryOperation != "" && (!validID(request.DiscoveryOperation) || request.TargetAccountID != 0 || request.DiscoveryOperation == request.OperationID)) ||
 		(request.Role != "visual" && request.Role != "implementation") ||
 		(request.Action != "connect" && request.Action != "create") ||
-		(request.Role == "visual" && (request.Action == "connect" || request.PublicationBranch != "") && !validGitBranch(request.PublicationBranch)) ||
+		(request.Role == "visual" && (request.Action == "connect" && request.DiscoveryOperation == "" || request.PublicationBranch != "") && !validGitBranch(request.PublicationBranch)) ||
 		(request.Role == "implementation" && request.PublicationBranch != "") ||
 		(request.Action == "create" && !validGitRepositoryID("owner/"+request.TargetRepositoryName)) ||
+		(request.Visibility != "" && (request.Action != "create" || request.Visibility != "public" && request.Visibility != "private")) ||
 		(request.Action == "connect" && request.TargetRepositoryName != "") {
 		return zero, ErrInvalid
 	}
@@ -252,6 +296,9 @@ func (a *githubConnectionAdmin) start(ctx context.Context, company, project stri
 	if githubRoleRevision(doc, request.Role) != *request.ExpectedRoleRevision {
 		return zero, ErrConflict
 	}
+	if request.DiscoveryOperation != "" {
+		return a.startDiscovered(ctx, db, company, project, operator, request, digest, doc)
+	}
 	raw, err := githubStateValue(company, project, request.OperationID)
 	if err != nil {
 		return zero, err
@@ -263,7 +310,7 @@ func (a *githubConnectionAdmin) start(ctx context.Context, company, project stri
 		Role: request.Role, Action: request.Action, StartDigest: digest, ExpectedRoleRevision: *request.ExpectedRoleRevision,
 		ExpectedConnectionRevision: *request.ExpectedConnectionRevision, TargetAccountID: request.TargetAccountID,
 		TargetRepositoryName: request.TargetRepositoryName, TargetRepositoryNameNormalized: strings.ToLower(request.TargetRepositoryName),
-		PublicationBranch: request.PublicationBranch, State: githubConnectionPending, CreatedAt: now, UpdatedAt: now,
+		PublicationBranch: request.PublicationBranch, Visibility: request.Visibility, State: githubConnectionPending, CreatedAt: now, UpdatedAt: now,
 		SetupNonce: githubConnectionNonce{Digest: sourceHash([]byte(raw)), ExpiresAt: expiry}, ExpiresAt: &expiry,
 	}
 	if _, err := collection.InsertOne(ctx, op); err != nil {
@@ -299,7 +346,7 @@ func (a *githubConnectionAdmin) status(ctx context.Context, company, project str
 	if err != nil {
 		return githubConnectionStatus{}, err
 	}
-	return githubOperationStatus(company, op), nil
+	return a.discoveryStatus(ctx, company, op)
 }
 
 func githubNonceUsable(n githubConnectionNonce, raw string, now time.Time) bool {
@@ -332,6 +379,80 @@ func (a *githubConnectionAdmin) setupCallback(ctx context.Context, operator gith
 	return a.beginOAuth(ctx, db, state.CompanyID, op)
 }
 
+const githubInstallationRequestRetention = 30 * 24 * time.Hour
+
+func pendingInstallationReceipt(op githubConnectionOperation, digest string, now time.Time) bool {
+	return op.State == githubConnectionAwaitingOrganizationApproval && op.InstallationRequestedAt != nil &&
+		op.ExpiresAt != nil && now.Before(*op.ExpiresAt) && op.SetupNonce.ConsumedAt != nil && op.SetupNonce.Digest == digest
+}
+
+func (a *githubConnectionAdmin) requestInstallationCallback(ctx context.Context, operator githubOperator, raw string) (githubConnectionStatus, error) {
+	state, err := parseGitHubState(raw)
+	if err != nil {
+		return githubConnectionStatus{}, ErrInvalid
+	}
+	db, op, err := a.load(ctx, state.CompanyID, state.ProjectID, operator, state.OperationID)
+	if err != nil {
+		return githubConnectionStatus{}, err
+	}
+	now := a.app.now().UTC().Truncate(time.Millisecond)
+	digest := sourceHash([]byte(raw))
+	if pendingInstallationReceipt(op, digest, now) {
+		return githubOperationStatus(state.CompanyID, op), nil
+	}
+	if op.State != githubConnectionPending || op.ExpiresAt == nil || !now.Before(*op.ExpiresAt) || !githubNonceUsable(op.SetupNonce, raw, now) {
+		return githubConnectionStatus{}, ErrConflict
+	}
+	filter := githubOperatorFilter(state.ProjectID, operator, state.OperationID)
+	filter["state"] = githubConnectionPending
+	filter["expires_at"] = bson.M{"$gt": now}
+	filter["setup_nonce.digest"] = digest
+	filter["setup_nonce.consumed_at"] = bson.M{"$exists": false}
+	filter["setup_nonce.expires_at"] = bson.M{"$gt": now}
+	expiry := now.Add(githubInstallationRequestRetention)
+	update := bson.M{"$set": bson.M{"state": githubConnectionAwaitingOrganizationApproval, "setup_nonce.consumed_at": now, "installation_requested_at": now, "updated_at": now, "expires_at": expiry}}
+	if err := githubAdminUpdate(ctx, db, filter, update); err != nil {
+		if errors.Is(err, ErrConflict) {
+			_, current, readErr := a.load(ctx, state.CompanyID, state.ProjectID, operator, state.OperationID)
+			if readErr == nil && pendingInstallationReceipt(current, digest, now) {
+				return githubOperationStatus(state.CompanyID, current), nil
+			}
+		}
+		return githubConnectionStatus{}, err
+	}
+	op.State, op.InstallationRequestedAt, op.ExpiresAt = githubConnectionAwaitingOrganizationApproval, &now, &expiry
+	return githubOperationStatus(state.CompanyID, op), nil
+}
+
+type githubPendingInstallation struct {
+	OperationID             string                `bson:"operation_id" json:"operation_id"`
+	State                   githubConnectionState `bson:"state" json:"state"`
+	InstallationRequestedAt time.Time             `bson:"installation_requested_at" json:"installation_requested_at"`
+	ExpiresAt               time.Time             `bson:"expires_at" json:"expires_at"`
+}
+
+type githubPendingInstallationResponse struct {
+	Operation *githubPendingInstallation `json:"operation"`
+}
+
+func (a *githubConnectionAdmin) pendingInstallation(ctx context.Context, company, project string, operator githubOperator) (githubPendingInstallationResponse, error) {
+	db, err := a.database(ctx, company, project, operator)
+	if err != nil {
+		return githubPendingInstallationResponse{}, err
+	}
+	filter := bson.M{"project_id": project, "operator_issuer": operator.Issuer, "operator_subject": operator.Subject, "state": githubConnectionAwaitingOrganizationApproval, "expires_at": bson.M{"$gt": a.app.now().UTC()}}
+	query := options.FindOne().SetSort(bson.D{{Key: "installation_requested_at", Value: -1}, {Key: "operation_id", Value: -1}}).
+		SetProjection(bson.M{"_id": 0, "operation_id": 1, "state": 1, "installation_requested_at": 1, "expires_at": 1})
+	var op githubPendingInstallation
+	if err := db.Collection(githubConnectionOperationsCollection).FindOne(ctx, filter, query).Decode(&op); err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return githubPendingInstallationResponse{}, nil
+		}
+		return githubPendingInstallationResponse{}, normalizeMongoError(err)
+	}
+	return githubPendingInstallationResponse{Operation: &op}, nil
+}
+
 func (a *githubConnectionAdmin) pruneExpiredLocked(now time.Time) {
 	for key, pending := range a.oauth {
 		if !pending.expires.After(now) {
@@ -343,11 +464,16 @@ func (a *githubConnectionAdmin) pruneExpiredLocked(now time.Time) {
 			delete(a.users, key)
 		}
 	}
+	for scope, authorization := range a.authorizations {
+		if !authorization.token.expiresAt.After(now) {
+			delete(a.authorizations, scope)
+		}
+	}
 }
 
 func (a *githubConnectionAdmin) beginOAuth(ctx context.Context, db *mongo.Database, company string, op githubConnectionOperation) (githubConnectionStatus, error) {
 	out := githubOperationStatus(company, op)
-	if op.SetupInstallationID <= 0 || (op.State != githubConnectionPending && op.State != githubConnectionVerified && op.State != githubConnectionAwaitingRepositoryAccess) {
+	if (op.SetupInstallationID <= 0 && op.Action != "discover") || (op.State != githubConnectionPending && op.State != githubConnectionVerified && op.State != githubConnectionAwaitingRepositoryAccess) {
 		return out, ErrConflict
 	}
 	now := a.app.now().UTC()
@@ -378,7 +504,12 @@ func (a *githubConnectionAdmin) beginOAuth(ctx context.Context, db *mongo.Databa
 		return out, ErrUnavailable
 	}
 	filter := githubOperatorFilter(op.ProjectID, githubOperator{op.OperatorIssuer, op.OperatorSubject}, op.OperationID)
-	filter["state"], filter["setup_installation_id"] = op.State, op.SetupInstallationID
+	filter["state"] = op.State
+	if op.SetupInstallationID == 0 {
+		filter["setup_installation_id"] = bson.M{"$exists": false}
+	} else {
+		filter["setup_installation_id"] = op.SetupInstallationID
+	}
 	if op.OAuthNonce == nil {
 		filter["oauth_nonce"] = bson.M{"$exists": false}
 	} else {
@@ -404,7 +535,7 @@ func (a *githubConnectionAdmin) oauthCallback(ctx context.Context, operator gith
 		return zero, err
 	}
 	now := a.app.now().UTC()
-	if op.SetupInstallationID <= 0 || op.OAuthNonce == nil || !githubNonceUsable(*op.OAuthNonce, raw, now) ||
+	if (op.SetupInstallationID <= 0 && op.Action != "discover") || op.OAuthNonce == nil || !githubNonceUsable(*op.OAuthNonce, raw, now) ||
 		(op.State != githubConnectionPending && op.State != githubConnectionVerified && op.State != githubConnectionAwaitingRepositoryAccess) {
 		return zero, ErrConflict
 	}
@@ -440,17 +571,22 @@ func (a *githubConnectionAdmin) oauthCallback(ctx context.Context, operator gith
 	if op.GitHubOperatorID != 0 && op.GitHubOperatorID != user.ID {
 		return zero, todoTeach("github_operator_id", "reauthorize using the original GitHub operator", ErrConflict)
 	}
-	installation, err := a.app.userInstallation(ctx, token, op.SetupInstallationID, op.TargetAccountID)
-	if err != nil {
-		return zero, githubAdminProviderError(err)
-	}
-	delete(filter, "oauth_nonce.consumed_at")
 	filter["oauth_nonce.consumed_at"] = now
-	next := op.State
-	if next == githubConnectionPending {
-		next = githubConnectionVerified
+	fields := bson.M{"github_operator_id": user.ID, "updated_at": a.app.now().UTC()}
+	op.GitHubOperatorID = user.ID
+	if op.SetupInstallationID > 0 {
+		installation, err := a.app.userInstallation(ctx, token, op.SetupInstallationID, op.TargetAccountID)
+		if err != nil {
+			return zero, githubAdminProviderError(err)
+		}
+		if op.State == githubConnectionPending {
+			op.State = githubConnectionVerified
+		}
+		fields["state"], fields["verified_installation_id"] = op.State, installation.ID
+		fields["github_account_login"], fields["github_account_type"], fields["target_account_id"] = installation.Account.Login, installation.Account.Type, installation.Account.ID
+		op.VerifiedInstallationID, op.GitHubAccountLogin, op.GitHubAccountType = installation.ID, installation.Account.Login, installation.Account.Type
 	}
-	update := bson.M{"$set": bson.M{"state": next, "github_operator_id": user.ID, "verified_installation_id": installation.ID, "github_account_login": installation.Account.Login, "updated_at": a.app.now().UTC()}}
+	update := bson.M{"$set": fields}
 	if err := githubAdminUpdate(ctx, db, filter, update); err != nil {
 		return zero, err
 	}
@@ -465,9 +601,11 @@ func (a *githubConnectionAdmin) oauthCallback(ctx context.Context, operator gith
 	if len(a.users) < 1024 {
 		a.users[key] = token
 	}
+	scope := githubUserScope{state.CompanyID, operator.Issuer, operator.Subject}
+	if _, exists := a.authorizations[scope]; exists || len(a.authorizations) < 1024 {
+		a.authorizations[scope] = githubUserAuthorization{token: token, githubUserID: user.ID}
+	}
 	a.mu.Unlock()
-	op.State, op.GitHubOperatorID, op.VerifiedInstallationID = next, user.ID, installation.ID
-	op.GitHubAccountLogin = installation.Account.Login
 	return githubOperationStatus(state.CompanyID, op), nil
 }
 
@@ -501,7 +639,7 @@ func (a *githubConnectionAdmin) repositories(ctx context.Context, company, proje
 	if err != nil {
 		return out, err
 	}
-	if op.State != githubConnectionVerified || op.Action != "connect" || page < 1 {
+	if op.State != githubConnectionVerified || op.Action != "connect" && !a.discoveryActive(op) || page < 1 {
 		return out, ErrConflict
 	}
 	token, ok := a.userToken(company, op)
@@ -547,6 +685,6 @@ func (a *githubConnectionAdmin) repositories(ctx context.Context, company, proje
 			ID: repo.ID, FullName: repo.FullName, NodeID: repo.NodeID, Branch: repo.DefaultBranch, ConnectionRevision: revision,
 		})
 	}
-	out.HasNext = more
+	out.HasNext = more && page < 100
 	return out, nil
 }

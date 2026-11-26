@@ -25,7 +25,7 @@ func (a *githubConnectionAdmin) finalize(ctx context.Context, company, project s
 	if err != nil {
 		return zero, err
 	}
-	if req.ExpectedRoleRevision == nil || req.ExpectedConnectionRevision == nil ||
+	if op.Action != "create" && op.Action != "connect" || req.ExpectedRoleRevision == nil || req.ExpectedConnectionRevision == nil ||
 		*req.ExpectedRoleRevision != op.ExpectedRoleRevision || *req.ExpectedConnectionRevision != op.ExpectedConnectionRevision ||
 		(op.Action == "connect" && req.GitHubRepositoryID <= 0) || (op.Action == "create" && req.GitHubRepositoryID != 0) {
 		return zero, ErrConflict
@@ -97,7 +97,7 @@ func (a *githubConnectionAdmin) finalize(ctx context.Context, company, project s
 			return zero, err
 		}
 		op.State, op.FinalizeDigest = githubConnectionCreating, digest
-		repo, createErr := a.app.createOrganizationRepository(ctx, token, installation, op.TargetRepositoryName)
+		repo, createErr := a.app.createOrganizationRepository(ctx, token, installation, op.TargetRepositoryName, op.Visibility != "public")
 		// Keep the provider receipt even when the browser disconnects. This
 		// only persists local Mongo state; it never retries the provider POST.
 		persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
@@ -152,6 +152,9 @@ func (a *githubConnectionAdmin) finalize(ctx context.Context, company, project s
 	}
 	connection.RepositoryFullName = metadata.FullName
 	if op.Role == "visual" {
+		if op.Action == "connect" && op.PublicationBranch == "" {
+			op.PublicationBranch = metadata.DefaultBranch
+		}
 		if op.Action == "create" && op.PublicationBranch == "" {
 			// Auto-initialization follows the organization's default branch.
 			// The durable provider receipt, not a guessed "main", supplies it.
@@ -198,6 +201,10 @@ func recordGitHubCreationResult(ctx context.Context, db *mongo.Database, op gith
 	if op.State == githubConnectionAwaitingRepositoryAccess {
 		fields["result_repository_id"], fields["result_repository_node_id"] = repo.ID, repo.NodeID
 		fields["result_repository_full_name"], fields["result_repository_default_branch"] = repo.FullName, repo.DefaultBranch
+		fields["result_repository_visibility"] = "public"
+		if repo.Private {
+			fields["result_repository_visibility"] = "private"
+		}
 	}
 	return githubAdminUpdate(ctx, db, filter, bson.M{"$set": fields})
 }

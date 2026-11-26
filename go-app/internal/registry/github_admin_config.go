@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"io"
 	"net/url"
 	"os"
@@ -9,6 +10,8 @@ import (
 type GitHubAppConfig struct {
 	AppID, Slug, ClientID, ClientSecret, PrivateKeyFile        string
 	AdminOrigin, AccessIssuer, AccessAudience, AccessOperators string
+	CompanyCreators                                            string
+	SharedAuthenticatedAccess                                  bool
 }
 
 // ConfigureGitHubApp is called once at startup before serving requests. An
@@ -44,7 +47,23 @@ func (m *MongoStore) ConfigureGitHubApp(config GitHubAppConfig) error {
 	if err != nil {
 		return err
 	}
+	creators := make(map[string]bool)
+	if config.CompanyCreators != "" {
+		var subjects []string
+		if len(config.CompanyCreators) > 16<<10 || json.Unmarshal([]byte(config.CompanyCreators), &subjects) != nil || subjects == nil {
+			return ErrInvalid
+		}
+		for _, subject := range subjects {
+			if !validSummaryField(subject, 256) || creators[subject] {
+				return ErrInvalid
+			}
+			creators[subject] = true
+		}
+	}
+	if !config.SharedAuthenticatedAccess && len(creators) == 0 && len(access.operators) == 0 {
+		return ErrInvalid
+	}
 	m.githubApp = app
-	m.githubAdminHTTP = &githubAdminHTTP{admin: newGitHubConnectionAdmin(m, app), access: access, origin: config.AdminOrigin}
+	m.githubAdminHTTP = &githubAdminHTTP{admin: newGitHubConnectionAdmin(m, app), access: access, origin: config.AdminOrigin, store: m, companyCreators: creators, sharedAuthenticatedAccess: config.SharedAuthenticatedAccess}
 	return nil
 }

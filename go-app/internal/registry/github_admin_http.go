@@ -20,13 +20,18 @@ type githubAdminService interface {
 	finalize(context.Context, string, string, githubOperator, string, githubConnectionFinalizeRequest) (githubConnectionStatus, error)
 	abandon(context.Context, string, string, githubOperator, string, bool) (githubConnectionStatus, error)
 	setupCallback(context.Context, githubOperator, string, int64) (githubConnectionStatus, error)
+	requestInstallationCallback(context.Context, githubOperator, string) (githubConnectionStatus, error)
+	pendingInstallation(context.Context, string, string, githubOperator) (githubPendingInstallationResponse, error)
 	oauthCallback(context.Context, githubOperator, string, string) (githubConnectionStatus, error)
 }
 
 type githubAdminHTTP struct {
-	admin  githubAdminService
-	access *githubAccessVerifier
-	origin string
+	admin                     githubAdminService
+	access                    *githubAccessVerifier
+	origin                    string
+	store                     *MongoStore
+	companyCreators           map[string]bool
+	sharedAuthenticatedAccess bool
 }
 
 type githubAdminTarget struct {
@@ -40,6 +45,7 @@ func (h *githubAdminHTTP) register(mux *http.ServeMux) {
 	const prefix = "/internal/v1/companies/{companyID}/projects/{projectID}/github-connections"
 	const operations = prefix + "/operations"
 	mux.HandleFunc("GET "+prefix, h.protect(false, h.roles))
+	mux.HandleFunc("GET "+prefix+"/pending-installation", h.protect(false, h.pendingInstallation))
 	mux.HandleFunc("POST "+operations, h.protect(false, h.start))
 	mux.HandleFunc("GET "+operations+"/{operationID}", h.protect(false, h.status))
 	mux.HandleFunc("GET "+operations+"/{operationID}/repositories", h.protect(false, h.repositories))
@@ -47,9 +53,16 @@ func (h *githubAdminHTTP) register(mux *http.ServeMux) {
 	mux.HandleFunc("POST "+operations+"/{operationID}/abandon", h.protect(false, h.abandon))
 	mux.HandleFunc("GET /internal/v1/admin/github/callback", h.protect(true, h.setup))
 	mux.HandleFunc("GET /internal/v1/admin/github/oauth/callback", h.protect(true, h.oauth))
+	if h.store != nil {
+		h.registerOnboarding(mux)
+	}
 }
 
 func (h *githubAdminHTTP) protect(callback bool, action githubAdminAction) http.HandlerFunc {
+	return h.protectMode(callback, "github", action)
+}
+
+func (h *githubAdminHTTP) protectMode(callback bool, mode string, action githubAdminAction) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Referrer-Policy", "no-referrer")
@@ -86,11 +99,16 @@ func (h *githubAdminHTTP) protect(callback bool, action githubAdminAction) http.
 			}
 			t.company, t.project, t.operation = state.CompanyID, state.ProjectID, state.OperationID
 		}
-		if !validID(t.company) || !validID(t.project) || (t.operation != "" && !validID(t.operation)) {
+		if t.company != "" && !validID(t.company) || t.project != "" && !validID(t.project) || (t.operation != "" && !validID(t.operation)) {
 			writer.writeError(w, ErrInvalid)
 			return
 		}
-		if !h.access.permits(operator, t.company) {
+		allowed, err := h.onboardingAccess(r.Context(), mode, t)
+		if err != nil {
+			writer.writeError(w, err)
+			return
+		}
+		if !allowed {
 			githubAdminForbidden(w, "github_company_access_denied", "This operator is not authorized for the requested Company.")
 			return
 		}
@@ -101,15 +119,25 @@ func (h *githubAdminHTTP) protect(callback bool, action githubAdminAction) http.
 				return
 			}
 			contentType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
-			if len(r.Header.Values("Content-Type")) != 1 || err != nil || contentType != "application/json" {
-				writeErrorEnvelope(w, http.StatusUnsupportedMediaType, errorResponse{Error: "github_json_required", Teach: "Submit one typed application/json object."})
+			expectedType, limit := "application/json", int64(8<<10)
+			if mode == "company-create" {
+				expectedType, limit = "multipart/form-data", maxCompanyForm
+			}
+			if len(r.Header.Values("Content-Type")) != 1 || err != nil || contentType != expectedType {
+				writeErrorEnvelope(w, http.StatusUnsupportedMediaType, errorResponse{Error: "github_content_type_required", Teach: "Submit " + expectedType + " for this operation."})
 				return
 			}
-			r.Body = http.MaxBytesReader(w, r.Body, 8<<10)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		result, err := action(r, t)
 		if err != nil {
 			writer.writeError(w, err)
+			return
+		}
+		if image, ok := result.(companyAdminImage); ok {
+			w.Header().Set("Content-Type", image.MIME)
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			_, _ = w.Write(image.Bytes)
 			return
 		}
 		writeSessionJSON(w, http.StatusOK, result)
@@ -165,6 +193,13 @@ func (h *githubAdminHTTP) start(r *http.Request, t githubAdminTarget) (any, erro
 	if err := githubAdminDecode(r, &input); err != nil {
 		return nil, err
 	}
+	if t.project != "" && input.DiscoveryOperation != "" {
+		allowed, err := h.onboardingAccess(r.Context(), "company", t)
+		if err != nil {
+			return nil, err
+		}
+		input.allowCompanyDiscovery = allowed
+	}
 	return h.admin.start(r.Context(), t.company, t.project, t.operator, input)
 }
 
@@ -203,11 +238,32 @@ func (h *githubAdminHTTP) abandon(r *http.Request, t githubAdminTarget) (any, er
 }
 
 func (h *githubAdminHTTP) setup(r *http.Request, t githubAdminTarget) (any, error) {
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil || len(query["setup_action"]) > 1 {
+		return nil, ErrInvalid
+	}
+	switch query.Get("setup_action") {
+	case "request":
+		if len(query) != 2 || query.Has("installation_id") || githubQueryParameter(r, "state") == "" {
+			return nil, ErrInvalid
+		}
+		return h.admin.requestInstallationCallback(r.Context(), t.operator, githubQueryParameter(r, "state"))
+	case "", "install", "update":
+	default:
+		return nil, ErrInvalid
+	}
 	id, err := githubPositiveID(githubQueryParameter(r, "installation_id"))
 	if err != nil {
 		return nil, err
 	}
 	return h.admin.setupCallback(r.Context(), t.operator, githubQueryParameter(r, "state"), id)
+}
+
+func (h *githubAdminHTTP) pendingInstallation(r *http.Request, t githubAdminTarget) (any, error) {
+	if r.URL.RawQuery != "" {
+		return nil, ErrInvalid
+	}
+	return h.admin.pendingInstallation(r.Context(), t.company, t.project, t.operator)
 }
 
 func (h *githubAdminHTTP) oauth(r *http.Request, t githubAdminTarget) (any, error) {

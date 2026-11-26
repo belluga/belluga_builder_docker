@@ -82,6 +82,7 @@ func (m *MongoStore) ConfigureProofReader(readerURL, token string) error {
 const maxProjectDocumentBytes = 128 << 10
 
 type projectDocument struct {
+	CreatedBy                               *registrationGrant                     `bson:"created_by,omitempty"`
 	PromotionMode                           *projectPromotionModeConfiguration     `bson:"promotion_mode,omitempty"`
 	ObjectID                                bson.ObjectID                          `bson:"_id,omitempty"`
 	ID                                      string                                 `bson:"id"`
@@ -292,15 +293,20 @@ func (m *MongoStore) Catalog(ctx context.Context) (Catalog, error) {
 	if err != nil {
 		return Catalog{}, ErrUnavailable
 	}
-	publicCompanies := make([]Company, len(companies))
-	for i, company := range companies {
+	publicCompanies := make([]Company, 0, len(companies))
+	ready := make([]Company, 0, len(companies))
+	for _, company := range companies {
 		if err := m.companySchemaReady(company); err != nil {
+			if company.CreatedBy != nil && (company.SchemaState == "initializing" || company.SchemaState == "pending" || company.SchemaState == "failed") {
+				continue
+			}
 			return Catalog{}, err
 		}
-		publicCompanies[i] = sanitizeCompany(company)
+		ready = append(ready, company)
+		publicCompanies = append(publicCompanies, sanitizeCompany(company))
 	}
 	catalog := Catalog{SchemaVersion: "1", Companies: publicCompanies, Projects: []Project{}, Preferences: []Preference{}}
-	for _, company := range companies {
+	for _, company := range ready {
 		database := m.client.Database(company.DatabaseName)
 		projects, err := database.Collection(projectsCollection).Find(ctx, bson.D{})
 		if err != nil {
@@ -923,7 +929,7 @@ func (m *MongoStore) ResolveTenant(ctx context.Context, request TenantRequest) (
 }
 
 func (m *MongoStore) readCompanies(ctx context.Context) ([]Company, error) {
-	cursor, err := m.control.Collection(companiesCollection).Find(ctx, bson.D{})
+	cursor, err := m.control.Collection(companiesCollection).Find(ctx, bson.D{}, options.Find().SetProjection(bson.M{"admin_image": 0}))
 	if err != nil {
 		return nil, err
 	}
@@ -945,7 +951,7 @@ func (m *MongoStore) readCompanies(ctx context.Context) ([]Company, error) {
 
 func (m *MongoStore) rawCompany(ctx context.Context, id string) (Company, error) {
 	var item Company
-	if err := m.control.Collection(companiesCollection).FindOne(ctx, bson.D{{Key: "id", Value: id}}).Decode(&item); err != nil {
+	if err := m.control.Collection(companiesCollection).FindOne(ctx, bson.D{{Key: "id", Value: id}}, options.FindOne().SetProjection(bson.M{"admin_image": 0})).Decode(&item); err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
 			return Company{}, ErrNotFound
 		}

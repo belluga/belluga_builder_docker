@@ -1,0 +1,86 @@
+.builder-onboarding {
+  min-height: 100vh;
+  background: #f5f9fd;
+  color: #071a3b;
+  font: 16px Inter, ui-sans-serif, system-ui, sans-serif;
+}
+.builder-onboarding a { color: inherit; text-decoration: none; }
+.builder-onboarding .onboarding-header { height: 80px; padding: 0 32px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid #d6e2ed; background: #f1f8fc; }
+.builder-onboarding .onboarding-header a:last-child { color: #008ea8; font-weight: 700; }
+.onboarding-brand { display: flex; align-items: center; gap: 12px; font-size: 27px; font-weight: 800; }
+.onboarding-brand span { color: #11b6d5; font-size: 25px; }
+.onboarding-shell { display: grid; grid-template-columns: 270px minmax(0,1fr); min-height: calc(100vh - 80px); }
+.onboarding-nav { background: #f2f7fb; border-right: 1px solid #d6e2ed; padding: 24px 14px; }
+.onboarding-nav h2 { font-size: 18px; margin: 14px 12px 25px; }
+.onboarding-nav a, .onboarding-nav > span { display: block; padding: 13px 16px; border-radius: 10px; margin-bottom: 5px; color: #243b59; }
+.onboarding-nav [aria-current=page] { background: #c8f2f7; font-weight: 700; }
+.onboarding-nav > span { color: #637b95; }
+.onboarding-main { min-width: 0; padding: 36px 44px; }
+.onboarding-main-heading { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; }
+.onboarding-main-heading span { font-weight: 700; letter-spacing: .12em; font-size: 11px; color: #4b6382; }
+.onboarding-main-heading h1 { font-size: 46px; line-height: 1.06; margin: 12px 0; }
+.onboarding-main-heading p { font-size: 20px; color: #526a8a; margin: 0 0 28px; }
+.onboarding-tools { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.onboarding-tools input { width: min(550px, 100%); border: 1px solid #c7d7e7; border-radius: 11px; padding: 14px 17px; margin: 5px 0 25px; background: white; color: #102349; }
+.builder-onboarding .onboarding-primary, .github-admin-page .github-admin-primary {
+  background: linear-gradient(95deg,#21b7d5,#58deea);
+  border: 0;
+  border-radius: 9px;
+  color: #06202b;
+  font-weight: 700;
+  text-decoration: none;
+  padding: 12px 22px;
+}
+.github-admin-page .github-admin-primary:disabled { background: #d4e0e9; color: #53728f; }
+.onboarding-directory, .onboarding-project-card { background: white; border: 1px solid #d6e2ed; border-radius: 14px; overflow: hidden; box-shadow: 0 14px 34px #0e2a4e0f; }
+.onboarding-directory-head { display: grid; grid-template-columns: 1fr 150px; background: #edf4fa; color: #4b6382; padding: 15px 24px; font-size: 14px; font-weight: 700; }
+.onboarding-row { display: grid; grid-template-columns: 58px 1fr 150px; align-items: center; gap: 16px; padding: 20px 24px; border-top: 1px solid #e0ebf3; }
+.onboarding-row:hover { background: #eaf9fc; }
+.onboarding-row strong { font-size: 19px; }
+.onboarding-row span:last-child { color: #526a8a; overflow-wrap: anywhere; }
+.onboarding-company-mark { display: grid; place-items: center; width: 54px; height: 54px; background: #003b4c; color: #5ce3ef; font-size: 29px; font-weight: 800; border-radius: 12px; overflow: hidden; }
+.onboarding-company-mark img { width: 100%; height: 100%; object-fit: cover; }
+.onboarding-company-context { display: flex; align-items: center; gap: 16px; background: #dff6fa; border: 1px solid #a7e4ed; padding: 14px 17px; border-radius: 13px; margin: 15px 0 26px; }
+.onboarding-projects { display: grid; gap: 16px; }
+.onboarding-project-card { padding: 20px 24px; }
+.onboarding-project-card > header { display: flex; align-items: center; gap: 16px; }
+.onboarding-project-card > header h2 { margin: 0; font-size: 23px; }
+.onboarding-project-card > header a { margin-left: auto; color: #007f9e; font-weight: 700; }
+.onboarding-shortcuts { display: flex; gap: 10px; margin-top: 16px; overflow-x: auto; }
+.onboarding-shortcuts > * { flex: none; border: 1px solid #a3dce8; border-radius: 10px; padding: 12px 16px; background: #e9f9fc; color: #006c87; }
+.onboarding-shortcuts [aria-disabled=true] { color: #526a8a; border-color: #dce7ef; background: #f2f7fb; }
+.onboarding-shortcuts small { display: block; }
+.onboarding-notice, .onboarding-warning { padding: 14px 16px; border-radius: 10px; margin: 0 0 22px; max-width: 750px; }
+.onboarding-notice { background: #e5f8ed; color: #115232; border: 1px solid #94d5a9; }
+.onboarding-warning { background: #fff5de; color: #624714; border: 1px solid #e5c77d; }
+.onboarding-image-row { display: flex; align-items: center; gap: 14px; }
+.onboarding-image-row .onboarding-company-mark { width: 90px; height: 90px; font-size: 42px; }
+.onboarding-image-picker { position: relative; display: inline-block !important; background: white; color: #007f9e; border: 1px solid #12b4d4; border-radius: 8px; padding: 10px 16px; cursor: pointer; }
+.onboarding-image-picker input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.onboarding-mobile-back { display: none; }
+.onboarding-account-menu { position: relative; }
+.onboarding-account-menu summary { cursor: pointer; list-style: none; background: #52e5f0; color: #06243d; border-radius: 50%; width: 38px; height: 38px; display: grid; place-items: center; font-weight: 800; }
+.onboarding-account-menu > div { position: absolute; z-index: 5; right: 0; top: 45px; min-width: 250px; background: white; color: #071a3b; padding: 14px; border-radius: 12px; box-shadow: 0 14px 32px #06183540; }
+.onboarding-account-menu > div a { color: #007f9e; }
+@media (max-width: 760px) {
+ .builder-onboarding .onboarding-header { height: 64px; padding: 0 16px; }
+ .onboarding-shell { display: block; }
+ .onboarding-nav { display: flex; align-items: center; gap: 7px; padding: 8px 14px; border-right: 0; }
+ .onboarding-nav h2 { display: none; }
+ .onboarding-nav a, .onboarding-nav > span { margin: 0; }
+ .onboarding-main { padding: 24px 16px; }
+ .onboarding-main-heading, .onboarding-tools { flex-wrap: wrap; }
+ .onboarding-main-heading h1 { font-size: 34px; }
+ .onboarding-main-heading p { font-size: 16px; }
+ .onboarding-directory-head { grid-template-columns: 1fr 93px; padding: 12px; }
+ .onboarding-row { grid-template-columns: 36px minmax(0,1fr) 93px; gap: 8px; padding: 12px; }
+ .onboarding-row strong { font-size: 15px; overflow-wrap: anywhere; }
+ .onboarding-company-mark { width: 36px; height: 36px; font-size: 20px; }
+ .onboarding-mobile-back { display: block; }
+}
+.onboarding-account-menu > div a { display: block; padding: 13px 15px; border-radius: 9px; color: #071a3b; background: #bdf4f7; }
+.onboarding-account-menu > div a small { display: block; margin-top: 3px; }
+@media (min-width: 761px) {
+ .onboarding-main-heading > button.onboarding-primary { min-width: 195px; min-height: 45px; font: inherit; font-weight: 700; }
+ .onboarding-tools input { min-height: 49px; padding-block: 12px; font: inherit; }
+}

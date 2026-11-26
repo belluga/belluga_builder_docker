@@ -171,11 +171,14 @@ func TestGitHubAdminHTTPGuardsMutationsAndCallbackCompany(t *testing.T) {
 		return w
 	}
 	const valid = `{"operation_id":"start","role":"visual","action":"connect","expected_role_revision":0,"expected_connection_revision":0,"target_account_id":8,"publication_branch":"main"}`
+	const chooseInstallation = `{"operation_id":"start","action":"select-installation","installation_id":8}`
 	for _, tc := range []struct {
 		name, path, assertion, origin, contentType, body string
 		code                                             int
 	}{
 		{"unauthenticated", githubAccessTestOperations, "", githubAccessTestOrigin, "application/json", valid, 401},
+		{"installation selection needs a signed session", githubAccessTestOperations, "", githubAccessTestOrigin, "application/json", chooseInstallation, 401},
+		{"installation selection is Company-scoped", strings.Replace(githubAccessTestOperations, "/team/", "/other/", 1), token, githubAccessTestOrigin, "application/json", chooseInstallation, 403},
 		{"wrong origin", githubAccessTestOperations, token, "https://attacker.test", "application/json", valid, 403},
 		{"wrong company", strings.Replace(githubAccessTestOperations, "/team/", "/other/", 1), token, githubAccessTestOrigin, "application/json", valid, 403},
 		{"wrong content type", githubAccessTestOperations, token, githubAccessTestOrigin, "text/plain", valid, 415},

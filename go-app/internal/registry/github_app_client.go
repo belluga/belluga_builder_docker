@@ -168,30 +168,43 @@ func (c *githubAppClient) user(ctx context.Context, token githubAppToken) (githu
 	return user, err
 }
 
-func (c *githubAppClient) userInstallation(ctx context.Context, token githubAppToken, installationID, accountID int64) (githubAppInstallation, error) {
-	if installationID <= 0 || accountID <= 0 {
-		return githubAppInstallation{}, ErrInvalid
-	}
+func (c *githubAppClient) userInstallations(ctx context.Context, token githubAppToken, visit func(githubAppInstallation) bool) error {
 	for page := 1; page <= 100; page++ {
 		var response struct {
 			Installations []githubAppInstallation `json:"installations"`
 		}
 		if err := c.userGET(ctx, token, githubPagedPath("/user/installations", page), &response); err != nil {
-			return githubAppInstallation{}, err
+			return err
 		}
 		for _, installation := range response.Installations {
-			if installation.ID == installationID {
-				if installation.AppID != c.appID || installation.Account.ID != accountID || installation.SuspendedAt != nil {
-					return githubAppInstallation{}, errGitHubAccessDenied
-				}
-				return installation, nil
+			if installation.ID > 0 && installation.AppID == c.appID && installation.Account.ID > 0 &&
+				installation.SuspendedAt == nil && visit(installation) {
+				return nil
 			}
 		}
 		if len(response.Installations) < 100 {
-			return githubAppInstallation{}, errGitHubAccessDenied
+			return nil
 		}
 	}
-	return githubAppInstallation{}, ErrUnavailable
+	return ErrUnavailable
+}
+
+func (c *githubAppClient) userInstallation(ctx context.Context, token githubAppToken, installationID, accountID int64) (githubAppInstallation, error) {
+	var selected githubAppInstallation
+	if installationID <= 0 || accountID < 0 {
+		return selected, ErrInvalid
+	}
+	err := c.userInstallations(ctx, token, func(installation githubAppInstallation) bool {
+		if installation.ID != installationID || accountID != 0 && installation.Account.ID != accountID {
+			return false
+		}
+		selected = installation
+		return true
+	})
+	if err == nil && selected.ID == 0 {
+		err = errGitHubAccessDenied
+	}
+	return selected, err
 }
 
 func (c *githubAppClient) userInstallationRepositoryPage(ctx context.Context, token githubAppToken, installationID int64, page int) ([]githubAppRepository, bool, error) {
@@ -286,7 +299,7 @@ func (c *githubAppClient) repositoryReadToken(ctx context.Context, connection gi
 	return token, repo, nil
 }
 
-func (c *githubAppClient) createOrganizationRepository(ctx context.Context, token githubAppToken, installation githubAppInstallation, name string) (githubAppRepository, error) {
+func (c *githubAppClient) createOrganizationRepository(ctx context.Context, token githubAppToken, installation githubAppInstallation, name string, private bool) (githubAppRepository, error) {
 	account := installation.Account
 	if !c.validUserToken(token) || installation.ID <= 0 || installation.AppID != c.appID || installation.SuspendedAt != nil || account.ID <= 0 || account.Type != "Organization" || !validGitRepositoryID(account.Login+"/"+name) || strings.Contains(name, "/") {
 		return githubAppRepository{}, ErrInvalid
@@ -295,9 +308,12 @@ func (c *githubAppClient) createOrganizationRepository(ctx context.Context, toke
 		Name     string `json:"name"`
 		Private  bool   `json:"private"`
 		AutoInit bool   `json:"auto_init"`
-	}{name, true, true}
-	var repo githubAppRepository
-	status, err := c.apiJSON(ctx, http.MethodPost, "/orgs/"+url.PathEscape(account.Login)+"/repos", token.value, payload, &repo)
+	}{name, private, true}
+	var receipt struct {
+		githubAppRepository
+		Private *bool `json:"private"`
+	}
+	status, err := c.apiJSON(ctx, http.MethodPost, "/orgs/"+url.PathEscape(account.Login)+"/repos", token.value, payload, &receipt)
 	if err != nil {
 		switch status {
 		case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusConflict, http.StatusUnprocessableEntity, http.StatusTooManyRequests:
@@ -306,9 +322,11 @@ func (c *githubAppClient) createOrganizationRepository(ctx context.Context, toke
 			return githubAppRepository{}, errGitHubCreationUncertain
 		}
 	}
-	if status != http.StatusCreated || !repo.validIdentity() || repo.Owner.ID != account.ID || !repo.Private || !strings.EqualFold(repo.FullName, account.Login+"/"+name) || !validGitBranch(repo.DefaultBranch) {
+	repo := receipt.githubAppRepository
+	if status != http.StatusCreated || receipt.Private == nil || !repo.validIdentity() || repo.Owner.ID != account.ID || *receipt.Private != private || !strings.EqualFold(repo.FullName, account.Login+"/"+name) || !validGitBranch(repo.DefaultBranch) {
 		return githubAppRepository{}, errGitHubCreationUncertain
 	}
+	repo.Private = *receipt.Private
 	return repo, nil
 }
 

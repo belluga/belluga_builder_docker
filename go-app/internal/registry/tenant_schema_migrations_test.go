@@ -438,16 +438,20 @@ func TestCompanyGitHubConnectionMigrationUpgradesStampedV3AndFreshCompanies(t *t
 	}
 	migrateCompanyFixture(t, ctx, store)
 	after, err := rawCompanyMigrationEntries(ctx, store, "company-existing")
-	if err != nil || len(after) != 4 || !reflect.DeepEqual(before, after[:3]) {
+	if err != nil || len(after) != 5 || !reflect.DeepEqual(before, after[:3]) {
 		t.Fatalf("v4 did not append to unchanged v1-v3 history: %d entries, %v", len(after), err)
 	}
 	existing, err = store.rawCompany(ctx, "company-existing")
-	if err != nil || len(existing.SchemaMigrations) != 4 || existing.SchemaMigrations[3].Version != 4 ||
+	if err != nil || len(existing.SchemaMigrations) != 5 || existing.SchemaMigrations[3].Version != 4 ||
 		existing.SchemaMigrations[3].Digest != companySchemaCatalog[3].digest() {
 		t.Fatalf("missing v4 digest: %+v, %v", existing.SchemaMigrations, err)
 	}
 	if err := verifyGitHubConnectionIndexes(ctx, db); err != nil {
 		t.Fatal(err)
+	}
+	pendingIndex := pendingGitHubInstallationIndex()
+	if err := verifyCompanyIndexOptions(ctx, db.Collection(pendingIndex.collection), pendingIndex.name, pendingIndex.keys, false, nil, pendingIndex.partial...); err != nil {
+		t.Fatalf("existing Company missing v5 partial index: %v", err)
 	}
 	migrateCompanyFixture(t, ctx, store)
 	afterRetry, err := rawCompanyMigrationEntries(ctx, store, "company-existing")
@@ -459,11 +463,15 @@ func TestCompanyGitHubConnectionMigrationUpgradesStampedV3AndFreshCompanies(t *t
 		t.Fatal(err)
 	}
 	fresh, err := store.rawCompany(ctx, "company-fresh")
-	if err != nil || len(fresh.SchemaMigrations) != 4 || fresh.SchemaMigrations[3].Digest != companySchemaCatalog[3].digest() {
+	if err != nil || len(fresh.SchemaMigrations) != 5 || fresh.SchemaMigrations[3].Digest != companySchemaCatalog[3].digest() {
 		t.Fatalf("fresh Company missing v4: %+v, %v", fresh.SchemaMigrations, err)
 	}
 	if err := verifyGitHubConnectionIndexes(ctx, store.client.Database(fresh.DatabaseName)); err != nil {
 		t.Fatal(err)
+	}
+
+	if err := verifyCompanyIndexOptions(ctx, store.client.Database(fresh.DatabaseName).Collection(pendingIndex.collection), pendingIndex.name, pendingIndex.keys, false, nil, pendingIndex.partial...); err != nil {
+		t.Fatalf("fresh Company missing v5 partial index: %v", err)
 	}
 
 	// A same-name TTL index must not be considered the frozen v4 definition

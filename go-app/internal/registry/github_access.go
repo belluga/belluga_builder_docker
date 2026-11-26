@@ -37,7 +37,7 @@ func newGitHubAccessVerifier(issuer, audience, operatorsJSON string, client *htt
 		return nil, ErrInvalid
 	}
 	var configured map[string][]string
-	if len(operatorsJSON) > 64<<10 || json.Unmarshal([]byte(operatorsJSON), &configured) != nil || len(configured) == 0 {
+	if len(operatorsJSON) > 64<<10 || json.Unmarshal([]byte(operatorsJSON), &configured) != nil || configured == nil {
 		return nil, ErrInvalid
 	}
 	operators := make(map[string]map[string]bool, len(configured))

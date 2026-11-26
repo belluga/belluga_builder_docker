@@ -2,11 +2,13 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,11 +53,12 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.tenantPrefix = stamp
-	const company, project = "company-a", "project-a"
+	const company, project, otherCompany = "company-a", "project-a", "company-b"
 	t.Cleanup(func() {
 		cleanup, done := context.WithTimeout(context.Background(), 10*time.Second)
 		defer done()
 		_ = store.client.Database(store.tenantDatabase(company)).Drop(cleanup)
+		_ = store.client.Database(store.tenantDatabase(otherCompany)).Drop(cleanup)
 		_ = store.control.Drop(cleanup)
 		_ = store.Close(cleanup)
 	})
@@ -72,7 +75,10 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 	var creates atomic.Int32
 	var synchronize atomic.Bool
 	var newRepositoryVisible atomic.Bool
+	var revokeUserAuthorization atomic.Bool
+	var repositoryReads atomic.Int32
 	const receiptRepo = `{"id":34,"node_id":"R_34","full_name":"company/new","default_branch":"trunk","private":true,"owner":{"id":18,"login":"company"}}`
+	const publicRepo = `{"id":35,"node_id":"R_35","full_name":"company/public","default_branch":"trunk","private":false,"owner":{"id":18,"login":"company"}}`
 	const renamedRepo = `{"id":34,"node_id":"R_34","full_name":"company/new-renamed","default_branch":"main","private":true,"owner":{"id":18,"login":"company"}}`
 	arrived := make(chan struct{}, 2)
 	release := make(chan struct{})
@@ -83,6 +89,9 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 		case "/user":
 			return githubAppTestResponse(200, `{"id":81,"login":"operator"}`), nil
 		case "/user/installations":
+			if revokeUserAuthorization.Load() {
+				return githubAppTestResponse(401, `{}`), nil
+			}
 			if synchronize.Load() {
 				arrived <- struct{}{}
 				select {
@@ -91,8 +100,12 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 					return nil, r.Context().Err()
 				}
 			}
-			return githubAppTestResponse(200, `{"installations":[{"id":9,"app_id":42,"account":{"id":18,"login":"company","type":"Organization"}}]}`), nil
+			return githubAppTestResponse(200, `{"installations":[{"id":9,"app_id":42,"account":{"id":18,"login":"company","type":"Organization"}},{"id":10,"app_id":42,"account":{"id":81,"login":"operator","type":"User"}},{"id":11,"app_id":99,"account":{"id":11,"login":"wrong-app","type":"Organization"}},{"id":12,"app_id":42,"account":{"id":12,"login":"suspended","type":"Organization"},"suspended_at":"2024-01-01T00:00:00Z"}]}`), nil
 		case "/user/installations/9/repositories":
+			repositoryReads.Add(1)
+			if creates.Load() == 3 {
+				return githubAppTestResponse(200, `{"repositories":[`+publicRepo+`]}`), nil
+			}
 			if newRepositoryVisible.Load() {
 				return githubAppTestResponse(200, `{"repositories":[`+githubAppTestRepo+`,`+renamedRepo+`]}`), nil
 			}
@@ -104,12 +117,26 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 			return githubAppTestResponse(200, githubAppTestRepo), nil
 		case "/repositories/34":
 			return githubAppTestResponse(200, renamedRepo), nil
+		case "/repositories/35":
+			return githubAppTestResponse(200, publicRepo), nil
+		case "/repos/company/public/branches/trunk":
+			return githubAppTestResponse(200, `{"name":"trunk"}`), nil
 		case "/repos/company/repo/branches/main":
 			return githubAppTestResponse(200, `{"name":"main"}`), nil
 		case "/orgs/company/repos":
 			attempt := creates.Add(1)
 			if r.Header.Get("Authorization") != "Bearer user-one" || r.Method != http.MethodPost {
 				t.Fatal("create did not use the current operator authorization")
+			}
+			if attempt == 3 {
+				var fields struct {
+					Name    string `json:"name"`
+					Private *bool  `json:"private"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&fields); err != nil || fields.Name != "public" || fields.Private == nil || *fields.Private {
+					t.Fatalf("unexpected provider request: %+v, %v", fields, err)
+				}
+				return githubAppTestResponse(201, publicRepo), nil
 			}
 			if attempt == 2 {
 				return githubAppTestResponse(201, receiptRepo), nil
@@ -302,6 +329,308 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 	set, err = store.ReadImplementationRepositories(ctx, company, project)
 	if err != nil || set.GitHubNodeIDs["company/new-renamed"] != "R_34" {
 		t.Fatalf("authorized current repository was not bound: %+v, err=%v", set, err)
+	}
+
+	// Company discovery uses the same signed operator's OAuth grant after the
+	// previous binding has completed and released its operation-local token.
+	discovery, err := restarted.openDiscovery(ctx, company, "", operator, "new-project-discovery", false)
+	if err != nil || discovery.AuthorizationURL != "" || discovery.State != githubConnectionPending || discovery.GitHubAccountLogin != "" || discovery.Installations == nil {
+		t.Fatalf("expected direct picker without copying an installation: %+v, %v", discovery, err)
+	}
+	scope := githubUserScope{company, operator.Issuer, operator.Subject}
+	_, resumed, err := restarted.load(ctx, company, "", operator, discovery.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token, ok := restarted.userToken(company, resumed); !ok || token != restarted.authorizations[scope].token {
+		t.Fatal("scope reuse changed the token or its expiry")
+	}
+	if _, err := store.Register(ctx, Registration{CompanyID: otherCompany, CompanyName: "Other Company", ProjectID: project, ProjectName: "Project"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, denied := range []struct {
+		company  string
+		operator githubOperator
+	}{
+		{company, githubOperator{operator.Issuer, "different-subject"}},
+		{company, githubOperator{"https://other-access.test", operator.Subject}},
+		{otherCompany, operator},
+	} {
+		state, err := restarted.openDiscovery(ctx, denied.company, "", denied.operator, "no-scoped-grant", false)
+		if err != nil || state.Installations != nil || state.AuthorizationURL != "" {
+			t.Fatalf("scoped authorization escaped to %+v: %+v, %v", denied, state, err)
+		}
+		if _, _, err := restarted.load(ctx, denied.company, "", denied.operator, "no-scoped-grant"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("probe without a grant persisted an operation: %v", err)
+		}
+	}
+	cold := newGitHubConnectionAdmin(store, app)
+	unavailable, err := cold.openDiscovery(ctx, company, "", operator, "cold-discovery", false)
+	if err != nil || unavailable.Installations != nil || unavailable.AuthorizationURL != "" {
+		t.Fatalf("restart reused in-memory credentials: %+v, %v", unavailable, err)
+	}
+	oauth, err := cold.openDiscovery(ctx, company, "", operator, "cold-discovery", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, err := url.Parse(oauth.AuthorizationURL); err != nil || u.Path != "/login/oauth/authorize" {
+		t.Fatalf("discovery did not fall back to OAuth: %v", err)
+	}
+	pending, err := cold.oauthCallback(ctx, operator, stateFromURL(oauth), "code")
+	if err != nil || pending.State != githubConnectionPending || pending.GitHubAccountLogin != "" {
+		t.Fatalf("OAuth unexpectedly selected an installation: %+v, %v", pending, err)
+	}
+	picker, err := restarted.status(ctx, company, "", operator, discovery.OperationID)
+	if err != nil || picker.Installations == nil || len(*picker.Installations) != 2 || (*picker.Installations)[0].ID != 9 || (*picker.Installations)[1].ID != 10 {
+		t.Fatalf("unexpected authorized choices: %+v, %v", picker.Installations, err)
+	}
+	others := githubOperator{operator.Issuer, "different-subject"}
+	if _, err := restarted.selectDiscoveryInstallation(ctx, company, "", others, discovery.OperationID, 9); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("another subject selected the installation: %v", err)
+	}
+	for _, id := range []int64{11, 12, 99} {
+		if _, err := restarted.selectDiscoveryInstallation(ctx, company, "", operator, discovery.OperationID, id); !errors.Is(err, ErrConflict) {
+			t.Fatalf("unauthorized installation %d accepted: %v", id, err)
+		}
+	}
+	verified, err := restarted.selectDiscoveryInstallation(ctx, company, "", operator, discovery.OperationID, 9)
+	if err != nil || verified.State != githubConnectionVerified || verified.GitHubAccountLogin != "company" {
+		t.Fatalf("account selection: %+v, %v", verified, err)
+	}
+	selectedStatus, err := restarted.status(ctx, company, "", operator, discovery.OperationID)
+	if err != nil || selectedStatus.State != githubConnectionVerified || selectedStatus.GitHubAccountLogin != "company" {
+		t.Fatalf("live selection was not restored: %+v, %v", selectedStatus, err)
+	}
+	coldStatus, err := cold.status(ctx, company, "", operator, discovery.OperationID)
+	if err != nil || coldStatus.State != githubConnectionPending || coldStatus.GitHubAccountLogin != "" || coldStatus.DiscoveryExpired {
+		t.Fatalf("a durable selection without a live token looked authorized: %+v, %v", coldStatus, err)
+	}
+	if _, err := restarted.selectDiscoveryInstallation(ctx, company, "", operator, discovery.OperationID, 10); !errors.Is(err, ErrConflict) {
+		t.Fatalf("selected installation changed without a new discovery: %v", err)
+	}
+	// Requesting installation returns no installation ID. The receipt survives a cold Registry
+	// and a concurrent callback replay, but cannot be used as a discovery/authorization operation.
+	pendingDiscovery, err := restarted.openDiscovery(ctx, company, "", operator, "pending-org-approval", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingSetup, err := restarted.installDiscovery(ctx, company, "", operator, pendingDiscovery.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawPendingState := stateFromURL(pendingSetup)
+	if _, err := restarted.requestInstallationCallback(ctx, others, rawPendingState); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("different operator callback: %v", err)
+	}
+	type callbackResult struct {
+		status githubConnectionStatus
+		err    error
+	}
+	callbackResults := make(chan callbackResult, 2)
+	for range 2 {
+		go func() {
+			status, callbackErr := restarted.requestInstallationCallback(ctx, operator, rawPendingState)
+			callbackResults <- callbackResult{status, callbackErr}
+		}()
+	}
+	first, second := <-callbackResults, <-callbackResults
+	if first.err != nil || second.err != nil || first.status.State != githubConnectionAwaitingOrganizationApproval ||
+		first.status.InstallationRequestedAt == nil || second.status.InstallationRequestedAt == nil ||
+		!first.status.InstallationRequestedAt.Equal(*second.status.InstallationRequestedAt) ||
+		first.status.ExpiresAt == nil || first.status.ExpiresAt.Sub(*first.status.InstallationRequestedAt) != 30*24*time.Hour {
+		t.Fatalf("request and concurrent replay diverged: %+v %+v", first, second)
+	}
+	persisted, err := cold.status(ctx, company, "", operator, pendingDiscovery.OperationID)
+	if err != nil || persisted.State != githubConnectionAwaitingOrganizationApproval || persisted.Installations != nil || persisted.AuthorizationURL != "" {
+		t.Fatalf("cold receipt leaked authorization or lost state: %+v %v", persisted, err)
+	}
+	latest, err := cold.pendingInstallation(ctx, company, "", operator)
+	if err != nil || latest.Operation == nil || latest.Operation.OperationID != pendingDiscovery.OperationID {
+		t.Fatalf("missing receipt: %+v %v", latest, err)
+	}
+	for _, scope := range []struct {
+		company, project string
+		operator         githubOperator
+	}{
+		{company, project, operator}, {otherCompany, "", operator}, {company, "", others},
+	} {
+		latest, err := cold.pendingInstallation(ctx, scope.company, scope.project, scope.operator)
+		if err != nil || latest.Operation != nil {
+			t.Fatalf("receipt crossed scope: %+v %v", latest, err)
+		}
+	}
+	if _, err := cold.openDiscovery(ctx, company, "", operator, pendingDiscovery.OperationID, true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("receipt became actionable: %v", err)
+	}
+	if _, err := cold.setupCallback(ctx, operator, rawPendingState, 10); !errors.Is(err, ErrConflict) {
+		t.Fatalf("consumed state still accepted installation: %v", err)
+	}
+	if _, err := db.Collection(githubConnectionOperationsCollection).UpdateOne(ctx, githubOperatorFilter("", operator, pendingDiscovery.OperationID), bson.M{"$set": bson.M{"expires_at": app.now().Add(-time.Second)}}); err != nil {
+		t.Fatal(err)
+	}
+	if latest, err := cold.pendingInstallation(ctx, company, "", operator); err != nil || latest.Operation != nil {
+		t.Fatalf("expired receipt was visible: %+v %v", latest, err)
+	}
+
+	fallback, err := restarted.openDiscovery(ctx, company, project, operator, "install-other-account", true)
+	if err != nil || fallback.Installations == nil || fallback.AuthorizationURL != "" {
+		t.Fatalf("changing account did not reopen the scoped picker: %+v, %v", fallback, err)
+	}
+	install, err := restarted.installDiscovery(ctx, company, project, operator, fallback.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u, err := url.Parse(install.AuthorizationURL); err != nil || !strings.HasSuffix(u.Path, "/installations/new") {
+		t.Fatalf("explicit install did not return setup link: %v", err)
+	}
+	setup, err := restarted.setupCallback(ctx, operator, stateFromURL(install), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := restarted.oauthCallback(ctx, operator, stateFromURL(setup), "code")
+	if err != nil || resolved.State != githubConnectionVerified || resolved.GitHubAccountLogin != "operator" || resolved.GitHubAccountType != "User" {
+		t.Fatalf("explicit install did not verify provider account: %+v, %v", resolved, err)
+	}
+	if _, err := restarted.finalize(ctx, company, "", operator, "new-project-discovery", input); !errors.Is(err, ErrConflict) {
+		t.Fatalf("discovery could be finalized directly: %v", err)
+	}
+	newProject := "project-onboarded"
+	if _, err := store.createAdminProject(ctx, company, operator, adminRegistration{Name: "Onboarded", Slug: newProject, Operation: "new-project", DiscoveryOperation: "new-project-discovery"}); err != nil {
+		t.Fatal(err)
+	}
+	binding := githubConnectionStartRequest{OperationID: "bind-discovery", Role: "visual", Action: "connect",
+		ExpectedRoleRevision: &zero, ExpectedConnectionRevision: &zero, DiscoveryOperation: "new-project-discovery", allowCompanyDiscovery: true}
+	const olderProject = "older-project"
+	if _, err := store.createAdminProject(ctx, company, operator, adminRegistration{Name: "Older", Slug: olderProject, Operation: "older-project"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.start(ctx, company, olderProject, operator, binding); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Company discovery attached to an unrelated Project from the same creator: %v", err)
+	}
+	withoutCompanyAuthority := binding
+	withoutCompanyAuthority.allowCompanyDiscovery = false
+	if _, err := restarted.start(ctx, company, newProject, operator, withoutCompanyAuthority); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Company discovery attached without Company write authority: %v", err)
+	}
+	if result, err := restarted.start(ctx, company, newProject, operator, binding); err != nil || result.State != githubConnectionVerified || result.AuthorizationURL != "" {
+		t.Fatalf("bind verified discovery: %+v, %v", result, err)
+	}
+	double := binding
+	double.OperationID = "bind-discovery-again"
+	if _, err := restarted.start(ctx, company, newProject, operator, double); !errors.Is(err, ErrConflict) {
+		t.Fatalf("discovery was used for a second operation: %v", err)
+	}
+	bindInput := githubConnectionFinalizeRequest{GitHubRepositoryID: 33, ExpectedRoleRevision: &zero, ExpectedConnectionRevision: &zero}
+	if result, err := restarted.finalize(ctx, company, newProject, operator, binding.OperationID, bindInput); err != nil || result.State != githubConnectionCompleted {
+		t.Fatalf("complete verified binding: %+v, %v", result, err)
+	}
+
+	// An unexpired credential must not make consumed or expired discovery
+	// records eligible for provider repository reads.
+	_, consumed, err := restarted.load(ctx, company, "", operator, discovery.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.users[githubAdminKey(company, consumed)] = restarted.authorizations[scope].token
+	beforeReads := repositoryReads.Load()
+	if _, err := restarted.repositories(ctx, company, "", operator, discovery.OperationID, 1); !errors.Is(err, ErrConflict) || repositoryReads.Load() != beforeReads {
+		t.Fatalf("consumed discovery reached GitHub: %v", err)
+	}
+	expiring, err := restarted.openDiscovery(ctx, company, project, operator, "expiring-repositories", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.selectDiscoveryInstallation(ctx, company, project, operator, expiring.OperationID, 9); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.repositories(ctx, company, project, operator, expiring.OperationID, 1); err != nil {
+		t.Fatalf("live discovery cannot list repositories: %v", err)
+	}
+	if _, err := db.Collection(githubConnectionOperationsCollection).UpdateOne(ctx, bson.M{"operation_id": expiring.OperationID}, bson.M{"$set": bson.M{"expires_at": app.now().Add(time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	beforeReads = repositoryReads.Load()
+	clockBeforeExpiry := app.now
+	afterDiscoveryExpiry := clockBeforeExpiry().Add(2 * time.Minute)
+	app.now = func() time.Time { return afterDiscoveryExpiry }
+	_, err = restarted.repositories(ctx, company, project, operator, expiring.OperationID, 1)
+	app.now = clockBeforeExpiry
+	if !errors.Is(err, ErrConflict) || repositoryReads.Load() != beforeReads {
+		t.Fatalf("expired discovery reached GitHub: %v", err)
+	}
+
+	public := githubConnectionStartRequest{OperationID: "create-public", Role: "visual", Action: "create",
+		ExpectedRoleRevision: &zero, ExpectedConnectionRevision: &zero, TargetAccountID: 18, TargetRepositoryName: "public", Visibility: "public"}
+	// The older Project still has no repository binding after the denied attach.
+	publicStart, err := admin.start(ctx, company, olderProject, operator, public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicOAuth, err := admin.setupCallback(ctx, operator, stateFromURL(publicStart), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.oauthCallback(ctx, operator, stateFromURL(publicOAuth), "code"); err != nil {
+		t.Fatal(err)
+	}
+	changedVisibility := public
+	changedVisibility.Visibility = "private"
+	if _, err := admin.start(ctx, company, olderProject, operator, changedVisibility); !errors.Is(err, ErrConflict) {
+		t.Fatalf("a visibility-only change was accepted as a replay: %v", err)
+	}
+	publicFinalize := githubConnectionFinalizeRequest{ExpectedRoleRevision: &zero, ExpectedConnectionRevision: &zero}
+	for range 2 {
+		result, err := admin.finalize(ctx, company, olderProject, operator, public.OperationID, publicFinalize)
+		if err != nil || result.State != githubConnectionCompleted || result.Repository == nil || result.Repository.Branch != "trunk" || creates.Load() != 3 {
+			t.Fatalf("public create/replay did not preserve receipt and avoid another POST: %+v, %v", result, err)
+		}
+	}
+	var publicRecord bson.M
+	if err := db.Collection(githubConnectionOperationsCollection).FindOne(ctx, bson.M{"operation_id": public.OperationID}).Decode(&publicRecord); err != nil || publicRecord["result_repository_visibility"] != "public" {
+		t.Fatalf("public visibility absent from durable receipt: %v", err)
+	}
+
+	for _, id := range []string{"revoked-status", "revoked-retry"} {
+		if state, err := restarted.openDiscovery(ctx, company, "", operator, id, false); err != nil || state.Installations == nil {
+			t.Fatalf("could not prepare live authorization: %+v, %v", state, err)
+		}
+	}
+	revokeUserAuthorization.Store(true)
+	revoked, err := restarted.status(ctx, company, "", operator, "revoked-status")
+	if err != nil || revoked.State != githubConnectionPending || revoked.AuthorizationURL != "" || revoked.Installations != nil {
+		t.Fatalf("passive status did not make revocation recoverable: %+v, %v", revoked, err)
+	}
+	if _, ok := restarted.authorizations[scope]; ok {
+		t.Fatal("denied credential remained in Company scope")
+	}
+	replacement := githubUserAuthorization{token: githubAppToken{value: "newer-user-token", expiresAt: app.now().Add(time.Minute)}, githubUserID: 81}
+	restarted.authorizations[scope] = replacement
+	for _, id := range []string{"revoked-status", "revoked-retry"} {
+		resumed, err := restarted.openDiscovery(ctx, company, "", operator, id, true)
+		if err != nil || !strings.Contains(resumed.AuthorizationURL, "/login/oauth/authorize?") {
+			t.Fatalf("explicit retry did not reauthorize %s: %+v, %v", id, resumed, err)
+		}
+	}
+	if restarted.authorizations[scope] != replacement {
+		t.Fatal("revocation removed a newer scoped credential")
+	}
+	revokeUserAuthorization.Store(false)
+
+	originalClock := app.now
+	expiredAt := originalClock().Add(2 * time.Hour)
+	app.now = func() time.Time { return expiredAt }
+	defer func() { app.now = originalClock }()
+	expiredSelection, err := restarted.status(ctx, company, project, operator, fallback.OperationID)
+	if err != nil || !expiredSelection.DiscoveryExpired || expiredSelection.State != githubConnectionPending || expiredSelection.GitHubAccountLogin != "" {
+		t.Fatalf("expired saved discovery looked authorized: %+v, %v", expiredSelection, err)
+	}
+	expired, err := restarted.openDiscovery(ctx, company, "", operator, "expired-discovery", false)
+	if err != nil || expired.Installations != nil || expired.AuthorizationURL != "" {
+		t.Fatalf("expired authorization opened the picker: %+v, %v", expired, err)
+	}
+	fresh, err := restarted.openDiscovery(ctx, company, "", operator, "expired-discovery", true)
+	if err != nil || !strings.Contains(fresh.AuthorizationURL, "/login/oauth/authorize?") {
+		t.Fatalf("explicit connection did not reauthorize after expiry: %+v, %v", fresh, err)
 	}
 
 }

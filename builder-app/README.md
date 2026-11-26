@@ -87,7 +87,9 @@ desde que o conteúdo não apareça nos logs. Não publique a saída expandida d
 | `BUILDER_GITHUB_APP_ID`, `BUILDER_GITHUB_APP_SLUG`, `BUILDER_GITHUB_APP_CLIENT_ID`, `BUILDER_GITHUB_APP_CLIENT_SECRET` | Identidade e configuração do App do ambiente. |
 | `BUILDER_GITHUB_APP_KEY_PATH` | Caminho absoluto do PEM no host, montado somente para leitura no Registry. Diretórios privados e arquivo legível pelo UID real do Registry. |
 | `BUILDER_GITHUB_ACCESS_ISSUER`, `BUILDER_GITHUB_ACCESS_AUDIENCE` | Issuer do time Cloudflare e audiência exata da aplicação Access desse host. |
-| `BUILDER_GITHUB_ACCESS_OPERATORS` | Objeto JSON de `sub` verificado do Access para lista de Companies autorizadas, por exemplo `{"subject-exemplo":["company-exemplo"]}`. |
+| `BUILDER_GITHUB_ACCESS_OPERATORS` | Objeto JSON de `sub` verificado do Access para lista de Companies autorizadas, por exemplo `{"subject-exemplo":["company-exemplo"]}`. Use `{}` quando houver somente criadores de Company configurados. |
+| `BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS` | O Compose remoto habilita a criação de Companies e Projects para todos os usuários autenticados pelo Cloudflare Access. Use `false` para voltar às permissões configuradas. A autorização GitHub continua individual. |
+| `BUILDER_ADMIN_COMPANY_CREATORS` | Lista JSON de `sub` verificado do Access que pode criar Companies, por exemplo `["subject-exemplo"]`. Com o modo compartilhado desabilitado, o padrão `[]` desabilita a criação. O criador de uma Company pode cadastrar Projects nela. Cada Project registra o criador com acesso ao seu vínculo GitHub. |
 
 Confirme DNS, TLS, acesso ao GHCR, conectividade de saída com GitHub e Atlas ou
 Mongo, capacidade de disco/memória e o controle Mongo selecionado. Descubra

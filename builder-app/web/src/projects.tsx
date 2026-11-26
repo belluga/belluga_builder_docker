@@ -530,8 +530,27 @@ function BacklogView({ roadmap, projectID, todoID }: { roadmap?: RoadmapProjecti
   </section>;
 }
 
+function AdministrationMenu({ company = "", project = "" }: { company?: string; project?: string }) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/admin/companies", { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(result => { if (!controller.signal.aborted) setAvailable(!!result?.can_create_company || !!result?.companies?.length); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  if (!available) return null;
+  const query = new URLSearchParams();
+  if (company) query.set("origin_company_id", company);
+  if (project) query.set("origin_project_id", project);
+  return <details className="onboarding-account-menu"><summary aria-label="Abrir menu da conta">♙</summary>
+    <div><a href={"/admin" + (query.size ? "?" + query : "")}><strong>⚙ Administração</strong><small>Gerenciar empresas e projetos</small></a></div>
+  </details>;
+}
+
 function PortalHeader({ children }: { children: ReactNode }) {
-  return <header className="projects-mast"><a href="/">Builder <span>Project directory</span></a>{children}</header>;
+  return <header className="projects-mast"><a href="/">Builder <span>Project directory</span></a>{children}<AdministrationMenu /></header>;
 }
 
 function ProjectCard({ project, portfolio, onOpen }: { project: Project; portfolio?: PortfolioProject; onOpen: () => void }) {
@@ -696,6 +715,7 @@ export function Projects({ behindGitHubAdmin = false }: { behindGitHubAdmin?: bo
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
+      {!behindGitHubAdmin && <AdministrationMenu company={selection.companyID} project={selection.projectID} />}
     </div>
     <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a>
       {githubAdminPath && githubAdminProject === githubAdminPath && <a className="github-admin-project-link" href={`/admin/github?${new URLSearchParams({ company_id: selection.companyID, project_id: selection.projectID })}`}>Gerenciar conexão GitHub</a>}

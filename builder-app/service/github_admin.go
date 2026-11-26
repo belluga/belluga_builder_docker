@@ -40,10 +40,12 @@ func newGitHubAdminProxy(webRoot string) *githubAdminProxy {
 func registerGitHubAdmin(mux *http.ServeMux, proxy *githubAdminProxy) {
 	// Reserve the namespace even when remote administration is disabled.
 	mux.HandleFunc(githubAdminPath, proxy.page)
+	registerBuilderOnboarding(mux, proxy)
 	mux.HandleFunc(githubAdminPath+"/", func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not_found") })
 	const roles = githubAdminPath + "/companies/{company}/projects/{project}"
 	const op = roles + "/operations"
 	mux.HandleFunc("GET "+roles, proxy.operation(""))
+	mux.HandleFunc("GET "+roles+"/pending-installation", proxy.operation("/pending-installation"))
 	mux.HandleFunc("POST "+op, proxy.operation("/operations"))
 	mux.HandleFunc("GET "+op+"/{operation}", proxy.operation("/operations/{operation}"))
 	mux.HandleFunc("GET "+op+"/{operation}/repositories", proxy.operation("/operations/{operation}/repositories"))
@@ -86,7 +88,7 @@ func (p *githubAdminProxy) call(r *http.Request, method, path string, query url.
 	req.Header.Set(githubAdminAssertion, r.Header.Get(githubAdminAssertion))
 	if method == http.MethodPost {
 		req.Header.Set("Origin", r.Header.Get("Origin"))
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", r.Header.Get("Content-Type"))
 	}
 	res, err := p.client.Do(req)
 	if err != nil {
@@ -112,6 +114,10 @@ func (p *githubAdminProxy) page(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err == nil && githubAdminSingle(q, "new_project") == "1" && validRegistrationID(githubAdminSingle(q, "company_id")) && !q.Has("project_id") {
+		p.serveOnboardingPage(w, r)
+		return
+	}
 	if err != nil || !validRegistrationID(githubAdminSingle(q, "company_id")) || !validRegistrationID(githubAdminSingle(q, "project_id")) {
 		writeError(w, http.StatusBadRequest, "github_project_required")
 		return
@@ -186,11 +192,21 @@ func (p *githubAdminProxy) callback(oauth bool) http.HandlerFunc {
 			key, path = "code", "/internal/v1/admin/github/oauth/callback"
 		}
 		state, value := githubAdminSingle(q, "state"), githubAdminSingle(q, key)
-		if err != nil || state == "" || value == "" {
+		setupAction := githubAdminSingle(q, "setup_action")
+		pending := !oauth && setupAction == "request" && !q.Has("installation_id") && len(q) == 2
+		validSetupAction := setupAction == "" || setupAction == "install" || setupAction == "update" || pending
+		if err != nil || state == "" || (!pending && value == "") || (!oauth && (len(q["setup_action"]) > 1 || !validSetupAction)) {
 			writeError(w, http.StatusBadRequest, "github_callback_invalid")
 			return
 		}
-		status, data := p.call(r, http.MethodGet, path, url.Values{"state": {state}, key: {value}}, nil)
+		upstreamQuery := url.Values{"state": {state}}
+		if pending {
+			upstreamQuery.Set("setup_action", "request")
+		} else {
+			upstreamQuery.Set(key, value)
+		}
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		status, data := p.call(r, http.MethodGet, path, upstreamQuery, nil)
 		if status != http.StatusOK {
 			writeError(w, status, "github_callback_rejected")
 			return
@@ -200,8 +216,9 @@ func (p *githubAdminProxy) callback(oauth bool) http.HandlerFunc {
 			Project          string `json:"project_id"`
 			Operation        string `json:"operation_id"`
 			AuthorizationURL string `json:"authorization_url"`
+			State            string `json:"state"`
 		}
-		if json.Unmarshal(data, &result) != nil || !validRegistrationID(result.Company) || !validRegistrationID(result.Project) || !validRegistrationID(result.Operation) {
+		if json.Unmarshal(data, &result) != nil || !validRegistrationID(result.Company) || (result.Project != "" && !validRegistrationID(result.Project)) || !validRegistrationID(result.Operation) || (pending && (result.State != "awaiting_organization_approval" || result.AuthorizationURL != "")) {
 			writeError(w, http.StatusBadGateway, "github_callback_unavailable")
 			return
 		}
@@ -213,7 +230,12 @@ func (p *githubAdminProxy) callback(oauth bool) http.HandlerFunc {
 			http.Redirect(w, r, result.AuthorizationURL, http.StatusSeeOther)
 			return
 		}
-		q = url.Values{"company_id": {result.Company}, "project_id": {result.Project}, "operation_id": {result.Operation}}
+		q = url.Values{"company_id": {result.Company}, "operation_id": {result.Operation}}
+		if result.Project == "" {
+			q.Set("new_project", "1")
+		} else {
+			q.Set("project_id", result.Project)
+		}
 		http.Redirect(w, r, githubAdminPath+"?"+q.Encode(), http.StatusSeeOther)
 	}
 }

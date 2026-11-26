@@ -89,6 +89,16 @@ var companySchemaCatalog = []companySchemaStep{{
 	verify: func(ctx context.Context, m *MongoStore, company Company) error {
 		return verifyGitHubConnectionIndexes(ctx, m.client.Database(company.DatabaseName))
 	},
+}, {
+	version:    5,
+	definition: "company-schema-v5:github-pending-installation-by-operator",
+	apply: func(ctx context.Context, m *MongoStore, company Company) error {
+		return ensureGitHubIndexes(ctx, m.client.Database(company.DatabaseName), []githubConnectionIndex{pendingGitHubInstallationIndex()})
+	},
+	verify: func(ctx context.Context, m *MongoStore, company Company) error {
+		index := pendingGitHubInstallationIndex()
+		return verifyCompanyIndexOptions(ctx, m.client.Database(company.DatabaseName).Collection(index.collection), index.name, index.keys, index.unique, index.expirySeconds, index.partial...)
+	},
 }}
 
 func (m *MongoStore) schemaCatalog() []companySchemaStep {

@@ -101,3 +101,33 @@ func TestGitHubAdminCallbackRejectsExternalRedirectAndCleansSecrets(t *testing.T
 		t.Fatalf("wrong callback redirect: %d %q", res.Code, res.Header().Get("Location"))
 	}
 }
+
+func TestGitHubAdminSetupRequestShowsPendingApproval(t *testing.T) {
+	const host = "builder.example"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/admin/github/callback" || r.URL.Query().Get("setup_action") != "request" || r.URL.Query().Has("installation_id") || r.URL.Query().Get("state") != "private-locator" {
+			t.Errorf("unexpected callback request %s", r.URL.Path)
+		}
+		_, _ = io.WriteString(w, `{"company_id":"alpha","operation_id":"github-1","state":"awaiting_organization_approval"}`)
+	}))
+	defer upstream.Close()
+	t.Setenv("DELPHI_BUILDER_REGISTRY_URL", upstream.URL)
+	t.Setenv("BUILDER_GITHUB_ADMIN_ORIGIN", "https://"+host)
+	handler := registeredHandler("", t.TempDir(), host)
+	get := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "https://"+host+path, nil)
+		req.Header.Set(githubAdminAssertion, "signed-assertion")
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, req)
+		return out
+	}
+	response := get("/admin/github/callback?setup_action=request&state=private-locator")
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != "/admin/github?company_id=alpha&new_project=1&operation_id=github-1" {
+		t.Fatalf("unexpected pending redirect: %d %q", response.Code, response.Header().Get("Location"))
+	}
+	for _, path := range []string{"/admin/github/callback?setup_action=request", "/admin/github/callback?setup_action=install&state=locator", "/admin/github/oauth/callback?setup_action=request&state=locator"} {
+		if got := get(path); got.Code != http.StatusBadRequest {
+			t.Fatalf("incomplete callback accepted: %s returned %d", path, got.Code)
+		}
+	}
+}

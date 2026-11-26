@@ -45,6 +45,8 @@ services:
       BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
       BUILDER_GITHUB_ACCESS_ISSUER: ${BUILDER_GITHUB_ACCESS_ISSUER:?set the verified Cloudflare Access issuer}
       BUILDER_GITHUB_ACCESS_AUDIENCE: ${BUILDER_GITHUB_ACCESS_AUDIENCE:?set the exact Access application audience}
+      BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS: ${BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS:-true}
+      BUILDER_ADMIN_COMPANY_CREATORS: ${BUILDER_ADMIN_COMPANY_CREATORS:-[]}
       BUILDER_GITHUB_ACCESS_OPERATORS: ${BUILDER_GITHUB_ACCESS_OPERATORS:?set the JSON subject-to-Company allowlist}
     depends_on:
       registry-migrate:

@@ -172,23 +172,49 @@ func TestGitHubAppOrganizationCreateDistinguishesDenialFromUncertainty(t *testin
 	installation := githubAppInstallation{ID: 9, AppID: 42, Account: githubAppAccount{ID: 18, Login: "company", Type: "Organization"}}
 	token := githubAppToken{"test-user", client.now().Add(time.Hour)}
 	ctx := context.Background()
-	if repo, err := client.createOrganizationRepository(ctx, token, installation, "repo"); err != nil || repo.ID != 33 {
+	if repo, err := client.createOrganizationRepository(ctx, token, installation, "repo", true); err != nil || repo.ID != 33 {
 		t.Fatalf("valid receipt rejected: %v", err)
 	}
 	status = 403
-	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo"); !errors.Is(err, errGitHubAccessDenied) {
+	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo", true); !errors.Is(err, errGitHubAccessDenied) {
 		t.Fatal("definitive denial was not propagated")
 	}
 	status = 503
-	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo"); !errors.Is(err, errGitHubCreationUncertain) {
+	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo", true); !errors.Is(err, errGitHubCreationUncertain) {
 		t.Fatal("upstream failure did not preserve uncertain effect")
 	}
 	status, body = 201, `{}`
-	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo"); !errors.Is(err, errGitHubCreationUncertain) {
+	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo", true); !errors.Is(err, errGitHubCreationUncertain) {
 		t.Fatal("invalid creation receipt was treated as definitive")
 	}
 	status = 302
-	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo"); !errors.Is(err, errGitHubCreationUncertain) || calls != 5 {
+	if _, err := client.createOrganizationRepository(ctx, token, installation, "repo", true); !errors.Is(err, errGitHubCreationUncertain) || calls != 5 {
 		t.Fatal("redirect followed or creation outcome uncertain was lost")
+	}
+}
+
+func TestGitHubAppOrganizationCreateConfirmsPublicVisibility(t *testing.T) {
+	const publicRepo = `{"id":33,"node_id":"R_33","full_name":"company/repo","default_branch":"trunk","owner":{"id":18,"login":"company"},"private":false}`
+	body := publicRepo
+	client := githubAppTestClient(t, func(r *http.Request) (*http.Response, error) {
+		var fields struct {
+			Private *bool `json:"private"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&fields); err != nil || fields.Private == nil || *fields.Private {
+			t.Fatalf("public create did not send private=false: %+v, %v", fields, err)
+		}
+		return githubAppTestResponse(201, body), nil
+	})
+	installation := githubAppInstallation{ID: 9, AppID: 42, Account: githubAppAccount{ID: 18, Login: "company", Type: "Organization"}}
+	token := githubAppToken{"test-user", client.now().Add(time.Hour)}
+	ctx := context.Background()
+	if result, err := client.createOrganizationRepository(ctx, token, installation, "repo", false); err != nil || result.DefaultBranch != "trunk" {
+		t.Fatalf("public receipt rejected: %+v, %v", result, err)
+	}
+	for _, visibility := range []string{`,"private":true`, ""} {
+		body = strings.Replace(publicRepo, `,"private":false`, visibility, 1)
+		if _, err := client.createOrganizationRepository(ctx, token, installation, "repo", false); !errors.Is(err, errGitHubCreationUncertain) {
+			t.Fatalf("unverified public result was accepted with receipt %s: %v", body, err)
+		}
 	}
 }

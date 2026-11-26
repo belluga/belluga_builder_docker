@@ -44,7 +44,10 @@ const (
 	githubConnectionFailed                   githubConnectionState = "failed"
 )
 
+const githubConnectionAwaitingOrganizationApproval githubConnectionState = "awaiting_organization_approval"
+
 type githubConnectionOperation struct {
+	InstallationRequestedAt        *time.Time             `bson:"installation_requested_at,omitempty"`
 	ProjectID                      string                 `bson:"project_id"`
 	OperationID                    string                 `bson:"operation_id"`
 	OperatorIssuer                 string                 `bson:"operator_issuer"`
@@ -58,12 +61,17 @@ type githubConnectionOperation struct {
 	TargetRepositoryName           string                 `bson:"target_repository_name,omitempty"`
 	TargetRepositoryNameNormalized string                 `bson:"target_repository_name_normalized,omitempty"`
 	PublicationBranch              string                 `bson:"publication_branch,omitempty"`
+	Visibility                     string                 `bson:"visibility,omitempty"`
+	ResultRepositoryVisibility     string                 `bson:"result_repository_visibility,omitempty"`
 	SetupNonce                     githubConnectionNonce  `bson:"setup_nonce"`
 	OAuthNonce                     *githubConnectionNonce `bson:"oauth_nonce,omitempty"`
 	ExpiresAt                      *time.Time             `bson:"expires_at,omitempty"`
 	SetupInstallationID            int64                  `bson:"setup_installation_id,omitempty"`
 	VerifiedInstallationID         int64                  `bson:"verified_installation_id,omitempty"`
 	GitHubOperatorID               int64                  `bson:"github_operator_id,omitempty"`
+	GitHubAccountType              string                 `bson:"github_account_type,omitempty"`
+	DiscoveryProject               string                 `bson:"discovery_project,omitempty"`
+	DiscoveryBindingOperation      string                 `bson:"discovery_binding_operation,omitempty"`
 	GitHubAccountLogin             string                 `bson:"github_account_login,omitempty"`
 	FinalizeDigest                 string                 `bson:"finalize_digest,omitempty"`
 	State                          githubConnectionState  `bson:"state"`
@@ -103,8 +111,20 @@ func githubConnectionIndexes() []githubConnectionIndex {
 	}
 }
 
+func pendingGitHubInstallationIndex() githubConnectionIndex {
+	return githubConnectionIndex{
+		collection: githubConnectionOperationsCollection, name: "github_pending_installation_by_operator",
+		keys:    bson.D{{Key: "project_id", Value: 1}, {Key: "operator_issuer", Value: 1}, {Key: "operator_subject", Value: 1}, {Key: "state", Value: 1}, {Key: "installation_requested_at", Value: -1}, {Key: "operation_id", Value: -1}},
+		partial: []bson.M{{"state": githubConnectionAwaitingOrganizationApproval}},
+	}
+}
+
 func ensureGitHubConnectionIndexes(ctx context.Context, database *mongo.Database) error {
-	for _, index := range githubConnectionIndexes() {
+	return ensureGitHubIndexes(ctx, database, githubConnectionIndexes())
+}
+
+func ensureGitHubIndexes(ctx context.Context, database *mongo.Database, indexes []githubConnectionIndex) error {
+	for _, index := range indexes {
 		builder := options.Index().SetName(index.name)
 		if index.unique {
 			builder.SetUnique(true)

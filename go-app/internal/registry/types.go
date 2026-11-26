@@ -41,6 +41,9 @@ type Artifact struct {
 }
 
 type Company struct {
+	CreatedBy        *registrationGrant       `json:"-" bson:"created_by,omitempty"`
+	HasAdminImage    bool                     `json:"-" bson:"has_admin_image,omitempty"`
+	AdminImage       *companyAdminImage       `json:"-" bson:"admin_image,omitempty"`
 	ObjectID         bson.ObjectID            `json:"-" bson:"_id,omitempty"`
 	ID               string                   `json:"id" bson:"id"`
 	Name             string                   `json:"name" bson:"name"`

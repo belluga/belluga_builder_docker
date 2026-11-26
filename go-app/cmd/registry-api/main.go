@@ -81,15 +81,17 @@ func main() {
 		log.Fatal("private proof Reader is unavailable")
 	}
 	if err := store.ConfigureGitHubApp(registry.GitHubAppConfig{
-		AppID:           os.Getenv("BUILDER_GITHUB_APP_ID"),
-		Slug:            os.Getenv("BUILDER_GITHUB_APP_SLUG"),
-		ClientID:        os.Getenv("BUILDER_GITHUB_APP_CLIENT_ID"),
-		ClientSecret:    os.Getenv("BUILDER_GITHUB_APP_CLIENT_SECRET"),
-		PrivateKeyFile:  os.Getenv("BUILDER_GITHUB_APP_PRIVATE_KEY_FILE"),
-		AdminOrigin:     os.Getenv("BUILDER_GITHUB_ADMIN_ORIGIN"),
-		AccessIssuer:    os.Getenv("BUILDER_GITHUB_ACCESS_ISSUER"),
-		AccessAudience:  os.Getenv("BUILDER_GITHUB_ACCESS_AUDIENCE"),
-		AccessOperators: os.Getenv("BUILDER_GITHUB_ACCESS_OPERATORS"),
+		AppID:                     os.Getenv("BUILDER_GITHUB_APP_ID"),
+		Slug:                      os.Getenv("BUILDER_GITHUB_APP_SLUG"),
+		ClientID:                  os.Getenv("BUILDER_GITHUB_APP_CLIENT_ID"),
+		ClientSecret:              os.Getenv("BUILDER_GITHUB_APP_CLIENT_SECRET"),
+		PrivateKeyFile:            os.Getenv("BUILDER_GITHUB_APP_PRIVATE_KEY_FILE"),
+		AdminOrigin:               os.Getenv("BUILDER_GITHUB_ADMIN_ORIGIN"),
+		AccessIssuer:              os.Getenv("BUILDER_GITHUB_ACCESS_ISSUER"),
+		AccessAudience:            os.Getenv("BUILDER_GITHUB_ACCESS_AUDIENCE"),
+		AccessOperators:           os.Getenv("BUILDER_GITHUB_ACCESS_OPERATORS"),
+		CompanyCreators:           os.Getenv("BUILDER_ADMIN_COMPANY_CREATORS"),
+		SharedAuthenticatedAccess: os.Getenv("BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS") == "true",
 	}); err != nil {
 		log.Fatal("GitHub App administration configuration is invalid or unavailable")
 	}
