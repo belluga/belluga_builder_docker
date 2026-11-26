@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -52,9 +54,10 @@ type githubConnectionRepository struct {
 }
 
 type githubInstallationChoice struct {
-	ID    int64  `json:"installation_id"`
-	Login string `json:"login"`
-	Type  string `json:"type"`
+	ID          int64  `json:"installation_id"`
+	Login       string `json:"login"`
+	Type        string `json:"type"`
+	SettingsURL string `json:"settings_url,omitempty"`
 }
 
 type githubConnectionStatus struct {
@@ -66,6 +69,7 @@ type githubConnectionStatus struct {
 	OperationID             string                      `json:"operation_id"`
 	CompanyID               string                      `json:"company_id"`
 	ProjectID               string                      `json:"project_id"`
+	SettingsURL             string                      `json:"settings_url,omitempty"`
 	AuthorizationURL        string                      `json:"authorization_url,omitempty"`
 	GitHubAccountLogin      string                      `json:"github_account_login,omitempty"`
 	GitHubAccountType       string                      `json:"github_account_type,omitempty"`
@@ -153,12 +157,33 @@ func githubRequestDigest(value any) string {
 	return sourceHash(encoded)
 }
 
+var githubInstallationLogin = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$`)
+
+func githubInstallationSettingsURL(id int64, login, accountType string) string {
+	if id <= 0 || !githubInstallationLogin.MatchString(login) {
+		return ""
+	}
+	const origin = "https://github.com"
+	suffix := "/settings/installations/" + strconv.FormatInt(id, 10)
+	switch accountType {
+	case "User":
+		return origin + suffix
+	case "Organization":
+		return origin + "/organizations/" + login + suffix
+	default:
+		return ""
+	}
+}
+
 func githubOperationStatus(company string, op githubConnectionOperation) githubConnectionStatus {
 	out := githubConnectionStatus{CompanyID: company, ProjectID: op.ProjectID, OperationID: op.OperationID, State: op.State, GitHubAccountLogin: op.GitHubAccountLogin, GitHubAccountType: op.GitHubAccountType}
 	if op.State == githubConnectionAwaitingOrganizationApproval {
 		out.InstallationRequestedAt, out.ExpiresAt = op.InstallationRequestedAt, op.ExpiresAt
 		out.GitHubAccountLogin, out.GitHubAccountType = "", ""
 		return out
+	}
+	if op.Action == "discover" && op.State == githubConnectionVerified {
+		out.SettingsURL = githubInstallationSettingsURL(op.VerifiedInstallationID, op.GitHubAccountLogin, op.GitHubAccountType)
 	}
 	if op.ResultRepositoryID > 0 {
 		out.Repository = &githubConnectionRepository{ID: op.ResultRepositoryID, NodeID: op.ResultRepositoryNodeID, FullName: op.ResultRepositoryFullName, Branch: op.ResultRepositoryDefaultBranch}

@@ -7,8 +7,8 @@ type Visibility = 'private' | 'public';
 type Repository = { github_repository_id: number; repository_full_name: string; default_branch: string; connection_revision?: number };
 type LinkedRepository = { repository_id?: string; github_repository_id?: number; github_account_id?: number; connection_revision?: number };
 type Roles = { visual: LinkedRepository & { revision: number; publication_branch?: string }; implementation: { revision: number; repositories: LinkedRepository[] } };
-type Installation = { installation_id: number; login: string; type: string };
-type Operation = { installation_requested_at?: string; expires_at?: string; state: string; operation_id: string; project_id?: string; installations?: Installation[]; discovery_expired?: boolean; authorization_url?: string; github_account_login?: string; github_account_type?: string; repository?: Repository };
+type Installation = { installation_id: number; login: string; type: string; settings_url?: string };
+type Operation = { installation_requested_at?: string; expires_at?: string; state: string; operation_id: string; project_id?: string; installations?: Installation[]; discovery_expired?: boolean; authorization_url?: string; settings_url?: string; github_account_login?: string; github_account_type?: string; repository?: Repository };
 type Intent = {
   operation_id: string; role: Role; action: Action; expected_role_revision: number;
   expected_connection_revision: number; target_account_id?: number; discovery_operation_id?: string; visibility?: Visibility;
@@ -45,6 +45,11 @@ function savedDraft(key: string): Draft | null {
 function remember(key: string, draft: Draft | null) {
   if (draft) sessionStorage.setItem(key, JSON.stringify(draft));
   else sessionStorage.removeItem(key);
+}
+
+function InstallationSettingsLink({ url }: { url?: string }) {
+  if (!url || !/^https:\/\/github\.com(?:\/organizations\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?)?\/settings\/installations\/[1-9][0-9]*$/.test(url)) return null;
+  return <a className="github-settings-link" href={url} target="_blank" rel="noopener noreferrer">Configurar acesso</a>;
 }
 
 function goToGitHub(raw: string) {
@@ -401,6 +406,15 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
       }
     }
   }, [repositoryPath]);
+  const refreshRepositories = () => {
+    repositoryRequest.current?.abort();
+    repositoryRequest.current = null;
+    setSelected(null);
+    setRepositories([]);
+    setPage(0);
+    setHasNext(false);
+    void loadRepositories(1);
+  };
   useEffect(() => {
     const end = repositoryEnd.current;
     if (!choosingRepository || repositoryLoading || repositoryError || !end) return;
@@ -501,17 +515,22 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
               <strong>Escolha uma conta ou organização do GitHub</strong>
               {pendingInstallation && <p>Se a organização solicitada não aparecer, a instalação ou o acesso ao repositório ainda não foi confirmado.</p>}
               {!pendingInstallation && discovery.installations.length === 0 && <p>Nenhuma instalação do GitHub App está disponível para esta conta.</p>}
-              {discovery.installations.map(installation => <button key={installation.installation_id} type="button" disabled={busy} onClick={() => chooseInstallation(installation)}>
-                <strong>@{installation.login}</strong>
-                <small>{installation.type === 'Organization' ? 'Organização' : 'Conta pessoal'}</small>
-              </button>)}
+              {discovery.installations.map(installation => <div className="github-installation-row" key={installation.installation_id}>
+                <button type="button" disabled={busy} onClick={() => chooseInstallation(installation)}>
+                  <strong>@{installation.login}</strong>
+                  <small>{installation.type === 'Organization' ? 'Organização' : 'Conta pessoal'}</small>
+                </button>
+                <InstallationSettingsLink url={installation.settings_url} />
+              </div>)}
               <button type="button" disabled={busy} onClick={() => chooseInstallation()}>Instalar o GitHub App em outra conta</button>
               {error && <button type="button" disabled={busy} onClick={() => openDiscovery()}>Atualizar contas disponíveis</button>}
             </div>
           </div>}
           {loaded && allowDraftEntry && roles && discovery?.state === 'verified' && <div className="github-admin-flow">
             <div className="github-admin-card github-connected" role="status"><GitHubMark /><span className="github-connected-check" aria-hidden="true">✓</span><div><strong>GitHub conectado</strong><small>@{discovery.github_account_login}</small></div>
-              <button type="button" disabled={busy} onClick={() => openDiscovery()}>Trocar conta</button></div>
+              <div className="github-connected-actions"><InstallationSettingsLink url={discovery.settings_url} />
+                <button type="button" disabled={busy} onClick={() => openDiscovery()}>Trocar conta</button>
+              </div></div>
             {!newProject && <label>Papel do repositório<select value={role} onChange={event => setRole(event.target.value as Role)}>
               <option value="visual">Artefatos visuais</option><option value="implementation">Código e provas</option>
             </select></label>}
@@ -531,6 +550,7 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
               <label className="github-admin-choice"><input type="radio" name="repo-path" checked={action === 'connect'} onChange={() => setAction('connect')} /><span className="github-repo-icon" aria-hidden="true">⌕</span><span><strong>Selecionar repositório existente</strong><small>Escolha um repositório disponível na conta.</small></span></label>
               {action === 'connect' && <div className="github-repo-expansion" aria-live="polite">
                 <label><span className="github-visually-hidden">Buscar repositórios</span><input value={search} placeholder="Buscar repositórios" onChange={event => setSearch(event.target.value)} /></label>
+                <button type="button" disabled={busy} onClick={refreshRepositories}>Atualizar repositórios</button>
                 {page > 0 && !hasNext && selectable.length === 0 && <p className="github-repo-state">Nenhum repositório nesta busca.</p>}
                 {selectable.map(repo => <label key={repo.github_repository_id} className="github-admin-choice github-repo-result"><input type="radio" name="repository" checked={selected?.github_repository_id === repo.github_repository_id} onChange={() => select(repo)} /><span><strong>{repo.repository_full_name}</strong><small>{repo.default_branch}</small></span></label>)}
                 {(page === 0 || hasNext) && <div ref={repositoryEnd}>

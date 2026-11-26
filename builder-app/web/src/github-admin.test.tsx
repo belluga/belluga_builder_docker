@@ -7,8 +7,8 @@ import { AdminOnboarding } from './admin-onboarding';
 const entry = '/admin/github?company_id=alpha&project_id=site';
 const prefix = '/admin/github/companies/alpha/projects/site';
 const roles = { visual: { revision: 7, publication_branch: 'main' }, implementation: { revision: 2, repositories: [] } };
-function reply(value: unknown) {
-  return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } });
+function reply(value: unknown, status = 200) {
+  return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
 function stubFetch(request: (path: string, init?: RequestInit) => Promise<Response>) {
@@ -29,6 +29,75 @@ afterEach(() => {
 });
 
 describe('GitHub administration', () => {
+  it('opens verified installation settings separately and refreshes the selected account without losing the search', async () => {
+    history.replaceState(null, '', entry);
+    const personalSettings = 'https://github.com/settings/installations/1';
+    const orgSettings = 'https://github.com/organizations/requested/settings/installations/2';
+    const installations = [
+      { installation_id: 1, type: 'User', login: 'personal', settings_url: personalSettings },
+      { installation_id: 2, type: 'Organization', login: 'requested', settings_url: orgSettings },
+      { installation_id: 3, type: 'Organization', login: 'unrelated', settings_url: 'https://github.com.evil.example/settings/installations/3' },
+    ];
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(private notify: IntersectionObserverCallback) {}
+      observe() {
+        queueMicrotask(() => this.notify([{ isIntersecting: true } as IntersectionObserverEntry], this as unknown as IntersectionObserver));
+      }
+      disconnect() {}
+    });
+    let load = 0;
+    let lateSignal: AbortSignal | null | undefined;
+    let returnLate: (value: Response) => void = () => {};
+    const late = new Promise<Response>(resolve => { returnLate = resolve; });
+    const repo = (id: number, name: string) => ({ github_repository_id: id, repository_full_name: 'requested/' + name, default_branch: 'main' });
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === prefix) return reply(roles);
+      if (path.endsWith('/repositories?page=1')) {
+        load++;
+        if (load === 3) return reply({ error: 'github_user_authorization_required' }, 409);
+        return reply({ repositories: [load === 1 ? repo(10, 'old') : repo(11, 'new')], has_next: load === 1 });
+      }
+      if (path.endsWith('/repositories?page=2')) {
+        lateSignal = init?.signal;
+        return late;
+      }
+      expect(path).toBe(prefix + '/operations');
+      const form = JSON.parse(String(init?.body));
+      if (form.action === 'discover') return reply({ state: 'pending', operation_id: form.operation_id, installations });
+      expect(form).toMatchObject({ action: 'select-installation', installation_id: 2 });
+      return reply({ state: 'verified', operation_id: form.operation_id, github_account_login: 'requested', github_account_type: 'Organization', settings_url: orgSettings });
+    });
+    stubFetch(request);
+    render(<GitHubAdmin />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conectar GitHub' }));
+    const links = await screen.findAllByRole('link', { name: 'Configurar acesso' });
+    expect(links.map(link => link.getAttribute('href'))).toEqual([personalSettings, orgSettings]);
+    expect(links[0]).toHaveAttribute('target', '_blank');
+    expect(links[0]).toHaveAttribute('rel', 'noopener noreferrer');
+    expect(request.mock.calls.filter(([, init]) => String(init?.body).includes('select-installation'))).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: /@requested.*Organização/ }));
+    expect(await screen.findByRole('link', { name: 'Configurar acesso' })).toHaveAttribute('href', orgSettings);
+    fireEvent.click(await screen.findByRole('radio', { name: /Selecionar repositório existente/ }));
+    fireEvent.click(await screen.findByRole('radio', { name: /requested\/old/ }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Buscar repositórios' }), { target: { value: 'requested' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Papel do repositório' }), { target: { value: 'implementation' } });
+    await waitFor(() => expect(lateSignal).toBeDefined());
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar repositórios' }));
+    expect(lateSignal?.aborted).toBe(true);
+    expect(screen.getByRole('button', { name: 'Confirmar vínculo' })).toBeDisabled();
+    expect(await screen.findByRole('radio', { name: /requested\/new/ })).not.toBeChecked();
+    await act(async () => { returnLate(reply({ repositories: [repo(12, 'stale')], has_next: false })); });
+    expect(screen.queryByRole('radio', { name: /requested\/(old|stale)/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Buscar repositórios' })).toHaveValue('requested');
+    expect(screen.getByRole('combobox', { name: 'Papel do repositório' })).toHaveValue('implementation');
+    expect(load).toBe(2);
+    fireEvent.click(screen.getByRole('radio', { name: /requested\/new/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar repositórios' }));
+    expect(await screen.findByRole('button', { name: 'Retomar autorização' })).toBeInTheDocument();
+    expect(screen.queryByRole('radio', { name: /requested\/new/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Confirmar vínculo' })).toBeDisabled();
+  });
+
   it.each([false, true])('restores an organization request and refreshes with a fresh discovery (callback: %s)', async fromCallback => {
     const companyEntry = '/admin/github?company_id=alpha&new_project=1';
     const discoveryPath = '/admin/companies/alpha/github-discovery';

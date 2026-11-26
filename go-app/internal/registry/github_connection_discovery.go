@@ -100,7 +100,7 @@ func (a *githubConnectionAdmin) discoveryStatus(ctx context.Context, company str
 	out.DiscoveryExpired = !a.discoveryActive(op)
 	if out.DiscoveryExpired || !ok {
 		out.State = githubConnectionPending
-		out.GitHubAccountLogin, out.GitHubAccountType = "", ""
+		out.GitHubAccountLogin, out.GitHubAccountType, out.SettingsURL = "", "", ""
 		return out, nil
 	}
 	if op.State != githubConnectionPending || op.GitHubOperatorID <= 0 || op.SetupInstallationID > 0 {
@@ -136,7 +136,7 @@ func (a *githubConnectionAdmin) installationChoices(ctx context.Context, token g
 	choices := []githubInstallationChoice{}
 	err := a.app.userInstallations(ctx, token, func(installation githubAppInstallation) bool {
 		if selectableGitHubInstallation(installation) {
-			choices = append(choices, githubInstallationChoice{ID: installation.ID, Login: installation.Account.Login, Type: installation.Account.Type})
+			choices = append(choices, githubInstallationChoice{ID: installation.ID, Login: installation.Account.Login, Type: installation.Account.Type, SettingsURL: githubInstallationSettingsURL(installation.ID, installation.Account.Login, installation.Account.Type)})
 		}
 		return false
 	})
@@ -229,7 +229,8 @@ func (a *githubConnectionAdmin) selectDiscoveryInstallation(ctx context.Context,
 	if err := githubAdminUpdate(ctx, db, discoverySelectionFilter(op, now), bson.M{"$set": fields}); err != nil {
 		return out, err
 	}
-	op.State, op.GitHubAccountLogin, op.GitHubAccountType = githubConnectionVerified, installation.Account.Login, installation.Account.Type
+	op.State, op.VerifiedInstallationID = githubConnectionVerified, installation.ID
+	op.GitHubAccountLogin, op.GitHubAccountType = installation.Account.Login, installation.Account.Type
 	return githubOperationStatus(company, op), nil
 }
 

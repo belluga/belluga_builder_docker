@@ -381,7 +381,9 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 		t.Fatalf("OAuth unexpectedly selected an installation: %+v, %v", pending, err)
 	}
 	picker, err := restarted.status(ctx, company, "", operator, discovery.OperationID)
-	if err != nil || picker.Installations == nil || len(*picker.Installations) != 2 || (*picker.Installations)[0].ID != 9 || (*picker.Installations)[1].ID != 10 {
+	if err != nil || picker.Installations == nil || len(*picker.Installations) != 2 || (*picker.Installations)[0].ID != 9 || (*picker.Installations)[1].ID != 10 ||
+		(*picker.Installations)[0].SettingsURL != "https://github.com/organizations/company/settings/installations/9" ||
+		(*picker.Installations)[1].SettingsURL != "https://github.com/settings/installations/10" {
 		t.Fatalf("unexpected authorized choices: %+v, %v", picker.Installations, err)
 	}
 	others := githubOperator{operator.Issuer, "different-subject"}
@@ -394,7 +396,7 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 		}
 	}
 	verified, err := restarted.selectDiscoveryInstallation(ctx, company, "", operator, discovery.OperationID, 9)
-	if err != nil || verified.State != githubConnectionVerified || verified.GitHubAccountLogin != "company" {
+	if err != nil || verified.State != githubConnectionVerified || verified.GitHubAccountLogin != "company" || verified.SettingsURL != "https://github.com/organizations/company/settings/installations/9" {
 		t.Fatalf("account selection: %+v, %v", verified, err)
 	}
 	selectedStatus, err := restarted.status(ctx, company, "", operator, discovery.OperationID)
@@ -646,4 +648,33 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 		t.Fatalf("explicit connection did not reauthorize after expiry: %+v, %v", fresh, err)
 	}
 
+}
+
+func TestGitHubInstallationSettingsURLUsesVerifiedIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name                     string
+		id                       int64
+		login, accountType, want string
+	}{
+		{"personal", 10, "user-10", "User", "https://github.com/settings/installations/10"},
+		{"organization", 11, "Org-11", "Organization", "https://github.com/organizations/Org-11/settings/installations/11"},
+		{"not verified", 0, "Org-11", "Organization", ""},
+		{"encoded slash", 11, "org%2Fsettings", "Organization", ""},
+		{"unknown type", 11, "user-10", "Enterprise", ""},
+		{"missing personal identity", 11, "", "User", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := githubInstallationSettingsURL(tc.id, tc.login, tc.accountType); got != tc.want {
+				t.Fatalf("settings URL = %q, want %q", got, tc.want)
+			}
+			op := githubConnectionOperation{Action: "discover", State: githubConnectionVerified, VerifiedInstallationID: tc.id, GitHubAccountLogin: tc.login, GitHubAccountType: tc.accountType}
+			if got := githubOperationStatus("alpha", op).SettingsURL; got != tc.want {
+				t.Fatalf("verified operation settings URL = %q, want %q", got, tc.want)
+			}
+			op.State = githubConnectionPending
+			if got := githubOperationStatus("alpha", op).SettingsURL; got != "" {
+				t.Fatalf("pending operation exposed settings URL: %q", got)
+			}
+		})
+	}
 }
