@@ -96,8 +96,12 @@ var companySchemaCatalog = []companySchemaStep{{
 		return ensureGitHubIndexes(ctx, m.client.Database(company.DatabaseName), []githubConnectionIndex{pendingGitHubInstallationIndex()})
 	},
 	verify: func(ctx context.Context, m *MongoStore, company Company) error {
+		db := m.client.Database(company.DatabaseName)
+		if err := verifyGitHubConnectionIndexes(ctx, db); err != nil {
+			return err
+		}
 		index := pendingGitHubInstallationIndex()
-		return verifyCompanyIndexOptions(ctx, m.client.Database(company.DatabaseName).Collection(index.collection), index.name, index.keys, index.unique, index.expirySeconds, index.partial...)
+		return verifyCompanyIndexOptions(ctx, db.Collection(index.collection), index.name, index.keys, index.unique, index.expirySeconds, index.partial...)
 	},
 }}
 

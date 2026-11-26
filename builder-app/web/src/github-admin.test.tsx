@@ -182,6 +182,30 @@ describe('GitHub administration', () => {
     else expect(explicitID).toBe('old-discovery');
   });
 
+  it('starts a fresh discovery when a setup link is already open', async () => {
+    history.replaceState(null, '', entry + '&operation_id=picker');
+    sessionStorage.setItem('builder-github:alpha:site:discovery', 'picker');
+    const request = vi.fn(async (path: string, init?: RequestInit) => {
+      if (path === prefix) return reply(roles);
+      if (path === prefix + '/operations/picker') return reply({ state: 'pending', operation_id: 'picker', installations: [] });
+      expect(path).toBe(prefix + '/operations');
+      const input = JSON.parse(String(init?.body));
+      if (input.action === 'install-app') {
+        expect(input.operation_id).toBe('picker');
+        return new Response(JSON.stringify({ teach: 'O link de instalação já está aberto.' }), { status: 409 });
+      }
+      expect(input.action).toBe('discover');
+      expect(input.operation_id).not.toBe('picker');
+      return reply({ state: 'pending', operation_id: input.operation_id, installations: [] });
+    });
+    stubFetch(request);
+    render(<GitHubAdmin />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Instalar o GitHub App em outra conta' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('O link de instalação já está aberto.');
+    fireEvent.click(screen.getByRole('button', { name: 'Atualizar contas disponíveis' }));
+    await waitFor(() => expect(request.mock.calls.some(([, init]) => typeof init?.body === 'string' && JSON.parse(init.body).action === 'discover')).toBe(true));
+  });
+
   it('chooses and changes an authorized account in Builder before showing repository actions', async () => {
     history.replaceState(null, '', entry + '&operation_id=picker');
     sessionStorage.setItem('builder-github:alpha:site:discovery', 'picker');

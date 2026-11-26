@@ -506,7 +506,7 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
                 <small>{installation.type === 'Organization' ? 'Organização' : 'Conta pessoal'}</small>
               </button>)}
               <button type="button" disabled={busy} onClick={() => chooseInstallation()}>Instalar o GitHub App em outra conta</button>
-              {error && <button type="button" disabled={busy} onClick={() => openDiscovery(true)}>Atualizar contas disponíveis</button>}
+              {error && <button type="button" disabled={busy} onClick={() => openDiscovery()}>Atualizar contas disponíveis</button>}
             </div>
           </div>}
           {loaded && allowDraftEntry && roles && discovery?.state === 'verified' && <div className="github-admin-flow">

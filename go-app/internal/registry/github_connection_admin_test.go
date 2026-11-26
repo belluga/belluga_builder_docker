@@ -414,17 +414,30 @@ func TestMongoGitHubAdminConnectAndDoNotRepeatUncertainCreate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pendingSetup, err := restarted.installDiscovery(ctx, company, "", operator, pendingDiscovery.OperationID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rawPendingState := stateFromURL(pendingSetup)
-	if _, err := restarted.requestInstallationCallback(ctx, others, rawPendingState); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("different operator callback: %v", err)
-	}
 	type callbackResult struct {
 		status githubConnectionStatus
 		err    error
+	}
+	installResults := make(chan callbackResult, 2)
+	for range 2 {
+		go func() {
+			status, installErr := restarted.installDiscovery(ctx, company, "", operator, pendingDiscovery.OperationID)
+			installResults <- callbackResult{status, installErr}
+		}()
+	}
+	issued, refused := <-installResults, <-installResults
+	if issued.err != nil {
+		issued, refused = refused, issued
+	}
+	if issued.err != nil || issued.status.AuthorizationURL == "" || !errors.Is(refused.err, ErrConflict) || refused.status.AuthorizationURL != "" {
+		t.Fatalf("expected one setup link and an actionable conflict: %+v %+v", issued, refused)
+	}
+	if result, err := restarted.installDiscovery(ctx, company, "", operator, pendingDiscovery.OperationID); !errors.Is(err, ErrConflict) || result.AuthorizationURL != "" {
+		t.Fatalf("repeated install overwrote the issued setup nonce: %+v %v", result, err)
+	}
+	rawPendingState := stateFromURL(issued.status)
+	if _, err := restarted.requestInstallationCallback(ctx, others, rawPendingState); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("different operator callback: %v", err)
 	}
 	callbackResults := make(chan callbackResult, 2)
 	for range 2 {

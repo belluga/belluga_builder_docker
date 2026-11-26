@@ -480,7 +480,7 @@ func TestCompanyGitHubConnectionMigrationUpgradesStampedV3AndFreshCompanies(t *t
 		{Key: "index", Value: bson.D{{Key: "name", Value: "github_intent_expiry"}, {Key: "expireAfterSeconds", Value: 60}}}}).Err(); err != nil {
 		t.Fatal(err)
 	}
-	if err := verifyGitHubConnectionIndexes(ctx, db); !errors.Is(err, ErrConflict) {
-		t.Fatalf("unexpected TTL accepted: %v", err)
+	if err := store.convergeCompanySchema(ctx, "company-existing", true); !errors.Is(err, ErrConflict) {
+		t.Fatalf("operator migration verification accepted drifted v4 TTL on v5: %v", err)
 	}
 }

@@ -165,18 +165,33 @@ func (a *githubConnectionAdmin) installDiscovery(ctx context.Context, company, p
 	if _, ok := a.userToken(company, op); !ok {
 		return out, todoTeach("github_oauth", "reauthorize before installing the GitHub App", ErrConflict)
 	}
+	now := a.app.now().UTC()
+	if op.SetupNonce.Digest != "" && now.Before(op.SetupNonce.ExpiresAt) {
+		return out, githubInstallationLinkAlreadyIssued()
+	}
 	raw, err := githubStateValue(company, project, id)
 	if err != nil {
 		return out, err
 	}
-	now := a.app.now().UTC()
 	filter := discoverySelectionFilter(op, now)
+	filter["$or"] = bson.A{
+		bson.M{"setup_nonce.digest": nil},
+		bson.M{"setup_nonce.digest": ""},
+		bson.M{"setup_nonce.expires_at": bson.M{"$lte": now}},
+	}
 	nonce := githubConnectionNonce{Digest: sourceHash([]byte(raw)), ExpiresAt: *op.ExpiresAt}
 	if err := githubAdminUpdate(ctx, db, filter, bson.M{"$set": bson.M{"setup_nonce": nonce, "updated_at": now}}); err != nil {
+		if errors.Is(err, ErrConflict) {
+			return out, githubInstallationLinkAlreadyIssued()
+		}
 		return out, err
 	}
 	out.AuthorizationURL = a.app.setupURL(raw)
 	return out, nil
+}
+
+func githubInstallationLinkAlreadyIssued() error {
+	return todoTeach("setup_nonce", "use the open GitHub installation link or refresh available accounts to start a new attempt", ErrConflict)
 }
 
 func (a *githubConnectionAdmin) selectDiscoveryInstallation(ctx context.Context, company, project string, operator githubOperator, id string, installationID int64) (githubConnectionStatus, error) {
