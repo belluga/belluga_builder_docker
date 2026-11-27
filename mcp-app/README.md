@@ -24,6 +24,8 @@ Large Registry results retain the exact JSON TextContent contract. Both upstream
 
 ## App Server API
 
+With a valid MCP bearer, only `builder_company_search` and `builder_project_search` can run without conversation headers. They retain the same filters and pagination. Send both native conversation headers, or omit both for those searches. Empty, partial, duplicate or invalid headers are rejected. Every other tool requires the native conversation identity, and the Registry enforces existing bindings.
+
 Start the pinned local Codex App Server over stdio, call `initialize`, send `initialized`, and use `thread/start` or `thread/read` to obtain the API's native `thread.sessionId`. Attach the MCP server in the thread-scoped host configuration. The placeholder is replaced with the exact ID returned by the API.
 
 ```json

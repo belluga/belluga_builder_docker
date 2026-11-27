@@ -60,6 +60,25 @@ func newRegistryClient(raw string) (registryClient, error) {
 }
 
 func (c registryClient) request(ctx context.Context, session, method, path string, query url.Values, body json.RawMessage, timeout time.Duration) (registryResponse, error) {
+	if !nativeSessionID.MatchString(session) {
+		return registryResponse{}, errors.New("invalid Registry conversation identity")
+	}
+	return c.exchange(ctx, session, method, path, query, body, timeout)
+}
+
+func (c registryClient) requestDiscovery(ctx context.Context, path string, query url.Values, timeout time.Duration) (registryResponse, error) {
+	const companies = "/internal/v1/companies/"
+	if path != companies+"search" {
+		company, ok := strings.CutPrefix(path, companies)
+		company, projects := strings.CutSuffix(company, "/projects")
+		if !ok || !projects || !identityID.MatchString(company) {
+			return registryResponse{}, errors.New("invalid Registry discovery path")
+		}
+	}
+	return c.exchange(ctx, "", http.MethodGet, path, query, nil, timeout)
+}
+
+func (c registryClient) exchange(ctx context.Context, session, method, path string, query url.Values, body json.RawMessage, timeout time.Duration) (registryResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	target := *c.base
@@ -80,9 +99,11 @@ func (c registryClient) request(ctx context.Context, session, method, path strin
 	if payload != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	req.Header.Set(headerLane, "conversation")
-	req.Header.Set(headerProvider, provider)
-	req.Header.Set(headerSession, session)
+	if session != "" {
+		req.Header.Set(headerLane, "conversation")
+		req.Header.Set(headerProvider, provider)
+		req.Header.Set(headerSession, session)
+	}
 	// The request is attempted once. A buffered body must not give the HTTP
 	// transport a replay mechanism, and no idempotency header is forwarded.
 	req.GetBody = nil
