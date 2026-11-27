@@ -37,13 +37,11 @@ Only files listed as available in a verified immutable snapshot are served, from
 
 ## Publicação remota do Builder
 
-Esta seção descreve a topologia da Release Conexão GitHub. As instruções acima
-se referem ao preview local e ao MVP anterior. O runtime remoto inclui Viewer,
-Registry, Reader e o serviço curto de migração, que usa a mesma imagem do
-Registry. O aceite desta Release cobre a administração de conexões, leitura
-de artefatos privados e provas de código em modo `complete`. MCP remoto,
-prova de deploy MVP, publicação de anexos e mutações do Design System são
-fluxos separados.
+O pacote de publicação inclui Caddy, Viewer, Registry, Reader, MCP e o
+serviço de migração, que usa a imagem do Registry. O Caddy encaminha
+`https://<host>/mcp` ao MCP, preserva a URI e envia os demais caminhos,
+inclusive Admin e callbacks do GitHub, ao Viewer. Somente o Caddy publica
+portas. Registry, Reader, Viewer e MCP usam redes privadas do Compose.
 
 ### Produzir o pacote uma vez
 
@@ -59,15 +57,15 @@ fluxos separados.
    `ghcr.io/belluga/builder-registry`. Para
    `ghcr.io/belluga/builder-project-reader`, use o contexto
    `<checkout PACED>/local-api`, seu `Dockerfile` e
-   `PACED_SOURCE_SHA=<SHA PACED>`. Construa e publique para `linux/amd64`.
-   As três imagens são privadas. Ao terminar cada publicação, registre o
-   digest retornado pelo registry e sua origem.
-3. Publique junto o [manifesto de runtime](../compose.builder.remote.yaml)
-   da mesma revisão. Guarde o checksum do arquivo e o registro com os dois SHAs,
-   os três digests e a plataforma. O servidor e o ensaio recebem esse
-   manifesto e os mesmos digests. A conta de pull do servidor precisa apenas
-   ler os pacotes privados. Cópias com a configuração de uma máquina ou
-   segredos preenchidos não fazem parte do pacote.
+   `PACED_SOURCE_SHA=<SHA PACED>`. Para `ghcr.io/belluga/builder-mcp`, use
+   o contexto `mcp-app` e o alvo `runtime`. Construa e publique para
+   `linux/amd64`. Registre os quatro digests retornados pelo GHCR e suas origens.
+3. Distribua o [manifesto](../compose.builder.remote.yaml) e o
+   [Caddyfile](../docker/caddy/Caddyfile) da mesma revisão, preservando os
+   caminhos relativos. Registre os checksums, os dois SHAs, a plataforma e
+   os quatro digests do GHCR. O manifesto fixa também o digest do Caddy.
+   A conta de pull do servidor precisa apenas ler os pacotes privados.
+   Mantenha a configuração e os segredos de cada ambiente fora do pacote.
 
 ### Configurar cada ambiente
 
@@ -78,9 +76,10 @@ desde que o conteúdo não apareça nos logs. Não publique a saída expandida d
 
 | Entrada | Valor |
 | --- | --- |
-| `BUILDER_VIEWER_DIGEST`, `BUILDER_REGISTRY_DIGEST`, `BUILDER_READER_DIGEST` | 64 dígitos hexadecimais de cada digest aprovado, sem o prefixo `sha256:`. |
-| `BUILDER_REMOTE_HOST` | Hostname protegido, sem esquema, porta ou barra. Reutilizado no origin HTTPS de administração. |
-| `BUILDER_TUNNEL_NETWORK` | Rede externa dedicada ao conector Tunnel e ao Viewer. |
+| `BUILDER_VIEWER_DIGEST`, `BUILDER_REGISTRY_DIGEST`, `BUILDER_READER_DIGEST`, `BUILDER_MCP_DIGEST` | 64 dígitos hexadecimais de cada digest aprovado, sem o prefixo `sha256:`. |
+| `BUILDER_REMOTE_HOST` | Hostname público, sem esquema, porta ou barra. Define o TLS, o origin HTTPS de administração e as allowlists de Host e Origin do MCP. |
+| `BUILDER_MCP_COMPANY_IDS`, `BUILDER_MCP_BEARER_TOKEN` | IDs das Companies permitidas, separados por vírgulas, e bearer exclusivo do MCP, com ao menos 32 bytes ASCII visíveis. Guarde o bearer também no gerenciador de segredos do cliente MCP. |
+| `BUILDER_TUNNEL_NETWORK` | Rede externa dedicada ao conector Tunnel. Preencha ao usar o overlay opcional. |
 | `REGISTRY_MONGODB_URI`, `REGISTRY_CONTROL_DATABASE` | URI de réplica MongoDB ou Atlas com transações e controle isolado para este ambiente. Forneça acesso aos bancos Company necessários. |
 | `DELPHI_PROJECT_READER_TOKEN`, `DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN` | Dois valores distintos, cada um com no mínimo 32 bytes. Somente Registry e Reader os recebem. |
 | `BUILDER_READER_STATE_PATH` | Caminho absoluto para diretório já criado no host, sem symlinks, proprietário `65532:65532`, modo `0700`. É independente da estação de desenvolvimento. |
@@ -100,22 +99,53 @@ eventual remapeamento do Docker. Não faça o PEM legível para todos os usuári
 O cache Git fica em volume nomeado e começa vazio no ensaio. O Viewer usa
 Registry por rede e não precisa montar `/state`.
 
-No Cloudflare, proteja **todo o hostname** com Access e conecte o processo
-Tunnel desse ambiente à rede dedicada. A origem do hostname é
-`http://builder-remote-viewer:8080`. O manifesto não publica portas no host.
-Registry e Reader usam outra rede e não devem ser registrados no Tunnel.
-Confirme que uma sessão sem autorização não alcança nenhuma página do hostname.
-Registre no GitHub App o Setup URL `https://<host>/admin/github/callback` e o
-OAuth callback `https://<host>/admin/github/oauth/callback`. Use Setup URL com
-o fluxo de OAuth separado e os tokens de usuário com expiração habilitada.
-Não use PAT de desenvolvimento ou credencial de deploy como substituto do App
-nos fluxos incluídos.
+No modo direto, aponte o registro DNS A para o IPv4 do servidor. Adicione
+AAAA quando as portas TCP 80 e 443 também estiverem acessíveis por IPv6.
+Abra essas duas portas no firewall e mantenha o DNS direto para a emissão e
+renovação automática de certificados pelo Caddy. A porta 80 redireciona
+para HTTPS. Preserve o volume nomeado `ingress-tls` entre recriações e
+releases. Ele contém o estado de TLS e deve ter acesso restrito.
+
+O Viewer é público. Configure o cliente MCP com `https://<host>/mcp` e
+`Authorization: Bearer <token>`. Se o cliente enviar Origin, use
+`https://<host>`. Operações de Project ainda exigem a sessão vinculada
+ao Project correto. O Admin exige um JWT Access válido para o issuer, a
+audiência e as permissões configuradas. Preserve a configuração completa
+App/Access no Registry para inicializar a credencial GitHub App usada por
+leituras e provas. Sem a identidade Access, use a entrada direta para
+Viewer e MCP.
+
+Para usar Cloudflare Tunnel, acrescente
+`-f deploy/compose.builder.tunnel.yaml` à mesma invocação do Compose e
+conecte o conector à rede externa dedicada. Aponte o hostname completo
+para `https://builder-remote-ingress:443` e configure o conector para enviar
+`BUILDER_REMOTE_HOST` como Host e nome TLS da origem. Mantenha a validação do
+certificado e garanta o provisionamento e renovação do certificado dessa
+origem antes de mudar o DNS para o Tunnel. O roteamento de `/mcp` é feito
+pelo Caddy. Se usar Cloudflare Access para Admin, defina a política no
+Cloudflare para entregar a identidade assinada aos caminhos administrativos
+e aos callbacks. O MCP usa seu próprio bearer.
+
+Registre no GitHub App o Setup URL `https://<host>/admin/github/callback`
+e o OAuth callback `https://<host>/admin/github/oauth/callback`. Use o fluxo
+de OAuth separado e tokens de usuário com expiração habilitada.
 
 ### Ensaiar antes de instalar
 
-Num runner Docker externo e limpo, use um App e Cloudflare Access de teste,
-um Mongo descartável com transações, `/state` próprio e redes/volumes novos.
-Use apenas a fixture aprovada. Provisione primeiro a identidade da Company no
+No CI do release, execute o smoke abaixo com Docker Compose 2.24.4 ou
+superior, Bash, OpenSSL e Python 3.9 ou superior. Passe as referências por
+digest publicadas no GHCR e o SHA Builder gravado no Viewer. O smoke
+aceita tags locais para ensaiar imagens recém-compiladas. Ele cria uma CA
+local confiada pelo cliente, um Mongo descartável, dados e credenciais
+sintéticos, e usa fixtures controladas para as leituras GitHub App.
+
+```bash
+tools/ci/builder-ingress-smoke.sh "$viewer_image" "$registry_image" \
+  "$reader_image" "$mcp_image" "$builder_sha"
+```
+
+Para o ensaio de instalação, use um App e Cloudflare Access de teste, um
+Mongo descartável com transações e um `/state` próprio. Provisione primeiro a identidade da Company no
 controle isolado para que `migrate-all` a descubra. Depois de confirmar a migração
 e a prontidão do Registry, aplique ou verifique Project em modo `complete`,
 repositório visual privado, dois repositórios privados de código, Release com
@@ -123,9 +153,9 @@ branches confirmadas, TODO v2 e artefato publicado. Use um Mongo separado para o
 antes da migração. O nome do banco de controle, sozinho, não isola os bancos
 das Companies.
 
-O exemplo pressupõe Docker Compose v2, login de pull já configurado, Tunnel e
-arquivo privado prontos. Use o mesmo bloco nos dois ambientes, mudando apenas
-seus valores e o nome de projeto.
+O exemplo pressupõe Docker Compose v2, login de pull e arquivo privado
+prontos. Use o mesmo bloco no ensaio e no servidor com a configuração de
+cada ambiente.
 
 ```bash
 (
@@ -140,7 +170,7 @@ test "$(uname -m)" = x86_64
 )
 ```
 
-Confira as três imagens efetivas e suas arquiteturas após `pull`. A etapa
+Confira as cinco imagens efetivas e suas arquiteturas após `pull`. A etapa
 `registry-migrate` usa o mesmo digest e o mesmo controle Mongo do Registry.
 O serviço normal depende do sucesso da migração. A migração explicitamente
 executada com `run` também valida o alvo em uma nova invocação, antes de
@@ -148,9 +178,12 @@ aceitar dependências de migração eventualmente já concluídas no Compose.
 
 O ensaio só passa se:
 
-- O Mongo migrar e as três aplicações subirem. O Viewer autenticado responde
-  `/api/build` com o SHA exato e chega ao Registry, que chega ao Reader numa
-  prova real. O Registry não aceita Companies com schema incompatível.
+- O Mongo migrar e os serviços subirem. O Viewer responde `/api/build` com o
+  SHA exato pelo HTTPS do Caddy e chega ao Registry, que chega ao Reader
+  numa prova real. O Registry exige schema compatível para cada Company.
+- No mesmo host HTTPS, inicialize o MCP com o bearer, liste as ferramentas
+  e leia um TODO com sessão vinculada. Confirme rejeição sem bearer e
+  sucesso de uma nova conexão HTTPS após recriar o Caddy.
 - A administração nega acesso sem credencial e valida Company e Origin.
   Com o operador autorizado, abra o Project no Viewer e selecione
   **Gerenciar conexão GitHub**. Exercite vínculo, leitura privada com cache
@@ -185,8 +218,8 @@ Registre a fase e o resultado com a evidência remota.
 Uma versão anterior do Registry com catálogo de schema v3 rejeita uma base
 marcada v4. Se for necessário voltar **antes de admitir novas escritas**,
 retome o pacote anterior por digest **junto com** o banco anterior intacto ou
-a restauração validada da janela congelada, apontando o Tunnel somente para
-essa versão. Confira o SHA e a leitura/prova aplicáveis antes de reabrir
+a restauração validada da janela congelada e direcione o tráfego para a
+versão restaurada. Confira o SHA e a leitura/prova aplicáveis antes de reabrir
 escritas. Depois que a versão v4 aceitar escritas, preserve os dados e prepare
 uma correção compatível ou uma operação de recuperação aprovada. Trocar só as
 imagens ou restaurar por cima dos dados novos perde a garantia de rollback.

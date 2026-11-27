@@ -1,0 +1,26 @@
+{
+	admin off
+	persist_config off
+	log {
+		format filter {
+			wrap json
+			# Callback query parameters and Access headers can contain credentials.
+			request delete
+		}
+	}
+	servers {
+		strict_sni_host on
+	}
+}
+
+{$BUILDER_REMOTE_HOST} {
+	# Match the escaped URI so encoded and case variants go to Viewer.
+	@mcp `{uri}.matches("^/mcp([?]|$)")`
+	handle @mcp {
+		# Caddy flushes text/event-stream responses without buffering.
+		reverse_proxy builder-mcp:8098
+	}
+	handle {
+		reverse_proxy builder-viewer:8080
+	}
+}
