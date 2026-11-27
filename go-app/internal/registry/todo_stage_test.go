@@ -7,8 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -117,7 +121,7 @@ func TestCompletePromotionTargetsAllowDevAndStageForEachApprovedRepository(t *te
 func TestMVPClaimsAllowPACEDOnlyWithoutInventingBuilderCommit(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	todo := TODORecord{ImplementationCommits: []TODOCommitReference{{Repository: "PACED", Commit: commit}}}
-	builder, paced, foundation, err := mvpImplementationClaims(todo)
+	builder, paced, foundation, err := mvpImplementationClaims(todo, "")
 	if err != nil || len(builder) != 0 || len(foundation) != 0 || len(paced) != 1 || paced[0] != commit {
 		t.Fatalf("PACED-only claims = %v %v %v, %v", builder, paced, foundation, err)
 	}
@@ -182,11 +186,11 @@ func TestMVPUsesExactNewRemoteCodeIdentity(t *testing.T) {
 
 func TestFoundationFreeTypedMVPRejectsFoundationCommit(t *testing.T) {
 	todo := TODORecord{Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, ImplementationCommits: []TODOCommitReference{{Repository: "belluga_builder_foundation_documentation", Commit: strings.Repeat("a", 40)}}}
-	if _, _, _, err := mvpImplementationClaims(todo); err == nil || !strings.Contains(err.Error(), "implementation_commits.repository") {
+	if _, _, _, err := mvpImplementationClaims(todo, ""); err == nil || !strings.Contains(err.Error(), "implementation_commits.repository") {
 		t.Fatalf("Foundation claim accepted or wrong TEACH: %v", err)
 	}
 	todo.Content = nil
-	if _, _, _, err := mvpImplementationClaims(todo); err != nil {
+	if _, _, _, err := mvpImplementationClaims(todo, ""); err != nil {
 		t.Fatalf("historical Foundation claim changed: %v", err)
 	}
 }
@@ -211,11 +215,15 @@ func TestMVPProductionRequiresReaderToConfirmPACEDClaims(t *testing.T) {
 			store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
 			claim := TODOProofReference{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}
 			request := TODOActionRequest{ProofReferences: []TODOProofReference{claim}}
-			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
+			claims, err := resolveMVPClaims(todo, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, claims); err == nil {
 				t.Fatal("unconfirmed PACED commits accepted")
 			}
 			confirmed = true
-			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err != nil {
+			if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, claims); err != nil {
 				t.Fatalf("confirmed PACED-only proof: %v", err)
 			}
 		})
@@ -291,17 +299,21 @@ func TestMVPCompletionRequiresReaderVerifiedDeploymentAndCurrentContent(t *testi
 	defer server.Close()
 	store := &MongoStore{proofReaderURL: server.URL, proofReaderToken: "secret", proofHTTPClient: server.Client()}
 	request := TODOActionRequest{ProofReferences: []TODOProofReference{{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + root, SourceDigest: digest, VerificationState: "unverified"}}}
-	proof, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, "")
+	claims, err := resolveMVPClaims(todo, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, claims)
 	if err != nil || proof.Kind != "production-deployment" || proof.VerificationState != "verified" {
 		t.Fatalf("verified MVP completion = %+v, %v", proof, err)
 	}
 	request.ProofReferences[0].SourceDigest = "sha256:" + strings.Repeat("c", 64)
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, claims); err == nil {
 		t.Fatal("stale content claim accepted")
 	}
 	request.ProofReferences[0].SourceDigest = digest
 	todo.StageVerification = "unverified"
-	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, ""); err == nil {
+	if _, err := store.verifyMVPProduction(context.Background(), "company-a", todo, request, claims); err == nil {
 		t.Fatal("unverified local delivery accepted")
 	}
 }
@@ -310,25 +322,25 @@ func TestMVPImplementationClaimsRejectUnknownSource(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	local := TODOProofReference{Kind: "remote-local-delivery"}
 	todo := TODORecord{VerifiedTransitionRef: &local, ImplementationCommits: []TODOCommitReference{{Repository: "Builder", Commit: commit}, {Repository: "PACED", Commit: commit}}}
-	builder, paced, foundation, err := mvpImplementationClaims(todo)
+	builder, paced, foundation, err := mvpImplementationClaims(todo, "")
 	if err != nil || len(builder) != 1 || len(paced) != 1 || len(foundation) != 0 {
 		t.Fatalf("classified code sources = %v %v %v", builder, paced, err)
 	}
 	todo.ImplementationCommits = append(todo.ImplementationCommits, TODOCommitReference{Repository: "belluga_builder_foundation_documentation", Commit: commit})
-	_, _, foundation, err = mvpImplementationClaims(todo)
+	_, _, foundation, err = mvpImplementationClaims(todo, "")
 	if err != nil || len(foundation) != 1 {
 		t.Fatalf("published Foundation source = %v, %v", foundation, err)
 	}
 	todo.ImplementationCommits[1].Repository = "unregistered-tool"
-	if _, _, _, err := mvpImplementationClaims(todo); err == nil {
+	if _, _, _, err := mvpImplementationClaims(todo, ""); err == nil {
 		t.Fatal("unknown implementation source accepted")
 	}
 	todo.ImplementationCommits = nil
-	if _, _, _, err := mvpImplementationClaims(todo); err == nil {
+	if _, _, _, err := mvpImplementationClaims(todo, ""); err == nil {
 		t.Fatal("missing implementation claims accepted without historical local run")
 	}
 	local.Kind = "local-run-accepted"
-	if _, _, _, err := mvpImplementationClaims(todo); err != nil {
+	if _, _, _, err := mvpImplementationClaims(todo, ""); err != nil {
 		t.Fatalf("previously accepted legacy local run rejected: %v", err)
 	}
 }
@@ -826,5 +838,148 @@ func TestAuthoredContentDoesNotDuplicateRecordOwnedApproval(t *testing.T) {
 	content.Sections = append(content.Sections, record.Sections[1])
 	if err := validateNewAuthoredContent(content); err == nil {
 		t.Fatal("record-owned approval was accepted in an authored content edit")
+	}
+}
+
+func TestMVPClaimsResolveApprovedRepositoryAliases(t *testing.T) {
+	const docker = "eltonmorais/belluga_builder_docker"
+	const paced = "belluga/delphi-ai"
+	dockerSHA, pacedSHA := strings.Repeat("a", 40), strings.Repeat("b", 40)
+	digest := sourceHash([]byte("approved"))
+	proof := TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", VerificationState: "verified",
+		Reference: docker + "@r-github-connection-rc:" + dockerSHA + "/parent=" + pacedSHA + "/head=" + dockerSHA +
+			";" + paced + "@builder:" + pacedSHA + "/parent=" + dockerSHA + "/head=" + pacedSHA}
+	for _, aliases := range [][2]string{{"project", "delphi-ai"}, {docker, paced}, {"Builder", "PACED"}} {
+		t.Run(aliases[0], func(t *testing.T) {
+			todo := TODORecord{
+				Content: &TODOContent{SchemaVersion: todoContentSchemaVersion}, VerifiedTransitionRef: &proof,
+				DiffExpectation: []TODORepositoryScope{{Repository: aliases[0], RepositoryID: docker}, {Repository: aliases[1], RepositoryID: paced}},
+				ImplementationCommits: []TODOCommitReference{
+					{Repository: aliases[0], Commit: dockerSHA, SourceDigest: digest, VerificationState: "unverified"},
+					{Repository: aliases[1], Commit: pacedSHA, SourceDigest: digest, VerificationState: "unverified"},
+				},
+			}
+			claims, err := resolveMVPClaims(todo, docker)
+			if err != nil || claims.dockerRepository != docker || claims.pacedRepository != paced || claims.pacedBranch != "builder" ||
+				!reflect.DeepEqual(claims.builder, []string{dockerSHA}) || !reflect.DeepEqual(claims.paced, []string{pacedSHA}) {
+				t.Fatalf("resolved claims = %+v, error = %v", claims, err)
+			}
+			if err := verifyMVPLocalDelivery(todo, digest, map[string]string{docker: "docker-node", paced: "paced-node"}, claims); err != nil {
+				t.Fatalf("verify exact local evidence: %v", err)
+			}
+			query := make(url.Values)
+			if err := claims.addReaderQuery(query, true, true); err != nil {
+				t.Fatal(err)
+			}
+			want := url.Values{"docker_repository_id": {docker}, "paced_repository_id": {paced},
+				"paced_branch": {"builder"}, "project_commits": {dockerSHA}, "paced_commits": {pacedSHA}, "todo_authority": {"mongo-v2"}}
+			if !reflect.DeepEqual(query, want) {
+				t.Fatalf("Reader claim query = %v, want %v", query, want)
+			}
+
+			todo.DiffExpectation = append(todo.DiffExpectation, todo.DiffExpectation[0])
+			if _, err := resolveMVPClaims(todo, docker); err == nil {
+				t.Fatal("ambiguous scope alias accepted")
+			}
+			todo.DiffExpectation = todo.DiffExpectation[:2]
+			todo.ImplementationCommits[0].Repository = "unapproved"
+			if _, err := resolveMVPClaims(todo, docker); err == nil {
+				t.Fatal("unapproved alias accepted")
+			}
+			todo.ImplementationCommits[0].Repository = aliases[0]
+			todo.DiffExpectation[1].RepositoryID = "belluga/wrong"
+			if _, err := resolveMVPClaims(todo, docker); err == nil {
+				t.Fatal("unrelated repository accepted as PACED")
+			}
+			todo.DiffExpectation[1].RepositoryID = paced
+			todo.ImplementationCommits[1].Commit = strings.Repeat("c", 40)
+			if _, err := resolveMVPClaims(todo, docker); err == nil {
+				t.Fatal("commit outside local proof accepted")
+			}
+		})
+	}
+}
+
+func TestMongoMVPQualifiedClaimsSendExactReaderQuery(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		if os.Getenv("REGISTRY_REQUIRE_MONGO_INTEGRATION") == "1" {
+			t.Fatal("required Mongo replica-set integration fixture is unavailable")
+		}
+		t.Skip("isolated Mongo replica set not configured")
+	}
+	ctx := context.Background()
+	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	databaseName := store.tenantDatabase("company-a")
+	database := store.client.Database(databaseName)
+	t.Cleanup(func() {
+		_ = database.Drop(ctx)
+		_ = store.control.Drop(ctx)
+		_ = store.Close(ctx)
+	})
+	company, err := normalizeCompany(Company{ID: "company-a", Name: "Company A", DatabaseName: databaseName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.control.Collection(companiesCollection).InsertOne(ctx, company); err != nil {
+		t.Fatal(err)
+	}
+	migrateCompanyFixture(t, ctx, store)
+
+	const dockerRepo, pacedRepo = "eltonmorais/belluga_builder_docker", "belluga/delphi-ai"
+	builderSHA, pacedSHA, deploymentSHA := strings.Repeat("a", 40), strings.Repeat("b", 40), strings.Repeat("c", 40)
+	todo := TODORecord{
+		ID: "todo-a", ProjectID: "builder", ReleaseID: "r-test", Stage: "Local-Implemented", StageVerification: "verified",
+		DiffExpectation: []TODORepositoryScope{
+			{Repository: "project", RepositoryID: dockerRepo, ExpectedPaths: []string{"go-app/*"}, NotExpectedPaths: []string{}},
+			{Repository: pacedRepo, RepositoryID: pacedRepo, ExpectedPaths: []string{"local-api/*"}, NotExpectedPaths: []string{}},
+		},
+		Content: &TODOContent{SchemaVersion: todoContentSchemaVersion},
+	}
+	content := TODOAuthoredContent{TODOContent: *todo.Content, Title: "Fixture", Objective: "Verify mixed deployment claims", DiffExpectation: todo.DiffExpectation, AffectedFiles: []string{}}
+	digest, err := todoContentRevisionDigest(todo.ProjectID, todo.ID, 0, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Collection(todoContentVersionsCollection).InsertOne(ctx, TODOContentVersion{ProjectID: todo.ProjectID, TODOID: todo.ID, Digest: digest, Content: content}); err != nil {
+		t.Fatal(err)
+	}
+	todo.ImplementationCommits = []TODOCommitReference{
+		{Repository: "project", Commit: builderSHA, SourceDigest: digest, VerificationState: "unverified"},
+		{Repository: pacedRepo, Commit: pacedSHA, SourceDigest: digest, VerificationState: "unverified"},
+	}
+	todo.VerifiedTransitionRef = &TODOProofReference{Kind: "remote-code-delivery", Source: "private-reader", VerificationState: "verified",
+		Reference: dockerRepo + "@r-test:" + builderSHA + "/parent=" + deploymentSHA + "/head=" + builderSHA +
+			";" + pacedRepo + "@builder:" + pacedSHA + "/parent=" + deploymentSHA + "/head=" + pacedSHA}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		q := r.URL.Query()
+		if q.Get("docker_repository_id") != dockerRepo || q.Get("paced_repository_id") != pacedRepo || q.Get("paced_branch") != "builder" ||
+			q.Get("project_commits") != builderSHA || q.Get("paced_commits") != pacedSHA || q.Get("todo_authority") != "mongo-v2" {
+			t.Errorf("unexpected claims sent to Reader: %v", q)
+		}
+		_ = json.NewEncoder(w).Encode(remoteProductionResult{CompanyID: "company-a", ProjectID: todo.ProjectID, TODOID: todo.ID,
+			DeploymentID: 17, Environment: "production", RootSHA: deploymentSHA, ModulePath: "project", CommitSHA: deploymentSHA,
+			Outcome: "verified", ProjectMode: "mvp", ReaderSHA: pacedSHA, ProjectCommits: []string{builderSHA}, PACEDCommits: []string{pacedSHA}})
+	}))
+	defer server.Close()
+	store.proofReaderURL, store.proofReaderToken, store.proofHTTPClient = server.URL, "fixture", server.Client()
+	request := TODOActionRequest{ProofReferences: []TODOProofReference{{Kind: "mvp-deployment-claim", Source: "github-deployment", Reference: "17@" + deploymentSHA, SourceDigest: digest, VerificationState: "unverified"}}}
+	claims, err := resolveMVPClaims(todo, dockerRepo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyMVPLocalDelivery(todo, digest, nil, claims); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.verifyMVPProduction(ctx, "company-a", todo, request, claims)
+	if err != nil || result.VerificationState != "verified" || calls.Load() != 1 {
+		t.Fatalf("production proof = %+v, calls = %d, error = %v", result, calls.Load(), err)
 	}
 }
