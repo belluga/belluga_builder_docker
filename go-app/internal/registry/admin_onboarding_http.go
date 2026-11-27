@@ -55,6 +55,7 @@ func (h *githubAdminHTTP) canCreateCompany(operator githubOperator) bool {
 
 func (h *githubAdminHTTP) registerOnboarding(mux *http.ServeMux) {
 	const prefix = "/internal/v1/admin/companies"
+	mux.HandleFunc("GET /internal/v1/admin/projects", h.protectMode(false, "directory", h.adminProjects))
 	mux.HandleFunc("GET "+prefix, h.protectMode(false, "directory", h.adminDirectory))
 	mux.HandleFunc("POST "+prefix, h.protectMode(false, "company-create", h.createCompany))
 	mux.HandleFunc("GET "+prefix+"/{companyID}/github-pending-installation", h.protectMode(false, "company", h.pendingInstallation))
@@ -109,7 +110,7 @@ func (h *githubAdminHTTP) adminDirectory(r *http.Request, t githubAdminTarget) (
 	}
 	rows := make([]row, 0)
 	for _, company := range companies {
-		if h.store.companySchemaReady(company) != nil || !h.sharedAuthenticatedAccess && !h.access.permits(t.operator, company.ID) && !company.CreatedBy.permits(t.operator) {
+		if !h.canReadAdminCompany(company, t.operator) {
 			continue
 		}
 		entry := row{ID: company.ID, Name: company.Name, Projects: []projectRow{}, HasImage: company.HasAdminImage}

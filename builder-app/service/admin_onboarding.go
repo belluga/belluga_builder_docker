@@ -10,6 +10,7 @@ import (
 
 func registerBuilderOnboarding(mux *http.ServeMux, p *githubAdminProxy) {
 	mux.HandleFunc("GET /admin", p.serveOnboardingPage)
+	mux.HandleFunc("GET /admin/projects", p.adminProjects)
 	const base = "/admin/companies"
 	mux.HandleFunc("GET "+base, p.onboardingProxy("", "", false))
 	mux.HandleFunc("POST "+base, p.onboardingProxy("", "", true))
@@ -130,4 +131,30 @@ func (p *githubAdminProxy) companyImage(w http.ResponseWriter, r *http.Request) 
 	w.Header().Set("Content-Type", mime)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	_, _ = w.Write(data)
+}
+
+func (p *githubAdminProxy) adminProjects(w http.ResponseWriter, r *http.Request) {
+	if !p.admit(w, r) {
+		return
+	}
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "github_invalid_query")
+		return
+	}
+	for key, values := range query {
+		if len(values) != 1 || key != "company_id" && key != "q" && key != "cursor" {
+			writeError(w, http.StatusBadRequest, "github_invalid_query")
+			return
+		}
+	}
+	status, body := p.call(r, http.MethodGet, "/internal/v1/admin/projects", query, nil)
+	if body == nil {
+		writeError(w, status, "github_admin_access_unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(status)
+	_, _ = w.Write(body)
 }

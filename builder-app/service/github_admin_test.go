@@ -131,3 +131,62 @@ func TestGitHubAdminSetupRequestShowsPendingApproval(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminProjectsAndRepositoryRemovalProxyBoundaries(t *testing.T) {
+	const host = "builder.example"
+	const origin = "https://" + host
+	const removal = "/admin/github/companies/alpha/projects/site/remove"
+	const body = `{"role":"visual","repository_id":"team/site","expected_revision":3,"operation_id":"remove-1"}`
+	calls := make(chan string, 3)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls <- r.Method
+		if r.Header.Get(githubAdminAssertion) != "signed-assertion" {
+			t.Errorf("wrong assertion forwarding")
+		}
+		switch r.Method {
+		case http.MethodGet:
+			query := r.URL.Query()
+			if r.URL.Path != "/internal/v1/admin/projects" || query.Get("q") != "Team A" ||
+				query.Get("company_id") != "alpha" || query.Get("cursor") != "alpha:old" {
+				t.Errorf("unexpected directory forwarding: %s", r.URL)
+			}
+		case http.MethodPost:
+			data, err := io.ReadAll(r.Body)
+			if r.URL.Path != "/internal/v1/companies/alpha/projects/site/github-connections/remove" ||
+				r.Header.Get("Origin") != origin || r.Header.Get("Content-Type") != "application/json" ||
+				err != nil || string(data) != body {
+				t.Errorf("unexpected removal forwarding: %s, %s, %v", r.URL, data, err)
+			}
+		}
+		_, _ = io.WriteString(w, "{}")
+	}))
+	defer upstream.Close()
+	t.Setenv("DELPHI_BUILDER_REGISTRY_URL", upstream.URL)
+	t.Setenv("BUILDER_GITHUB_ADMIN_ORIGIN", origin)
+	handler := registeredHandler("", t.TempDir(), host)
+	send := func(method, path, assertion, source string) *httptest.ResponseRecorder {
+		request := httptest.NewRequest(method, origin+path, strings.NewReader(body))
+		request.Header.Set(githubAdminAssertion, assertion)
+		request.Header.Set("Origin", source)
+		request.Header.Set("Content-Type", "application/json")
+		result := httptest.NewRecorder()
+		handler.ServeHTTP(result, request)
+		return result
+	}
+	directory := "/admin/projects?company_id=alpha&q=Team+A&cursor=alpha%3Aold"
+	if got := send(http.MethodGet, directory, "", ""); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous directory status = %d", got.Code)
+	}
+	if got := send(http.MethodGet, directory, "signed-assertion", ""); got.Code != http.StatusOK || got.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("authenticated directory status = %d, Cache-Control = %s", got.Code, got.Header().Get("Cache-Control"))
+	}
+	if got := send(http.MethodPost, removal, "signed-assertion", "https://another.example"); got.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin removal status = %d", got.Code)
+	}
+	if got := send(http.MethodPost, removal, "signed-assertion", origin); got.Code != http.StatusOK {
+		t.Fatalf("same-origin removal status = %d, %s", got.Code, got.Body.String())
+	}
+	if len(calls) != 2 || <-calls != http.MethodGet || <-calls != http.MethodPost {
+		t.Fatal("upstream must receive only the authorized directory and removal requests")
+	}
+}

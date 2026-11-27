@@ -84,3 +84,54 @@
  .onboarding-main-heading > button.onboarding-primary { min-width: 195px; min-height: 45px; font: inherit; font-weight: 700; }
  .onboarding-tools input { min-height: 49px; padding-block: 12px; font: inherit; }
 }
+
+.onboarding-global { min-width: 0; }
+.onboarding-global.has-detail { display: grid; grid-template-columns: minmax(230px, 1fr) minmax(0, 2fr); gap: 28px; }
+.onboarding-global-list { min-width: 0; max-width: 980px; }
+.onboarding-global .onboarding-tools { align-items: center; margin-bottom: 20px; }
+.onboarding-global .onboarding-tools input { min-width: 0; margin: 0; }
+.onboarding-global .onboarding-tools select { min-height: 46px; border: 1px solid #b5c9dd; border-radius: 9px; padding: 0 10px; background: #fff; font: inherit; }
+.onboarding-global-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(125px, 185px) auto; align-items: center; gap: 12px; padding: 16px; border-bottom: 1px solid #d6e2ed; }
+.onboarding-global-row:last-child { border-bottom: 0; }
+.onboarding-global-row:hover, .onboarding-global-row[aria-current] { background: #c8f2f7; }
+.onboarding-global.has-detail .onboarding-global-row { grid-template-columns: minmax(0, 1fr) auto; }
+.onboarding-global.has-detail .onboarding-global-row .onboarding-company-badge { grid-row: 2; }
+.onboarding-global.has-detail .onboarding-global-row > :last-child { grid-column: 2; grid-row: 1 / span 2; }
+.onboarding-company-badge { display: inline-block; width: fit-content; padding: 4px 8px; background: #e9eff6; border-radius: 6px; color: #243b59; font-size: .82rem; }
+.onboarding-project-detail { min-width: 0; }
+.onboarding-project-detail h1 { font-size: clamp(30px, 4vw, 44px); margin: 12px 0; overflow-wrap: anywhere; }
+.onboarding-project-detail h2 { margin-top: 30px; }
+.builder-onboarding .onboarding-detail-back { color: #00829c; font-weight: 700; }
+.onboarding-link-group { margin-bottom: 16px; }
+.onboarding-link-group h3 { margin: 0; padding: 14px 16px; background: #edf4fa; }
+.onboarding-repository-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0; padding: 14px 16px; border-top: 1px solid #d6e2ed; overflow-wrap: anywhere; }
+.builder-onboarding .onboarding-link-action, .onboarding-project-detail button { display: inline-block; width: fit-content; background: white; border: 1px solid #b8cedf; border-radius: 8px; padding: 9px 12px; color: #007f9e; font: inherit; cursor: pointer; }
+.builder-onboarding .onboarding-link-action { margin: 12px 16px; }
+.onboarding-project-detail .github-admin-card button + button { margin-inline-start: 8px; }
+@media (max-width: 1100px) {
+  .onboarding-global.has-detail .onboarding-tools { flex-wrap: wrap; }
+}
+@media (max-width: 750px) {
+  .onboarding-global.has-detail { display: block; }
+  .onboarding-global.has-detail .onboarding-global-list { display: none; }
+  .onboarding-global .onboarding-tools { flex-wrap: wrap; }
+  .onboarding-global-row { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .onboarding-repository-line { align-items: flex-start; flex-direction: column; }
+}
+.onboarding-repository-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.builder-onboarding .onboarding-repository-actions .onboarding-link-action { margin: 0; }
+.onboarding-removal { color: #071a3b; width: min(460px, calc(100% - 32px)); padding: 24px; border: 1px solid #d6e2ed; border-radius: 14px; }
+.onboarding-removal::backdrop { background: #071a3b59; }
+.onboarding-removal h2 { margin-top: 0; }
+.onboarding-removal p { overflow-wrap: anywhere; }
+.onboarding-global-list .onboarding-main-heading { margin-bottom: 14px; }
+.onboarding-global .onboarding-tools { margin-bottom: 28px; }
+.onboarding-repository-line .onboarding-repository-actions { flex: 0 0 auto; }
+.onboarding-repository-line button, .builder-onboarding .onboarding-link-action { color: #071a3b; font-weight: 700; }
+.onboarding-repository-line .onboarding-remove-link { color: #a21f32; }
+@media (max-width: 750px) {
+  .builder-onboarding:has(.onboarding-global.has-detail) .onboarding-nav,
+  .builder-onboarding:has(.onboarding-global.has-detail) .onboarding-header > a:last-child { display: none; }
+  .builder-onboarding:has(.onboarding-global.has-detail) .onboarding-header { height: 72px; }
+  .onboarding-global.has-detail { padding: 24px 20px; }
+}

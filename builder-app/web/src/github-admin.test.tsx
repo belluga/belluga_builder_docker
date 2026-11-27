@@ -610,6 +610,29 @@ describe('GitHub administration', () => {
     expect(request.mock.calls.some(([path]) => path.endsWith('/abandon'))).toBe(false);
   });
 
+  it('offers only repository selection after managed Visual creation recovery', async () => {
+    vi.stubGlobal('IntersectionObserver', class {
+      observe() {}
+      disconnect() {}
+    });
+    history.replaceState(null, '', entry + '&managed_role=visual');
+    sessionStorage.setItem('builder-github:alpha:site:existing-only:visual', '1');
+    sessionStorage.setItem('builder-github:alpha:site:discovery', 'managed-discovery');
+    stubFetch(async path => {
+      if (path === prefix) return reply(roles);
+      if (path.endsWith('/repositories?page=1')) return reply({
+        repositories: [{ github_repository_id: 2, repository_full_name: 'alpha/recovered', default_branch: 'main' }], has_next: false,
+      });
+      expect(path).toBe(prefix + '/operations/managed-discovery');
+      return reply({ state: 'verified', operation_id: 'managed-discovery', github_account_login: 'alpha', github_account_type: 'Organization' });
+    });
+    render(<GitHubAdmin />);
+    const existing = await screen.findByRole('radio', { name: /Selecionar repositório existente/ });
+    expect(existing).toBeChecked();
+    expect(screen.queryByRole('radio', { name: /Criar novo repositório/ })).toBeNull();
+    expect(screen.getByRole('link', { name: 'Voltar aos detalhes do projeto' })).toHaveAttribute('href', '/admin?page=projects&company_id=alpha&project_id=site');
+  });
+
   it('resumes the original operation after the callback and submits the selected numeric repo', async () => {
     history.replaceState(null, '', entry + '&operation_id=github-one');
     sessionStorage.setItem('builder-github:alpha:site', JSON.stringify({ intent: {

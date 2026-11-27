@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { AdminAPIError, adminAPI, administrationSlug, GitHubAdmin } from './github-admin';
+import { AdminAPIError, adminAPI, administrationSlug, GitHubAdmin, managedGitHubRole } from './github-admin';
 import './admin-onboarding.css';
+import { AdminProjects } from './admin-onboarding-projects';
 
 type AdminProject = { id: string; name: string; binding_revision?: number; roadmap_revision?: number };
 type AdminCompany = { id: string; name: string; has_image: boolean; projects: AdminProject[] };
@@ -21,6 +22,8 @@ function CompanyMark({ company }: { company: AdminCompany }) {
 export function AdminOnboarding() {
   const [params] = useState(() => new URLSearchParams(location.search));
   const selectedCompany = params.get('company_id') || '';
+  const managedLink = location.pathname === '/admin/github' && !!managedGitHubRole(params);
+  const globalProjects = params.get('page') === 'projects' || managedLink;
   const originProject = params.get('origin_project_id') || '';
   const originCompany = params.get('origin_company_id') || selectedCompany;
   const openProject = location.pathname === '/admin/github' && params.get('new_project') === '1';
@@ -32,12 +35,12 @@ export function AdminOnboarding() {
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
-    const query = selectedCompany ? '?' + new URLSearchParams({ company_id: selectedCompany }) : '';
+    const query = !globalProjects && selectedCompany ? '?' + new URLSearchParams({ company_id: selectedCompany }) : '';
     adminAPI<Administration>('/admin/companies' + query, undefined, controller.signal)
       .then(result => { if (!controller.signal.aborted) setData(result); })
       .catch(failure => { if (!controller.signal.aborted) setError((failure as Error).message); });
     return () => controller.abort();
-  }, [attempt, selectedCompany]);
+  }, [attempt, globalProjects, selectedCompany]);
   const company = data?.companies.find(item => item.id === selectedCompany);
   const projectSaved = company?.projects.some(project => project.id === params.get('created_project'));
   const status = companySaved ? 'Empresa salva' : projectSaved ? 'Projeto salvo' : '';
@@ -46,10 +49,10 @@ export function AdminOnboarding() {
   const projects = company?.projects.filter(item => (item.name + ' ' + item.id).toLocaleLowerCase().includes(normalizedSearch)) || [];
   const newProject = '/admin/github?' + new URLSearchParams({ company_id: selectedCompany, new_project: '1' });
   const companiesURL = '/admin' + (originProject ? '?' + new URLSearchParams({ origin_project_id: originProject, origin_company_id: originCompany }) : '');
-  const projectsCompany = company || data?.companies.find(item => item.id === originCompany);
+  const globalURL = '/admin?' + new URLSearchParams({ page: 'projects', ...(originProject ? { origin_project_id: originProject, origin_company_id: originCompany } : {}) });
   const directoryURL = (id: string) => '/admin?' + new URLSearchParams({ company_id: id, ...(originProject ? { origin_project_id: originProject, origin_company_id: originCompany } : {}) });
   const projectDrawerOpen = openProject && !!company;
-  const drawerOpen = createCompany || projectDrawerOpen;
+  const drawerOpen = createCompany || projectDrawerOpen || managedLink;
   return <div className="builder-onboarding">
     <div inert={drawerOpen} aria-hidden={drawerOpen || undefined}>
       <header className="onboarding-header">
@@ -59,10 +62,10 @@ export function AdminOnboarding() {
       <div className="onboarding-shell">
         <nav className="onboarding-nav" aria-label="Administração">
           <h2>Administração</h2>
-          <a href={companiesURL} aria-current={!company ? 'page' : undefined}>▦ Empresas</a>
-          {projectsCompany ? <a href={directoryURL(projectsCompany.id)} aria-current={company ? 'page' : undefined}>▱ Projetos</a> : <span aria-disabled="true">▱ Projetos</span>}
+          <a href={companiesURL} aria-current={!company && !globalProjects ? 'page' : undefined}>▦ Empresas</a>
+          <a href={globalURL} aria-current={globalProjects || company ? 'page' : undefined}>▱ Projetos</a>
         </nav>
-        <main className="onboarding-main">
+        {globalProjects ? <AdminProjects companies={data?.companies || []} /> : <main className="onboarding-main">
           {company && <>
             <a href={companiesURL}>← Voltar para Empresas</a>
             <div className="onboarding-company-context"><CompanyMark company={company} /><strong>{company.name}</strong></div>
@@ -96,7 +99,7 @@ export function AdminOnboarding() {
             {companies.map(item => <a className="onboarding-row" key={item.id} href={directoryURL(item.id)}><CompanyMark company={item} /><strong>{item.name}</strong><span>{item.id}</span></a>)}
             {companies.length === 0 && <p>Nenhuma empresa encontrada.</p>}
           </div>)}
-        </main>
+        </main>}
       </div>
     </div>
     {createCompany && <CompanyForm onClose={() => setCreateCompany(false)} onCreated={async id => {
@@ -105,6 +108,7 @@ export function AdminOnboarding() {
       setData(current); setCreateCompany(false); setSearch(''); setCompanySaved(true);
     }} />}
     {openProject && company && <GitHubAdmin companyName={company.name} />}
+    {managedLink && <GitHubAdmin />}
   </div>;
 }
 

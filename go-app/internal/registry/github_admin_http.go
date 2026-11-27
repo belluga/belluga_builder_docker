@@ -45,6 +45,7 @@ func (h *githubAdminHTTP) register(mux *http.ServeMux) {
 	const prefix = "/internal/v1/companies/{companyID}/projects/{projectID}/github-connections"
 	const operations = prefix + "/operations"
 	mux.HandleFunc("GET "+prefix, h.protect(false, h.roles))
+	mux.HandleFunc("POST "+prefix+"/remove", h.protect(false, h.removeRole))
 	mux.HandleFunc("GET "+prefix+"/pending-installation", h.protect(false, h.pendingInstallation))
 	mux.HandleFunc("POST "+operations, h.protect(false, h.start))
 	mux.HandleFunc("GET "+operations+"/{operationID}", h.protect(false, h.status))

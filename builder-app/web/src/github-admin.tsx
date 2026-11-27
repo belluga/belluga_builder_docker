@@ -99,31 +99,56 @@ function validRepositoryName(value: unknown): value is string {
 
 const repositoryNameHint = 'Use até 100 caracteres: letras sem acento, números, hífen, sublinhado ou ponto. Evite espaços e pontos no início, no fim ou em sequência.';
 
+export function managedGitHubRole(params: URLSearchParams): Role | null {
+  const selected = params.get('managed_role');
+  if (selected === 'visual' || selected === 'implementation') return selected;
+  if (!params.has('operation_id')) return null;
+  const key = `builder-github:${params.get('company_id') || ''}:${params.get('project_id') || ''}:managed-role`;
+  const resumed = sessionStorage.getItem(key);
+  return resumed === 'visual' || resumed === 'implementation' ? resumed : null;
+}
+
 export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
   const [params] = useState(() => new URLSearchParams(location.search));
   const company = params.get('company_id') || '';
   const projectID = params.get('project_id');
   const project = validProjectID(projectID) ? projectID : '';
   const draftKey = `builder-github:${company}:${project}`;
-  const [existingOnly] = useState(() => sessionStorage.getItem(draftKey + ':existing-only') === '1');
+  const [managedRole] = useState(() => managedGitHubRole(params));
+  useEffect(() => {
+    if (managedRole) sessionStorage.setItem(draftKey + ':managed-role', managedRole);
+  }, [draftKey, managedRole]);
+  const existingOnlySuffix = ':existing-only' + (managedRole ? ':' + managedRole : '');
+  const [existingOnly] = useState(() => sessionStorage.getItem(draftKey + existingOnlySuffix) === '1');
   const newProject = !project && params.get('new_project') === '1';
   const companyPath = '/admin/companies/' + encodeURIComponent(company);
   const projectDraftKey = 'builder-onboarding-project:' + company;
+  const [fromGlobalProjects] = useState(() => params.get('from') === 'projects' ||
+    params.has('operation_id') && sessionStorage.getItem(projectDraftKey + ':from-projects') === '1');
+  useEffect(() => {
+    if (newProject) {
+      if (fromGlobalProjects) sessionStorage.setItem(projectDraftKey + ':from-projects', '1');
+      else sessionStorage.removeItem(projectDraftKey + ':from-projects');
+    }
+  }, [fromGlobalProjects, newProject, projectDraftKey]);
   const [fields, setFields] = useState(() => projectFields(projectDraftKey));
   const [projectFieldsTouched, setProjectFieldsTouched] = useState({ name: false, slug: false });
   const validProjectName = !!fields.name.trim() && [...fields.name.trim()].length <= 160;
   const validProjectSlug = validProjectID(fields.slug);
   const [returnedOperation] = useState(() => params.get('operation_id'));
   const base = `/admin/github/companies/${encodeURIComponent(company)}/projects/${encodeURIComponent(project)}`;
-  const back = newProject ? '/admin?company_id=' + encodeURIComponent(company) : '/?' + new URLSearchParams({ company_id: company, project_id: project });
-  const [draft, setDraft] = useState(() => savedDraft(draftKey));
+  const back = managedRole ? '/admin?' + new URLSearchParams({ page: 'projects', company_id: company, project_id: project }) : newProject ? (fromGlobalProjects ? '/admin?page=projects' : '/admin?company_id=' + encodeURIComponent(company)) : '/?' + new URLSearchParams({ company_id: company, project_id: project });
+  const [draft, setDraft] = useState(() => {
+    const previous = savedDraft(draftKey);
+    return managedRole && previous?.intent.role !== managedRole ? null : previous;
+  });
   const invalidSavedRepository = draft?.intent.action === 'create' && !validRepositoryName(draft.intent.target_repository_name || '');
   const [roles, setRoles] = useState<Roles | null>(null);
   const [operation, setOperation] = useState<Operation | null>(null);
-  const [role, setRole] = useState<Role>('visual');
+  const [role, setRole] = useState<Role>(managedRole || 'visual');
   const [action, setAction] = useState<Action | ''>(existingOnly ? 'connect' : '');
   const [canBindExistingReceipt, setCanBindExistingReceipt] = useState(false);
-  const [visibility, setVisibility] = useState<Visibility | ''>('');
+  const [visibility, setVisibility] = useState<Visibility | ''>(managedRole ? 'private' : '');
   const [discovery, setDiscovery] = useState<Operation | null>(null);
   const [discoveryID, setDiscoveryID] = useState(() => (newProject && returnedOperation) || sessionStorage.getItem(draftKey + ':discovery') || '');
   const [pendingInstallation, setPendingInstallation] = useState<Operation | null>(null);
@@ -167,6 +192,7 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
   const clearCreationDraft = useCallback(() => {
     sessionStorage.removeItem(projectDraftKey);
     sessionStorage.removeItem(projectDraftKey + ':binding');
+    sessionStorage.removeItem(projectDraftKey + ':from-projects');
     sessionStorage.removeItem(`builder-github:${company}::discovery`);
     remember(`builder-github:${company}:`, null);
   }, [company, projectDraftKey]);
@@ -177,9 +203,9 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
     if (!validProjectID(created)) return false;
     clearCreationDraft();
     remember(`builder-github:${company}:${created}`, null);
-    location.assign('/admin?' + new URLSearchParams({ company_id: company, created_project: created }));
+    location.assign('/admin?' + new URLSearchParams({ ...(fromGlobalProjects ? { page: 'projects' } : { company_id: company }), created_project: created }));
     return true;
-  }, [clearCreationDraft, company, projectDraftKey]);
+  }, [clearCreationDraft, company, fromGlobalProjects, projectDraftKey]);
 
   useEffect(() => {
     let active = true;
@@ -274,6 +300,14 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
   };
   const process = (result: Operation) => {
     if (settleProjectCreation(result, boundProject)) return;
+    if (managedRole && result.state === 'completed') {
+      remember(draftKey, null);
+      sessionStorage.removeItem(draftKey + ':managed-role');
+      sessionStorage.removeItem(draftKey + existingOnlySuffix);
+      sessionStorage.removeItem(draftKey + ':discovery');
+      location.replace(back + '&link_saved=1');
+      return;
+    }
     setOpID(result.operation_id);
     setOperation(result);
     if (result.authorization_url) goToGitHub(result.authorization_url);
@@ -464,18 +498,21 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
     remember(draftKey, null);
     remember(`builder-github:${company}:${boundProject}`, null);
     sessionStorage.removeItem(draftKey + ':discovery');
-    const entryMode = `builder-github:${company}:${boundProject}:existing-only`;
+    const entryMode = `builder-github:${company}:${boundProject}` + existingOnlySuffix;
     if (selectExisting) sessionStorage.setItem(entryMode, '1');
     else sessionStorage.removeItem(entryMode);
-    location.replace('/admin/github?' + new URLSearchParams({ company_id: company, project_id: boundProject }));
+    location.replace('/admin/github?' + new URLSearchParams({ company_id: company, project_id: boundProject, ...(managedRole ? { managed_role: managedRole } : {}) }));
   };
   const allowDraftEntry = !opID;
-  const selectable = repositories.filter(repository => repository.repository_full_name.toLowerCase().includes(search.toLowerCase()));
+  const linkedInRole = managedRole === 'implementation' ? roles?.implementation.repositories : managedRole === 'visual' && roles ? [roles.visual] : [];
+  const selectable = repositories.filter(repository => repository.repository_full_name.toLowerCase().includes(search.toLowerCase()) &&
+    !linkedInRole?.some(link => link.github_repository_id === repository.github_repository_id ||
+      link.repository_id?.toLowerCase() === repository.repository_full_name.toLowerCase()));
 
 
-  return <div className={newProject ? "github-admin-page github-project-create" : "github-admin-page"}>
+  return <div className={newProject ? "github-admin-page github-project-create" : managedRole ? "github-admin-page github-managed-link" : "github-admin-page"}>
     <section className="github-admin-drawer" role="dialog" aria-modal="true" aria-labelledby="github-admin-heading">
-      <header className="github-admin-head"><div><a className="github-admin-back" href={back}>← Projetos</a><h1 id="github-admin-heading" ref={drawerHeading} tabIndex={-1}>{newProject ? 'Novo projeto' : 'Conectar repositório'}</h1></div><a href={back} aria-label="Fechar">×</a></header>
+      <header className="github-admin-head"><div><a className="github-admin-back" href={back} aria-label={managedRole ? 'Voltar aos detalhes do projeto' : undefined}>{managedRole ? '← Detalhes do projeto' : '← Projetos'}</a><h1 id="github-admin-heading" ref={drawerHeading} tabIndex={-1}>{newProject ? 'Novo projeto' : managedRole === 'implementation' ? 'Adicionar vínculo de código' : managedRole === 'visual' ? (roles?.visual.repository_id ? 'Substituir vínculo visual' : 'Adicionar vínculo visual') : 'Conectar repositório'}</h1></div><a href={back} aria-label="Fechar">×</a></header>
       <div className="github-admin-body">
         <div className="github-admin-company"><span aria-hidden="true">{company.charAt(0).toUpperCase()}</span><div><strong>{newProject ? companyName || company : project}</strong><p>{newProject ? 'Empresa selecionada' : company}</p></div></div>
         {newProject && <div className="github-admin-fields">
@@ -531,7 +568,7 @@ export function GitHubAdmin({ companyName }: { companyName?: string } = {}) {
               <div className="github-connected-actions"><InstallationSettingsLink url={discovery.settings_url} />
                 <button type="button" disabled={busy} onClick={() => openDiscovery()}>Trocar conta</button>
               </div></div>
-            {!newProject && <label>Papel do repositório<select value={role} onChange={event => setRole(event.target.value as Role)}>
+            {!newProject && !managedRole && <label>Papel do repositório<select value={role} onChange={event => setRole(event.target.value as Role)}>
               <option value="visual">Artefatos visuais</option><option value="implementation">Código e provas</option>
             </select></label>}
             <p>{existingOnly ? 'Escolha o repositório existente.' : 'Escolha um repositório existente ou crie um novo.'}</p>

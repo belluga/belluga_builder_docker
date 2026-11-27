@@ -127,3 +127,8 @@
 .github-connected-actions { margin-left: auto; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .github-connected-actions > button { padding: 0; border: 0; background: transparent; font-size: 13px; font-weight: 700; }
 .github-settings-link { font-size: 13px; font-weight: 700; white-space: nowrap; }
+
+@media (max-width: 750px) {
+  .github-managed-link .github-admin-head { position: sticky; top: 0; background: #fff; z-index: 1; }
+  .github-managed-link .github-admin-back { display: inline-flex; min-height: 44px; align-items: center; }
+}

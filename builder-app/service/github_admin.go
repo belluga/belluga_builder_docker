@@ -45,6 +45,7 @@ func registerGitHubAdmin(mux *http.ServeMux, proxy *githubAdminProxy) {
 	const roles = githubAdminPath + "/companies/{company}/projects/{project}"
 	const op = roles + "/operations"
 	mux.HandleFunc("GET "+roles, proxy.operation(""))
+	mux.HandleFunc("POST "+roles+"/remove", proxy.operation("/remove"))
 	mux.HandleFunc("GET "+roles+"/pending-installation", proxy.operation("/pending-installation"))
 	mux.HandleFunc("POST "+op, proxy.operation("/operations"))
 	mux.HandleFunc("GET "+op+"/{operation}", proxy.operation("/operations/{operation}"))
