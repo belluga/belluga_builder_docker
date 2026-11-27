@@ -72,7 +72,10 @@ func selectionFromHeader(value string) (confirmedSelection, bool) {
 func (a adapter) handler(tool toolSpec) mcp.ToolHandler {
 	return func(ctx context.Context, request *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		carrier, ok := ctx.Value(carrierKey{}).(transportCarrier)
-		if !ok || carrier.provider != provider || !nativeSessionID.MatchString(carrier.session) {
+		sessionValid := carrier.provider == provider && nativeSessionID.MatchString(carrier.session)
+		withoutSession := carrier.sessionHeadersAbsent && tool.Method == http.MethodGet &&
+			(tool.Name == "builder_company_search" || tool.Name == "builder_project_search")
+		if !ok || !sessionValid && !withoutSession {
 			return localFailure(http.StatusUnauthorized, "session_required", "session_id",
 				"Use the native Codex thread.sessionId in the host-provided conversation headers.", "none", "", ""), nil
 		}
@@ -148,7 +151,13 @@ func (a adapter) call(ctx context.Context, carrier transportCarrier, tool toolSp
 	if tool.Name == "builder_company_search" {
 		query.Set("company_ids", a.companyList)
 	}
-	response, err := a.registry.request(ctx, carrier.session, tool.Method, tool.path(args, carrier.session), query, body, tool.timeout())
+	path := tool.path(args, carrier.session)
+	var response registryResponse
+	if carrier.sessionHeadersAbsent {
+		response, err = a.registry.requestDiscovery(ctx, path, query, tool.timeout())
+	} else {
+		response, err = a.registry.request(ctx, carrier.session, tool.Method, path, query, body, tool.timeout())
+	}
 	if err != nil || ctx.Err() != nil {
 		status := http.StatusBadGateway
 		if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {

@@ -27,6 +27,7 @@ type githubConnectionImplementationRole struct {
 }
 
 type githubConnectionRoles struct {
+	ProjectName    string                             `json:"project_name"`
 	Visual         githubConnectionVisualRole         `json:"visual"`
 	Implementation githubConnectionImplementationRole `json:"implementation"`
 }
@@ -45,6 +46,7 @@ func (a *githubConnectionAdmin) roles(ctx context.Context, company, project stri
 	if err != nil {
 		return out, err
 	}
+	out.ProjectName = doc.Name
 	out.Visual.Revision = doc.BindingRevision
 	collection := db.Collection(githubRepositoryConnectionsCollection)
 	if doc.Binding != nil {

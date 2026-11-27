@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -314,6 +315,67 @@ func TestMongoAdminOnboardingRetainsExactCreatorGrants(t *testing.T) {
 	}
 	if got := send(operationPath+"shared-project"+operationSuffix, otherJWT, "application/json", intent); got.Code != http.StatusOK || spy.starts != 1 {
 		t.Fatalf("shared Project creator lacks GitHub authority: HTTP %d, starts %d, %s", got.Code, spy.starts, got.Body.String())
+	}
+
+	if _, err := store.ChangeImplementationRepository(ctx, company, project, ImplementationRepositoryChange{
+		ProjectID: project, Action: "confirm", RepositoryID: "team/code", Actor: owner.Subject, OperationID: "confirm-code", OwnerReference: "fixture",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	removeIntent := []byte(`{"role":"implementation","repository_id":"team/code","expected_revision":1,"operation_id":"denied-remove"}`)
+	removePath := operationPath + project + "/github-connections/remove"
+	if got := send(removePath, otherJWT, "application/json", removeIntent); got.Code != http.StatusForbidden {
+		t.Fatalf("shared viewer removed a link without GitHub mutation authority: %d %s", got.Code, got.Body.String())
+	}
+	currentLinks, err := store.ReadImplementationRepositories(ctx, company, project)
+	if err != nil || currentLinks.Revision != 1 || len(currentLinks.Items) != 1 || currentLinks.Items[0] != "team/code" {
+		t.Fatalf("denied removal changed the Project: %+v, %v", currentLinks, err)
+	}
+
+	for index := range adminProjectsPageSize {
+		id := fmt.Sprintf("catalog-%02d", index)
+		if err := store.writeProject(ctx, activeCompany, Project{
+			ID: id, Name: "Catalog " + id, CompanyID: company,
+			RegisteredAt: time.Now().UTC().Format(time.RFC3339Nano), PreparationState: "not_ready",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.createAdminProject(ctx, sharedPlain, other, adminRegistration{Name: "Hidden project", Slug: "hidden-project", Operation: "seed-hidden"}); err != nil {
+		t.Fatal(err)
+	}
+	readProjects := func(assertion string, values url.Values) adminProjectsPage {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/internal/v1/admin/projects?"+values.Encode(), nil)
+		request.Header.Set(githubAccessAssertionHeader, assertion)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, request)
+		var page adminProjectsPage
+		if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &page) != nil {
+			t.Fatalf("read the protected Project directory: %d %s", response.Code, response.Body.String())
+		}
+		return page
+	}
+	first := readProjects(ownerJWT, url.Values{"q": {"COMPANY"}})
+	if len(first.Projects) != adminProjectsPageSize || first.NextCursor == "" {
+		t.Fatalf("Company label search did not return a full first page: %+v", first)
+	}
+	second := readProjects(ownerJWT, url.Values{"q": {"COMPANY"}, "cursor": {first.NextCursor}})
+	if len(second.Projects) != 3 || second.NextCursor != "" {
+		t.Fatalf("unexpected continuation under partial access: %+v", second)
+	}
+	seen := make(map[string]bool)
+	for _, row := range append(first.Projects, second.Projects...) {
+		if row.CompanyID != company || row.Company != req.Name || seen[row.ID] {
+			t.Fatalf("page surfaced an unauthorized or duplicated row: %+v", row)
+		}
+		seen[row.ID] = true
+	}
+	if got := readProjects(ownerJWT, url.Values{"company_id": {sharedPlain}}); len(got.Projects) != 0 {
+		t.Fatalf("Company filter exposed hidden rows: %+v", got)
+	}
+	if got := readProjects(otherJWT, url.Values{"company_id": {sharedPlain}}); len(got.Projects) != 1 || got.Projects[0].ID != "hidden-project" {
+		t.Fatalf("exact Company filter failed for the owner: %+v", got)
 	}
 
 }

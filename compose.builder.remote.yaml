@@ -3,6 +3,30 @@
 x-registry-image: &registry-image ghcr.io/belluga/builder-registry@sha256:${BUILDER_REGISTRY_DIGEST:?set the approved Registry digest (64 hex digits)}
 
 services:
+  builder-ingress:
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
+    platform: linux/amd64
+    environment:
+      BUILDER_REMOTE_HOST: ${BUILDER_REMOTE_HOST:?set the public Builder hostname}
+    ports: ["80:80", "443:443"]
+    depends_on:
+      - builder-viewer
+      - builder-mcp
+    networks: [ingress-egress, ingress-viewer, ingress-mcp]
+    volumes:
+      - type: bind
+        source: ./docker/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - ingress-tls:/data
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
   builder-viewer:
     image: ghcr.io/belluga/builder-viewer@sha256:${BUILDER_VIEWER_DIGEST:?set the approved Viewer digest (64 hex digits)}
     platform: linux/amd64
@@ -12,19 +36,37 @@ services:
       # Selects Registry-backed mode. Viewer needs no state or host checkout mount.
       DELPHI_BUILDER_STATE_ROOT: /state
       DELPHI_BUILDER_REGISTRY_URL: http://builder-registry:8080
-      PUBLIC_PREVIEW_HOST: ${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
-      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
+      PUBLIC_PREVIEW_HOST: ${BUILDER_REMOTE_HOST:?set the public Builder hostname}
+      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the public Builder hostname}
     depends_on:
       builder-registry:
         condition: service_started
-    networks:
-      tunnel-ingress:
-        aliases: [builder-remote-viewer]
-      viewer-registry: {}
+    networks: [ingress-viewer, viewer-registry]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:size=16m,noexec,nosuid"]
+    restart: unless-stopped
+
+  builder-mcp:
+    image: ghcr.io/belluga/builder-mcp@sha256:${BUILDER_MCP_DIGEST:?set the approved MCP digest (64 hex digits)}
+    platform: linux/amd64
+    environment:
+      BUILDER_MCP_LISTEN_ADDR: 0.0.0.0:8098
+      BUILDER_MCP_REGISTRY_URL: http://builder-registry:8080
+      BUILDER_MCP_COMPANY_IDS: ${BUILDER_MCP_COMPANY_IDS:?set the Company discovery allowlist}
+      BUILDER_MCP_BEARER_TOKEN: ${BUILDER_MCP_BEARER_TOKEN:?set a distinct runtime-only MCP bearer}
+      BUILDER_MCP_ALLOWED_HOSTS: ${BUILDER_REMOTE_HOST:?set the public Builder hostname}
+      BUILDER_MCP_ALLOWED_ORIGINS: https://${BUILDER_REMOTE_HOST:?set the public Builder hostname}
+      GOMEMLIMIT: 768MiB
+    depends_on:
+      builder-registry:
+        condition: service_started
+    networks: [ingress-mcp, mcp-registry]
+    mem_limit: 1g
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
   builder-registry:
@@ -42,7 +84,7 @@ services:
       BUILDER_GITHUB_APP_CLIENT_ID: ${BUILDER_GITHUB_APP_CLIENT_ID:?set GitHub App client ID}
       BUILDER_GITHUB_APP_CLIENT_SECRET: ${BUILDER_GITHUB_APP_CLIENT_SECRET:?set GitHub App client secret}
       BUILDER_GITHUB_APP_PRIVATE_KEY_FILE: /run/secrets/github-app-key.pem
-      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the Access-protected hostname}
+      BUILDER_GITHUB_ADMIN_ORIGIN: https://${BUILDER_REMOTE_HOST:?set the public Builder hostname}
       BUILDER_GITHUB_ACCESS_ISSUER: ${BUILDER_GITHUB_ACCESS_ISSUER:?set the verified Cloudflare Access issuer}
       BUILDER_GITHUB_ACCESS_AUDIENCE: ${BUILDER_GITHUB_ACCESS_AUDIENCE:?set the exact Access application audience}
       BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS: ${BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS:-true}
@@ -53,7 +95,7 @@ services:
         condition: service_completed_successfully
       project-reader:
         condition: service_started
-    networks: [viewer-registry, registry-reader]
+    networks: [viewer-registry, mcp-registry, registry-reader]
     volumes:
       - type: bind
         source: ${BUILDER_GITHUB_APP_KEY_PATH:?set the protected server-side PEM path}
@@ -109,14 +151,19 @@ services:
     restart: "no"
 
 networks:
-  tunnel-ingress:
-    external: true
-    name: ${BUILDER_TUNNEL_NETWORK:?set the dedicated Tunnel connector Docker network}
-  # These project-scoped bridges need outbound connectivity to Mongo and GitHub.
-  # No application service publishes a host port.
+  ingress-egress:
+  ingress-viewer:
+    internal: true
+  ingress-mcp:
+    internal: true
   viewer-registry:
+    internal: true
+  mcp-registry:
+    internal: true
+  # Registry and Reader need outbound connectivity to Mongo and GitHub.
   registry-reader:
   migration-egress:
 
 volumes:
+  ingress-tls:
   prototype-git-cache:

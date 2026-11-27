@@ -279,6 +279,9 @@ func (m *MongoStore) ChangeImplementationRepository(ctx context.Context, company
 	operation := implementationRepositoryOperation{ID: request.OperationID, Digest: digest, Actor: request.Actor, OwnerReference: request.OwnerReference, Action: request.Action, Repository: request.RepositoryID}
 	result, err := collection.UpdateOne(ctx, filter, bson.M{"$set": bson.M{"implementation_repositories": items, "implementation_repository_confirmations": confirmations, "implementation_repositories_revision": nextRevision, "implementation_repositories_last_operation": operation}})
 	if err != nil {
+		if mongoTransactionShouldRetry(err) {
+			return ImplementationRepositorySet{}, err
+		}
 		return ImplementationRepositorySet{}, ErrUnavailable
 	}
 	if result.ModifiedCount != 1 {

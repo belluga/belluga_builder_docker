@@ -30,11 +30,12 @@ type transportConfig struct {
 type carrierKey struct{}
 
 type transportCarrier struct {
-	context   context.Context
-	provider  string
-	session   string
-	selection string
-	response  *largeResponseLease
+	context              context.Context
+	sessionHeadersAbsent bool
+	provider             string
+	session              string
+	selection            string
+	response             *largeResponseLease
 }
 
 // largeResponseLease keeps expanded TextContent serialization from
@@ -112,7 +113,8 @@ func protectTransport(config transportConfig, next http.Handler) http.Handler {
 		defer response.release()
 		carrier := transportCarrier{
 			context: ctx, provider: singleHeader(r.Header, headerProvider),
-			session: singleHeader(r.Header, headerSession), selection: singleHeader(r.Header, headerSelection), response: response,
+			sessionHeadersAbsent: len(r.Header.Values(headerProvider)) == 0 && len(r.Header.Values(headerSession)) == 0,
+			session:              singleHeader(r.Header, headerSession), selection: singleHeader(r.Header, headerSelection), response: response,
 		}
 		guarded := &limitedWriter{ResponseWriter: w, requestID: requestID}
 		next.ServeHTTP(guarded, r.WithContext(context.WithValue(ctx, carrierKey{}, carrier)))
