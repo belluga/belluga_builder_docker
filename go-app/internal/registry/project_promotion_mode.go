@@ -388,12 +388,16 @@ func (m *MongoStore) transitionCodePromotion(ctx context.Context, collection *mo
 		if project.Binding != nil {
 			dockerRepository = project.Binding.DockerRepositoryID
 		}
-		if err := verifyMVPLocalDelivery(record, contentDigest, localIDs, dockerRepository); err != nil {
+		claims, claimsErr := resolveMVPClaims(record, dockerRepository)
+		if claimsErr != nil {
+			return TODOActionResponse{}, claimsErr
+		}
+		if err := verifyMVPLocalDelivery(record, contentDigest, localIDs, claims); err != nil {
 			return TODOActionResponse{}, err
 		}
 		policy.bindingRevision = &project.BindingRevision
 		policy.repositoryIDs = localIDs
-		proof, err = m.verifyMVPProduction(ctx, companyID, record, request, dockerRepository)
+		proof, err = m.verifyMVPProduction(ctx, companyID, record, request, claims)
 	} else {
 		// PACED can send empty or null proof arrays on Complete code transitions.
 		if request.LocalProof != nil || request.localProofPresent || len(request.ProofReferences) != 0 || len(request.WaiverReferences) != 0 {

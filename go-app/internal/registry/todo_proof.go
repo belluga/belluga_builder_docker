@@ -20,33 +20,38 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
-// The production Reader verifies the same original commits in the selected
-// deployment repositories. Recover legacy PACED aliases from the verified Local
-// proof when an older typed scope omitted the repository_id.
-func verifyMVPLocalDelivery(todo TODORecord, contentDigest string, localIDs map[string]string, boundDockerRepository string) error {
-	builder, paced, _, err := mvpImplementationClaims(todo)
+type mvpClaims struct {
+	builder, paced, foundation                     []string
+	dockerRepository, pacedRepository, pacedBranch string
+}
+
+// The same resolved repository identities drive the local fence and Reader request.
+func resolveMVPClaims(todo TODORecord, boundDockerRepository string) (mvpClaims, error) {
+	claims := mvpClaims{dockerRepository: mvpApprovedDockerRepository(todo)}
+	if claims.dockerRepository == "" {
+		claims.dockerRepository = boundDockerRepository
+	}
+	builder, paced, foundation, err := mvpImplementationClaims(todo, claims.dockerRepository)
 	if err != nil {
-		return err
+		return mvpClaims{}, err
 	}
-	dockerRepository := mvpApprovedDockerRepository(todo)
-	if dockerRepository == "" {
-		dockerRepository = boundDockerRepository
+	claims.builder, claims.paced, claims.foundation = builder, paced, foundation
+	if len(paced) != 0 {
+		claims.pacedRepository, claims.pacedBranch, err = mvpPACEDRepository(todo, paced)
 	}
-	commits := todoOriginalCommitSet{CommitOwner: make(map[string]string, len(builder)+len(paced))}
-	for _, sha := range builder {
-		if !validGitRepositoryID(dockerRepository) {
+	return claims, err
+}
+
+func verifyMVPLocalDelivery(todo TODORecord, contentDigest string, localIDs map[string]string, claims mvpClaims) error {
+	commits := todoOriginalCommitSet{CommitOwner: make(map[string]string, len(claims.builder)+len(claims.paced))}
+	for _, sha := range claims.builder {
+		if !validGitRepositoryID(claims.dockerRepository) {
 			return todoTeach("project.docker_repository_id", "select the approved or bound Docker repository for the original production commits", ErrConflict)
 		}
-		commits.CommitOwner[sha] = dockerRepository
+		commits.CommitOwner[sha] = claims.dockerRepository
 	}
-	if len(paced) != 0 {
-		repository, _, err := mvpPACEDRepository(todo, paced)
-		if err != nil {
-			return err
-		}
-		for _, sha := range paced {
-			commits.CommitOwner[sha] = repository
-		}
+	for _, sha := range claims.paced {
+		commits.CommitOwner[sha] = claims.pacedRepository
 	}
 	if len(commits.CommitOwner) == 0 || len(commits.CommitOwner) != len(todo.ImplementationCommits) {
 		return todoTeach("implementation_commits", "match distinct original production commits and repository identities", ErrConflict)
@@ -71,7 +76,7 @@ func verifyMVPLocalDelivery(todo TODORecord, contentDigest string, localIDs map[
 	return requireLocalProofCommitIdentity(todo.VerifiedTransitionRef, commits)
 }
 
-func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, todo TODORecord, request TODOActionRequest, projectDockerRepository string) (TODOProofReference, error) {
+func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, todo TODORecord, request TODOActionRequest, claims mvpClaims) (TODOProofReference, error) {
 	if todo.ReleaseID == "" || todo.Stage != "Local-Implemented" || todo.StageVerification != "verified" || todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.VerificationState != "verified" || containsTODOString(todo.Qualifiers, "Blocked") {
 		return TODOProofReference{}, todoTeach("stage/release_id", "complete only a verified, unblocked Local-Implemented TODO assigned to a Release", ErrConflict)
 	}
@@ -117,42 +122,13 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	if m.proofReaderURL == "" || m.proofHTTPClient == nil || m.proofReaderToken == "" {
 		return TODOProofReference{}, todoTeach("production_proof", "configure the private Reader proof route before Completed", ErrUnavailable)
 	}
-	builderCommits, pacedCommits, foundationCommits, err := mvpImplementationClaims(todo)
-	if err != nil {
-		return TODOProofReference{}, err
-	}
+	builderCommits, pacedCommits, foundationCommits := claims.builder, claims.paced, claims.foundation
 	query := url.Values{
 		"company_id": {companyID}, "project_id": {todo.ProjectID}, "todo_id": {todo.ID},
 		"deployment_id": {parts[0]}, "root_sha": {parts[1]}, "module_path": {"project"}, "commit_sha": {parts[1]}, "project_mode": {"mvp"},
 	}
-	if usesTypedMongoAuthority(todo) {
-		repositoryID := mvpApprovedDockerRepository(todo)
-		if repositoryID == "" && validGitRepositoryID(projectDockerRepository) {
-			repositoryID = projectDockerRepository
-		}
-		if repositoryID != "" {
-			query.Set("docker_repository_id", repositoryID)
-		} else if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
-			return TODOProofReference{}, todoTeach("project.docker_repository_id", "register a Docker deployment repository or include an approved Builder implementation scope before production proof", ErrConflict)
-		}
-		if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
-			query.Set("todo_authority", "mongo-v2")
-		}
-	}
-	if len(builderCommits) > 0 {
-		query.Set("project_commits", strings.Join(builderCommits, ","))
-	}
-	if len(pacedCommits) > 0 {
-		query.Set("paced_commits", strings.Join(pacedCommits, ","))
-		repository, branch, identityErr := mvpPACEDRepository(todo, pacedCommits)
-		if identityErr != nil {
-			return TODOProofReference{}, identityErr
-		}
-		query.Set("paced_repository_id", repository)
-		query.Set("paced_branch", branch)
-	}
-	if len(foundationCommits) > 0 {
-		query.Set("foundation_commits", strings.Join(foundationCommits, ","))
+	if err := claims.addReaderQuery(query, usesTypedMongoAuthority(todo), todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion); err != nil {
+		return TODOProofReference{}, err
 	}
 	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/production?"+query.Encode(), nil)
 	if err != nil {
@@ -191,6 +167,31 @@ func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, 
 	return TODOProofReference{Kind: "production-deployment", Source: "private-reader", Reference: claim.Reference, SourceDigest: "sha256:" + hex.EncodeToString(hash[:]), VerificationState: "verified"}, nil
 }
 
+func (claims mvpClaims) addReaderQuery(query url.Values, mongoAuthority, typedContent bool) error {
+	if mongoAuthority {
+		if validGitRepositoryID(claims.dockerRepository) {
+			query.Set("docker_repository_id", claims.dockerRepository)
+		} else if typedContent {
+			return todoTeach("project.docker_repository_id", "register a Docker deployment repository or include an approved Builder implementation scope before production proof", ErrConflict)
+		}
+		if typedContent {
+			query.Set("todo_authority", "mongo-v2")
+		}
+	}
+	if len(claims.builder) > 0 {
+		query.Set("project_commits", strings.Join(claims.builder, ","))
+	}
+	if len(claims.paced) > 0 {
+		query.Set("paced_commits", strings.Join(claims.paced, ","))
+		query.Set("paced_repository_id", claims.pacedRepository)
+		query.Set("paced_branch", claims.pacedBranch)
+	}
+	if len(claims.foundation) > 0 {
+		query.Set("foundation_commits", strings.Join(claims.foundation, ","))
+	}
+	return nil
+}
+
 // Older v2 contracts can lack repository metadata even though their local delivery
 // already verified the exact remote PACED identity for every implementation commit.
 // Reuse only that verified identity; never infer it from a label or a current branch.
@@ -199,12 +200,19 @@ func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, erro
 	if !verifiedCodeDeliveryIdentity(proof) || len(commits) == 0 {
 		return "", "", todoTeach("local_proof", "production must use one verified local-delivery record for every PACED implementation commit", ErrConflict)
 	}
+	requested := stringSliceSet(commits)
+	scopeAliases := map[string]struct{}{"PACED": {}, "delphi-ai": {}}
+	if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion {
+		scopeAliases = make(map[string]struct{})
+		for _, claim := range todo.ImplementationCommits {
+			if _, ok := requested[claim.Commit]; ok {
+				scopeAliases[claim.Repository] = struct{}{}
+			}
+		}
+	}
 	var scopedRepository string
 	for _, scope := range todo.DiffExpectation {
-		if scope.Repository != "PACED" && scope.Repository != "delphi-ai" {
-			continue
-		}
-		if scope.RepositoryID == "" {
+		if _, ok := scopeAliases[scope.Repository]; !ok || scope.RepositoryID == "" {
 			continue
 		}
 		if !validGitRepositoryID(scope.RepositoryID) || scopedRepository != "" && scopedRepository != scope.RepositoryID {
@@ -214,7 +222,6 @@ func mvpPACEDRepository(todo TODORecord, commits []string) (string, string, erro
 	}
 	type identity struct{ repository, branch string }
 	verified := make(map[string]identity, len(commits))
-	requested := stringSliceSet(commits)
 	items := strings.Split(proof.Reference, ";")
 	if proof.Kind == "remote-local-delivery" {
 		if len(items) < 2 || !strings.HasPrefix(items[0], "run=") || items[0] == "run=" {
@@ -300,13 +307,40 @@ func equalCommitClaims(a, b []string) bool {
 	return true
 }
 
-func mvpImplementationClaims(todo TODORecord) ([]string, []string, []string, error) {
+func mvpImplementationClaims(todo TODORecord, dockerRepository string) ([]string, []string, []string, error) {
 	var builderCommits, pacedCommits, foundationCommits []string
 	for _, claim := range todo.ImplementationCommits {
 		if !validGitCommit(claim.Commit) {
 			return nil, nil, nil, todoTeach("implementation_commits", "provide valid published implementation commit SHAs before MVP completion", ErrConflict)
 		}
-		switch strings.ToLower(strings.TrimSpace(claim.Repository)) {
+		source := strings.ToLower(strings.TrimSpace(claim.Repository))
+		if todo.Content != nil && todo.Content.SchemaVersion == todoContentSchemaVersion && len(todo.DiffExpectation) > 0 {
+			var match *TODORepositoryScope
+			for i := range todo.DiffExpectation {
+				scope := &todo.DiffExpectation[i]
+				if scope.Repository != claim.Repository {
+					continue
+				}
+				if match != nil {
+					return nil, nil, nil, todoTeach("implementation_commits.repository", "select one approved repository for each implementation alias", ErrConflict)
+				}
+				match = scope
+			}
+			if match == nil {
+				return nil, nil, nil, todoTeach("implementation_commits.repository", "match an exact alias from the approved TODO scope", ErrConflict)
+			}
+			if match.RepositoryID != "" {
+				switch {
+				case validGitRepositoryID(dockerRepository) && match.RepositoryID == dockerRepository:
+					source = "builder"
+				case match.RepositoryID == "belluga/delphi-ai" || validGitRepositoryID(match.RepositoryID) && (source == "paced" || source == "delphi-ai"):
+					source = "paced"
+				default:
+					return nil, nil, nil, todoTeach("implementation_commits.repository", "match the approved Docker or PACED repository identity for this MVP release", ErrConflict)
+				}
+			}
+		}
+		switch source {
 		case "builder", "builder code", "belluga_builder_docker":
 			builderCommits = append(builderCommits, claim.Commit)
 		case "paced", "delphi-ai":
