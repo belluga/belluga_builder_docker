@@ -1,0 +1,580 @@
+{
+  "kind": "derived inventory, canonical rows will be in API contract",
+  "existing_route_count": 94,
+  "rows": [
+    {
+      "route": "GET /internal/v1/catalog",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/sessions/bind",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_session_bind",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/sessions/{provider}/{externalID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_session_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/sessions",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_session_list",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/template",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_template",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/manifest",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_manifest",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/index",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_index",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/entities/{entityID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_entity_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/endpoints/{endpointID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_endpoint_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/decisions/{decisionID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_decision_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/compare",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_compare",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_revision_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/drafts/api-born",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_draft_create",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/activate",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_activate",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_update",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_delete",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_create",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/{family}/{recordID}/history/restore",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_restore",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/knowledge/history",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_knowledge_history",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_project_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_project_register",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/binding/first",
+      "disposition": "retired; NOT EXPOSED",
+      "tool": null,
+      "reason": "Existing rejected first-binding route remains rejected; use governed PUT binding."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/binding",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_repository_binding_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/binding",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_repository_binding_change",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_implementation_repositories_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/implementation-repositories",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_implementation_repository_change",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/state",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_state",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/overview",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_overview_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_overview_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/overview/{revision}/media/{slot}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/overview",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_overview_write",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_history",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/history/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_revision_validate",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/validate/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_revision_validate",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/design-system/{revision}/assets/{path...}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_prototype_list",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/{prototypeID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_prototype_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/prototypes/{revision}/files/{path...}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/landing",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_landing_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/landing/{bindingRevision}/{revision}/files/{path...}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/portfolios",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Company-wide portfolio enumeration is not a project-scoped MCP payload; existing portfolio consumers remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/portfolio/{bindingRevision}/{revision}/{inventoryDigest}/files/{path...}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_begin",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/design-system/mutations/{operationID}/recover",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_design_system_recover",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/decline",
+      "disposition": "deferred; current flow preserved",
+      "tool": null,
+      "reason": "Project guard requires binding while Decline requires absent Project; keep HTTP/CLI, no prebind exception in MCPv1."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/preference",
+      "disposition": "deferred; current flow preserved",
+      "tool": null,
+      "reason": "Project guard requires binding while Decline requires absent Project; keep HTTP/CLI, no prebind exception in MCPv1."
+    },
+    {
+      "route": "GET /internal/v1/lifecycle-control",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "PUT /internal/v1/lifecycle-control",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_roadmap_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_create_epic",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_edit_epic",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/order",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_order_epics",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_delete_epic",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_create_release",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PATCH /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_edit_release",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/delivery-branches",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_confirm_release_branch",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/epics/{epicID}/releases/order",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_order_releases",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_delete_release",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation/template",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_release_investigation_template",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_release_investigation_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_set_investigation",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/investigation",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_clear_investigation",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan/template",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_release_sequencing_plan_template",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_release_sequencing_plan_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "PUT /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_set_sequencing_plan",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "DELETE /internal/v1/companies/{companyID}/projects/{projectID}/roadmap/releases/{releaseID}/sequencing-plan",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_clear_sequencing_plan",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/tenants/resolve",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/todos/import",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/todos/admit-builder-r08",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_create",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/historical-adoption",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/template",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_template",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/images",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/images/{imageID}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "HEAD /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/images/{imageID}",
+      "disposition": "deferred; CURRENT FLOW PRESERVED",
+      "tool": null,
+      "reason": "Binary/media/file delivery and image upload stay in current HTTP/CLI/Reader; MCP v1 does not add filesystem, arbitrary URL, or base64 upload channel."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/remove",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_remove",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/transition",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_transition",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/verify-current-stage",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_stage_verify",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/compare",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_compare",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/{revision}",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_revision_get",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_history",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_update",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/content/migrate",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/evidence",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_evidence_update",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/review-waivers",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/placement",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_place",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/next-step",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_next_step_update",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/sections/ownership",
+      "disposition": "internal/admin; NOT EXPOSED",
+      "tool": null,
+      "reason": "Keep existing HTTP/CLI ownership and explicit administrative/migration authority; no common MCP tool."
+    },
+    {
+      "route": "POST /internal/v1/companies/{companyID}/projects/{projectID}/todos/{todoID}/history/restore",
+      "disposition": "MCP v1 REQUIRED",
+      "tool": "builder_todo_restore",
+      "reason": "Typed tool delegates to this fixed Registry route; existing owner validation/guards/proofs remain."
+    }
+  ],
+  "new_routes": [
+    {
+      "route": "GET /internal/v1/companies/search",
+      "tool": "builder_company_search"
+    },
+    {
+      "route": "GET /internal/v1/companies/{companyID}/projects",
+      "tool": "builder_project_search"
+    }
+  ]
+}

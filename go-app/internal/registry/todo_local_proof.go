@@ -579,14 +579,9 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 		}
 		q.Set("baseline_sha", proofBounds[1])
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/commit?"+q.Encode(), nil)
+	response, lease, err := m.requestReaderProof(ctx, "/internal/v1/proofs/commit", q, mongoV2)
 	if err != nil {
-		return remoteCommitResult{}, ErrUnavailable
-	}
-	req.Header.Set("Authorization", "Bearer "+m.proofReaderToken)
-	response, err := m.proofHTTPClient.Do(req)
-	if err != nil {
-		return remoteCommitResult{}, todoTeach("remote_proof", "retry when the private Reader can verify the remote release branch", ErrUnavailable)
+		return remoteCommitResult{}, err
 	}
 	defer response.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(response.Body, maxRemoteCommitProofBytes+1))
@@ -608,6 +603,9 @@ func (m *MongoStore) readRemoteCommit(ctx context.Context, companyID, projectID,
 	var result remoteCommitResult
 	if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != projectID || result.Repository != repository || result.Branch != branch || result.CommitSHA != sha || len(proofBounds) == 1 && result.TestedHeadSHA != proofBounds[0] || len(proofBounds) == 2 && result.BaselineSHA != proofBounds[1] || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || !validGitCommit(result.RemoteHead) || !validGitCommit(result.ParentSHA) || len(result.Paths) == 0 || result.Outcome != "verified" {
 		return remoteCommitResult{}, todoTeach("remote_proof", "match the exact repository, branch and attributable commit returned by the private Reader", ErrConflict)
+	}
+	if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
+		return remoteCommitResult{}, err
 	}
 	return result, nil
 }
@@ -631,26 +629,25 @@ func (m *MongoStore) verifyPlanningCodeAnchors(ctx context.Context, companyID, p
 					return todoTeach(field, "configure the private Reader to verify a code/test file at the approved repository baseline", ErrUnavailable)
 				}
 				q := url.Values{"company_id": {companyID}, "project_id": {projectID}, "repository": {ref.RepositoryID}, "baseline": {scope.Baseline}, "path": {ref.Path}}
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/code-anchor?"+q.Encode(), nil)
+				response, lease, err := m.requestReaderProof(ctx, "/internal/v1/proofs/code-anchor", q, true)
 				if err != nil {
-					return ErrUnavailable
-				}
-				req.Header.Set("Authorization", "Bearer "+m.proofReaderToken)
-				response, err := m.proofHTTPClient.Do(req)
-				if err != nil {
-					return todoTeach(field, "retry when the private Reader can verify the approved baseline", ErrUnavailable)
+					return err
 				}
 				data, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<10))
 				_ = response.Body.Close()
 				var result struct {
-					CompanyID  string `json:"company_id"`
-					ProjectID  string `json:"project_id"`
-					Repository string `json:"repository"`
-					Baseline   string `json:"baseline"`
-					Path       string `json:"path"`
-					Type       string `json:"type"`
+					CompanyID        string `json:"company_id"`
+					ProjectID        string `json:"project_id"`
+					Repository       string `json:"repository"`
+					Baseline         string `json:"baseline"`
+					Path             string `json:"path"`
+					Type             string `json:"type"`
+					RepositoryNodeID string `json:"repository_node_id"`
 				}
 				if readErr == nil && len(data) < 16<<10 && response.StatusCode == http.StatusOK && json.Unmarshal(data, &result) == nil && result.CompanyID == companyID && result.ProjectID == projectID && result.Repository == ref.RepositoryID && result.Baseline == scope.Baseline && result.Path == ref.Path && result.Type == "file" {
+					if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
+						return err
+					}
 					verified = true
 					break
 				}

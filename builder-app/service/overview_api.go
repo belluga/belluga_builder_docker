@@ -33,13 +33,14 @@ type overviewProxyResponse struct {
 	KnowledgeOrigin json.RawMessage      `json:"knowledge_origin,omitempty"`
 	Source          json.RawMessage      `json:"source,omitempty"`
 	Teach           string               `json:"teach,omitempty"`
+	TeachDetail     *proxyTeachDetail    `json:"teach_detail,omitempty"`
 }
 
 func (p *registeredPreview) overviewAPIHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	companyID, projectID, revision, slot, mediaRequest, ok := parseOverviewProxyRequest(r)
 	if !ok {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "overview_request_invalid", "teach": "TEACH: Informe Company e Project válidos; media exige revisão positiva e slot fixo."})
+		overviewProxyError(w, http.StatusBadRequest, "overview_request_invalid", "TEACH: Informe Company e Project válidos; media exige revisão positiva e slot fixo.")
 		return
 	}
 	base := strings.TrimRight(strings.TrimSpace(p.registryURL), "/")
@@ -48,11 +49,11 @@ func (p *registeredPreview) overviewAPIHandler(w http.ResponseWriter, r *http.Re
 	}
 	registered, err := p.registryProjectRegistered(r, base, companyID, projectID)
 	if err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "overview_unavailable", "teach": "TEACH: Registry identity verification is unavailable; retry the current Overview."})
+		overviewProxyError(w, http.StatusServiceUnavailable, "overview_unavailable", "TEACH: Registry identity verification is unavailable; retry the current Overview.")
 		return
 	}
 	if !registered {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "project_not_found", "teach": "TEACH: This Company and Project are not registered in Registry."})
+		overviewProxyError(w, http.StatusNotFound, "project_not_found", "TEACH: This Company and Project are not registered in Registry.")
 		return
 	}
 	if mediaRequest {
@@ -79,6 +80,13 @@ func (p *registeredPreview) overviewAPIHandler(w http.ResponseWriter, r *http.Re
 	if json.Unmarshal(data, &result) != nil || !validOverviewProxyResult(result, companyID, projectID, 0) {
 		overviewProxyError(w, 503, "overview_response_invalid", "TEACH: Registry Overview identity, state, revision, content or media metadata did not validate.")
 		return
+	}
+	if !safeProxyTeachText(result.Teach) {
+		result.Teach = ""
+	}
+	result.TeachDetail = sanitizeProxyTeachDetail(result.TeachDetail, "overview_diagnostic", result.Teach)
+	if result.TeachDetail == nil && result.State != "available" {
+		result.TeachDetail = proxyTeachDetailFromLegacy("overview_"+result.State, result.Teach)
 	}
 	for i := range result.Media {
 		result.Media[i].Href = fmt.Sprintf("/api/overview/media/%s/%s/%d/%s", url.PathEscape(companyID), url.PathEscape(projectID), result.Revision, url.PathEscape(result.Media[i].Slot))
@@ -120,7 +128,7 @@ func overviewRegistryPath(companyID, projectID, suffix string) string {
 	return "/internal/v1/companies/" + url.PathEscape(companyID) + "/projects/" + url.PathEscape(projectID) + "/overview" + suffix
 }
 func overviewProxyError(w http.ResponseWriter, status int, code, teach string) {
-	writeJSON(w, status, map[string]string{"error": code, "teach": teach})
+	writeProxyTeachError(w, status, code, teach, proxyTeachEnvelope{})
 }
 func overviewProxyRegistryStatus(w http.ResponseWriter, response *http.Response) {
 	status, code, teach := 503, "overview_unavailable", "TEACH: Registry Overview is unavailable; retry the current read."
@@ -130,7 +138,11 @@ func overviewProxyRegistryStatus(w http.ResponseWriter, response *http.Response)
 	if response.StatusCode == 409 {
 		status, code, teach = 409, "overview_selection_changed", "TEACH: Overview selection changed during the read; reload the current revision."
 	}
-	overviewProxyError(w, status, code, teach)
+	envelope, ok := readProxyTeach(response.Body)
+	if !ok {
+		envelope = proxyTeachEnvelope{}
+	}
+	writeProxyTeachError(w, status, code, teach, envelope)
 }
 
 func validOverviewProxyResult(v overviewProxyResponse, companyID, projectID string, expected int64) bool {
@@ -216,6 +228,13 @@ func (p *registeredPreview) overviewMedia(w http.ResponseWriter, r *http.Request
 	if json.Unmarshal(data, &result) != nil || !validOverviewProxyResult(result, companyID, projectID, revision) || (result.State != "available" && result.State != "stale") {
 		overviewProxyError(w, 503, "overview_response_invalid", "TEACH: Exact Registry revision or media metadata did not validate.")
 		return
+	}
+	if !safeProxyTeachText(result.Teach) {
+		result.Teach = ""
+	}
+	result.TeachDetail = sanitizeProxyTeachDetail(result.TeachDetail, "overview_diagnostic", result.Teach)
+	if result.TeachDetail == nil && result.State == "stale" {
+		result.TeachDetail = proxyTeachDetailFromLegacy("overview_stale", result.Teach)
 	}
 	var declared *overviewProxyMedia
 	for i := range result.Media {

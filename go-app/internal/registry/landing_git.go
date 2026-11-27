@@ -99,6 +99,12 @@ func (m *MongoStore) readLandingManifest(ctx context.Context, companyID, project
 }
 
 func (m *MongoStore) ReadLanding(ctx context.Context, companyID, projectID string) (LandingCatalogResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (LandingCatalogResponse, error) {
+		return m.readLanding(ctx, companyID, projectID)
+	})
+}
+
+func (m *MongoStore) readLanding(ctx context.Context, companyID, projectID string) (LandingCatalogResponse, error) {
 	if !validID(companyID) || !validID(projectID) {
 		return LandingCatalogResponse{}, ErrInvalid
 	}
@@ -138,6 +144,12 @@ func (m *MongoStore) ReadLanding(ctx context.Context, companyID, projectID strin
 }
 
 func (m *MongoStore) ReadLandingFile(ctx context.Context, companyID, projectID string, bindingRevision int64, revision, requestedPath string) (landingFileResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (landingFileResponse, error) {
+		return m.readLandingFile(ctx, companyID, projectID, bindingRevision, revision, requestedPath)
+	})
+}
+
+func (m *MongoStore) readLandingFile(ctx context.Context, companyID, projectID string, bindingRevision int64, revision, requestedPath string) (landingFileResponse, error) {
 	if !validID(companyID) || !validID(projectID) || bindingRevision < 0 || !validFullGitSHA(revision) || ac.ValidateRelativePath(requestedPath) != nil {
 		return landingFileResponse{}, ErrInvalid
 	}

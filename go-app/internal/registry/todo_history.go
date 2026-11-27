@@ -874,11 +874,19 @@ func (m *MongoStore) ensureTODOHistoryBaseline(ctx context.Context, database *mo
 }
 
 func verifyTODOHistoryCollections(ctx context.Context, database *mongo.Database) error {
+	return verifyTODOHistoryCollectionsWithContentValidator(ctx, database, TODOContentVersionsValidator())
+}
+
+func verifyTODOHistoryCollectionsBeforePrototype(ctx context.Context, database *mongo.Database) error {
+	return verifyTODOHistoryCollectionsWithContentValidator(ctx, database, TODOContentVersionsValidatorBeforePrototype())
+}
+
+func verifyTODOHistoryCollectionsWithContentValidator(ctx context.Context, database *mongo.Database, contentValidator bson.D) error {
 	for _, expected := range []struct {
 		name      string
 		validator bson.D
 		indexes   []historyIndexSpec
-	}{{todoContentVersionsCollection, TODOContentVersionsValidator(), todoContentVersionIndexes()}, {todoEventsCollection, TODOEventsValidator(), todoEventIndexes()}} {
+	}{{todoContentVersionsCollection, contentValidator, todoContentVersionIndexes()}, {todoEventsCollection, TODOEventsValidator(), todoEventIndexes()}} {
 		collections, err := database.ListCollectionSpecifications(ctx, bson.D{{Key: "name", Value: expected.name}})
 		if err != nil || len(collections) != 1 {
 			return todoTeach(expected.name, "be provisioned before enabling TODO history operations", ErrConflict)
@@ -987,6 +995,16 @@ func (m *MongoStore) ReadTODOAsOf(ctx context.Context, companyID, projectID, tod
 	if expectedRevision != revision+1 {
 		return TODOAsOfResponse{}, todoTeach("history_unavailable", "contain the complete event sequence through the requested aggregate revision", ErrNotFound)
 	}
+	if content.SchemaVersion == todoContentSchemaVersion {
+		var version TODOContentVersion
+		if err := database.Collection(todoContentVersionsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "todo_id", Value: todoID}, {Key: "revision", Value: bson.D{{Key: "$lte", Value: revision}}}}, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&version); err != nil {
+			return TODOAsOfResponse{}, todoTeach("history.content_version", "have a digest for the authored content snapshot", ErrConflict)
+		}
+		historical := TODORecord{ID: todoID, ProjectID: projectID, Content: &content.TODOContent}
+		if err := validateStoredPrototypeProof(ctx, database, companyID, historical, version.Digest, state.Stage, state.StageVerification, state.VerifiedTransitionRef, revision); err != nil {
+			return TODOAsOfResponse{}, err
+		}
+	}
 	return TODOAsOfResponse{CompanyID: companyID, ProjectID: projectID, TODOID: todoID, Revision: revision, Content: content, State: state}, nil
 }
 
@@ -1044,6 +1062,9 @@ func (m *MongoStore) CompareTODOHistory(ctx context.Context, companyID, projectI
 	}
 	if !reflect.DeepEqual(from.Content.References, to.Content.References) {
 		changed = append(changed, "references")
+	}
+	if !reflect.DeepEqual(from.Content.ImageAttachments, to.Content.ImageAttachments) {
+		changed = append(changed, "image_attachments")
 	}
 	if !reflect.DeepEqual(from.Content.LegacyContext, to.Content.LegacyContext) {
 		changed = append(changed, "legacy_context")
@@ -1120,7 +1141,7 @@ func (m *MongoStore) EditTODOContent(ctx context.Context, companyID string, requ
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
-	return m.writeTODOContent(ctx, database, collection, companyID, record, request, digest, "content_changed", true)
+	return m.writeTODOContent(ctx, database, collection, companyID, record, request, digest, "content_changed", true, nil)
 }
 
 func (m *MongoStore) RestoreTODOContent(ctx context.Context, companyID string, request TODOContentRestoreRequest) (TODOContentEditResponse, error) {
@@ -1164,10 +1185,10 @@ func (m *MongoStore) RestoreTODOContent(ctx context.Context, companyID string, r
 	if err != nil {
 		return TODOContentEditResponse{}, ErrInvalid
 	}
-	return m.writeTODOContent(ctx, database, collection, companyID, record, edit, digest, "content_changed", false)
+	return m.writeTODOContent(ctx, database, collection, companyID, record, edit, digest, "content_changed", false, nil)
 }
 
-func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, request TODOContentEditRequest, digest, eventKind string, preserveArchived bool) (TODOContentEditResponse, error) {
+func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Database, collection *mongo.Collection, companyID string, record TODORecord, request TODOContentEditRequest, digest, eventKind string, preserveArchived bool, imageAttachment *TODOImageAttachment) (TODOContentEditResponse, error) {
 	var prior TODOHistoryEvent
 	findErr := database.Collection(todoEventsCollection).FindOne(ctx, bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "operation_id", Value: request.OperationID}}).Decode(&prior)
 	if findErr == nil {
@@ -1219,6 +1240,26 @@ func (m *MongoStore) writeTODOContent(ctx context.Context, database *mongo.Datab
 		return TODOContentEditResponse{}, err
 	}
 	requestedContent := withContractOwnership(request.Content)
+	if requestedContent.SchemaVersion == todoContentSchemaVersion && requestedContent.Delivery != nil && requestedContent.Delivery.Kind == "prototype" {
+		prototypeRecord := record
+		prototypeRecord.DiffExpectation = append([]TODORepositoryScope{}, requestedContent.DiffExpectation...)
+		prototypeRecord.AffectedFiles = append([]string{}, requestedContent.AffectedFiles...)
+		if err := validatePrototypeNoCodeFields(&requestedContent.TODOContent, prototypeRecord, record.ImplementationCommits); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
+	if imageAttachment == nil && preserveArchived && len(request.Content.ImageAttachments) > 0 && !reflect.DeepEqual(request.Content.ImageAttachments, current.ImageAttachments) {
+		return TODOContentEditResponse{}, todoTeach("content.image_attachments", "use the bound TODO image upload API to add references", ErrConflict)
+	}
+	// Image attachments are owned by the upload operation. Generic edit and
+	// restore requests retain the current set regardless of supplied JSON.
+	requestedContent.ImageAttachments = append([]TODOImageAttachment(nil), current.ImageAttachments...)
+	if imageAttachment != nil {
+		requestedContent.ImageAttachments = append(requestedContent.ImageAttachments, *imageAttachment)
+		if err := ValidateTODOContentDraft(requestedContent.TODOContent); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
 	if preserveArchived && requestedContent.SchemaVersion == todoContentSchemaVersion && current.SchemaVersion == todoContentSchemaVersion {
 		requestedContent.LegacyContext = current.LegacyContext
 	}
@@ -1361,6 +1402,9 @@ func validateAuthoredContent(content TODOAuthoredContent) error {
 		operationalContent.LegacyContext = nil
 		if err := validateTODOContent(operationalContent, false, false); err != nil {
 			return err
+		}
+		if operationalContent.Delivery != nil && operationalContent.Delivery.Kind == "prototype" && (len(content.DiffExpectation) != 0 || len(content.AffectedFiles) != 0 || len(operationalContent.LocalChecks) != 0) {
+			return todoTeach("content.delivery", "prototype delivery has no code diff, implementation commits, local checks, or affected code files", ErrInvalid)
 		}
 		return validateAuthoredEnvelope(content)
 	}
@@ -1768,10 +1812,22 @@ func TODOContentVersionsValidator() bson.D {
 	}}}
 }
 
+// TODOContentVersionsValidatorBeforePrototype is the strict v2 validator
+// deployed before Prototype delivery. V3 widens only the delivery union.
+func TODOContentVersionsValidatorBeforePrototype() bson.D {
+	v2 := todoAuthoredContentV2ValidatorBeforePrototype()
+	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
+	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
 func TODOContentVersionsValidatorBeforeKnowledgeDelivery() bson.D {
 	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "delivery")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
+}
+
+func todoAuthoredContentV2ValidatorBeforePrototype() bson.D {
+	return replaceBSONValueAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "delivery"}, todoKnowledgeContractSchemaBeforePrototype())
 }
 
 func TODOEventsValidatorBeforeKnowledgeDelivery() bson.D {
@@ -1784,14 +1840,14 @@ func TODOEventsValidatorBeforeKnowledgeDelivery() bson.D {
 // scan-before-collMod migration; old content bytes remain unchanged.
 func contentVersionsValidatorBeforePlanningAndRepositoryIdentity() bson.D {
 	v1 := withoutBSONFieldsAtPath(TODOAuthoredContentV1Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties", "diff_expectation", "items", "properties"}, "repository_id", "delivery_branch")
 	v2 = withoutBSONFieldsAtPath(v2, []string{"properties"}, "planning")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{v1, v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
 
 func contentVersionsValidatorBeforeAuditTriggers() bson.D {
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties", "planning", "properties"}, "audit_triggers")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties", "planning", "properties"}, "audit_triggers")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
@@ -1801,7 +1857,7 @@ func contentVersionsValidatorBeforeAuditTriggers() bson.D {
 // added to authored content v2. Only the optional v2 field is absent; v1 and
 // every other history/content constraint remain unchanged.
 func contentVersionsValidatorBeforeLocalChecks() bson.D {
-	v2 := withoutBSONFieldsAtPath(TODOAuthoredContentV2Validator(), []string{"properties"}, "local_checks")
+	v2 := withoutBSONFieldsAtPath(todoAuthoredContentV2ValidatorBeforePrototype(), []string{"properties"}, "local_checks")
 	content := bson.D{{Key: "bsonType", Value: "object"}, {Key: "oneOf", Value: bson.A{TODOAuthoredContentV1Validator(), v2}}}
 	return replaceBSONValueAtPath(TODOContentVersionsValidator(), []string{"$jsonSchema", "properties", "content"}, content)
 }
@@ -1886,6 +1942,13 @@ func TODOContentSchemaValidator() bson.D {
 		{Key: "working_directory", Value: text(2048)},
 		{Key: "input_paths", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "minItems", Value: 1}, {Key: "maxItems", Value: 64}, {Key: "items", Value: text(2048)}}},
 	})
+	imageAttachment := object(bson.A{"id", "path", "digest", "verified_revision"}, bson.D{
+		{Key: "id", Value: id},
+		{Key: "path", Value: text(1024)},
+		{Key: "digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}},
+		{Key: "verified_revision", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^[a-f0-9]{40}$"}}},
+		{Key: "description", Value: text(1024)},
+	})
 	auditProperties := bson.D{{Key: "blast_radius", Value: text(16)}, {Key: "architecture_applicability", Value: text(16)}}
 	for _, name := range []string{"behavioral_change_or_bugfix", "changes_public_contract", "touches_auth_or_tenant", "touches_runtime_or_infra", "touches_tests", "critical_user_journey", "release_or_promotion_critical", "high_severity_plan_review_issue", "explicit_three_lane_request"} {
 		auditProperties = append(auditProperties, bson.E{Key: name, Value: boolean})
@@ -1905,6 +1968,7 @@ func TODOContentSchemaValidator() bson.D {
 			{Key: "decisions", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 32}, {Key: "items", Value: item}}},
 			{Key: "risks", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 32}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"id", "text", "mitigation"}}, {Key: "properties", Value: bson.D{{Key: "id", Value: id}, {Key: "text", Value: text(2048)}, {Key: "mitigation", Value: text(2048)}}}}}}},
 			{Key: "references", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 64}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"kind", "ref"}}, {Key: "properties", Value: bson.D{{Key: "kind", Value: text(2048)}, {Key: "ref", Value: text(2048)}}}}}}},
+			{Key: "image_attachments", Value: array(16, imageAttachment)},
 			{Key: "legacy_context", Value: bson.D{{Key: "bsonType", Value: "array"}, {Key: "maxItems", Value: 128}, {Key: "items", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"source_revision", "section_position", "ownership", "title", "body", "digest"}}, {Key: "properties", Value: bson.D{{Key: "source_revision", Value: bson.D{{Key: "bsonType", Value: "string"}}}, {Key: "section_position", Value: bson.D{{Key: "bsonType", Value: "int"}, {Key: "minimum", Value: 0}}}, {Key: "ownership", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "enum", Value: bson.A{"contract"}}}}, {Key: "title", Value: text(2048)}, {Key: "body", Value: text(64 << 10)}, {Key: "digest", Value: bson.D{{Key: "bsonType", Value: "string"}, {Key: "pattern", Value: "^sha256:[a-f0-9]{64}$"}}}}}}}}},
 			{Key: "architecture", Value: bson.D{{Key: "bsonType", Value: "object"}, {Key: "additionalProperties", Value: false}, {Key: "required", Value: bson.A{"decision", "rationale", "protection"}}, {Key: "properties", Value: bson.D{{Key: "decision", Value: text(2048)}, {Key: "rationale", Value: text(2048)}, {Key: "protection", Value: text(2048)}}}}},
 			{Key: "planning", Value: planning},

@@ -8,12 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/event"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
 
 type fakeDesignSystemRemoteVerifier struct {
@@ -629,6 +634,149 @@ func TestMongoDesignSystemMutationRecoveryFinalizesOnlyVerifiedRemoteState(t *te
 	}
 }
 
+func TestMongoRegistrationRejectsExistingCompanyDuringPreparation(t *testing.T) {
+	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if uri == "" {
+		t.Skip("isolated MongoDB fixture not configured")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	stamp := fmt.Sprintf("test_register_race_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, stamp)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	store.tenantPrefix = stamp
+	input := Registration{CompanyID: "company-a", CompanyName: "Company A", ProjectID: "first", ProjectName: "First"}
+	tenant := store.client.Database(store.tenantDatabase(input.CompanyID))
+	t.Cleanup(func() {
+		_ = tenant.Drop(context.Background())
+		_ = store.control.Drop(context.Background())
+		_ = store.Close(context.Background())
+	})
+
+	insertStarted := make(chan struct{})
+	releaseInsert := make(chan struct{})
+	var tenantCommands atomic.Int32
+	client, err := mongo.Connect(options.Client().ApplyURI(uri).SetMonitor(&event.CommandMonitor{
+		Started: func(ctx context.Context, started *event.CommandStartedEvent) {
+			if started.DatabaseName == tenant.Name() {
+				tenantCommands.Add(1)
+			}
+			if started.DatabaseName == stamp && started.CommandName == "insert" && started.Command.Lookup("insert").StringValue() == companiesCollection {
+				close(insertStarted)
+				select {
+				case <-releaseInsert:
+				case <-ctx.Done():
+				}
+			}
+		},
+	}))
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Disconnect(context.Background()) })
+	contender := &MongoStore{client: client, control: client.Database(stamp), tenantPrefix: stamp}
+
+	initializing, pending := make(chan struct{}), make(chan struct{})
+	resumeInitial, resumePending := make(chan struct{}), make(chan struct{})
+	pause := func(step companySchemaStep, parked chan<- struct{}, resume <-chan struct{}) companySchemaStep {
+		apply := step.apply
+		step.apply = func(ctx context.Context, store *MongoStore, company Company) error {
+			close(parked)
+			select {
+			case <-resume:
+				return apply(ctx, store, company)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return step
+	}
+	store.schemaMigrations = append([]companySchemaStep(nil), store.schemaCatalog()...)
+	store.schemaMigrations[0] = pause(store.schemaMigrations[0], initializing, resumeInitial)
+	store.schemaMigrations[1] = pause(store.schemaMigrations[1], pending, resumePending)
+
+	var calls sync.WaitGroup
+	defer func() {
+		cancel()
+		calls.Wait()
+	}()
+	run := func(store *MongoStore, request Registration) <-chan error {
+		result := make(chan error, 1)
+		calls.Add(1)
+		go func() {
+			defer calls.Done()
+			_, err := store.Register(ctx, request)
+			result <- err
+		}()
+		return result
+	}
+	await := func(checkpoint <-chan struct{}, description string) {
+		t.Helper()
+		select {
+		case <-checkpoint:
+		case <-ctx.Done():
+			t.Fatalf("registration did not reach %s: %v", description, ctx.Err())
+		}
+	}
+	readCompany := func(state string) Company {
+		t.Helper()
+		company, err := store.rawCompany(ctx, input.CompanyID)
+		if err != nil || company.SchemaState != state {
+			t.Fatalf("Company state=%q, want %q, err=%v", company.SchemaState, state, err)
+		}
+		return company
+	}
+
+	second := input
+	second.ProjectID, second.ProjectName = "second", "Second"
+	loser := run(contender, second)
+	await(insertStarted, "contender insert after observing no Company")
+	winner := run(store, input)
+	await(initializing, "first schema migration")
+	readCompany("initializing")
+	assertRegistrationRetryTeachHTTP(t, ctx, contender, second)
+	readCompany("initializing")
+	close(resumeInitial)
+
+	await(pending, "second schema migration")
+	before := readCompany("pending")
+	close(releaseInsert)
+	var teach *TODOValidationError
+	if err := <-loser; !errors.Is(err, ErrConflict) || !errors.As(err, &teach) || teach.Field != "company.schema_migrations" ||
+		!strings.Contains(teach.Expected, "finish schema preparation before you retry registration") {
+		t.Fatalf("losing insert during pending did not return the retry TEACH: %v", err)
+	}
+	if after := readCompany("pending"); !reflect.DeepEqual(after.SchemaMigrations, before.SchemaMigrations) {
+		t.Fatalf("contender modified Company migration history: before=%+v after=%+v", before.SchemaMigrations, after.SchemaMigrations)
+	}
+	if n := tenantCommands.Load(); n != 0 {
+		t.Fatalf("losing calls issued %d commands against the Company database", n)
+	}
+	close(resumePending)
+	if err := <-winner; err != nil {
+		t.Fatalf("winner failed: %v", err)
+	}
+	project, err := store.Project(ctx, input.CompanyID, input.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retry, err := store.Register(ctx, input); err != nil || !reflect.DeepEqual(retry, project) {
+		t.Fatalf("retry did not return original Project: %+v, %v", retry, err)
+	}
+	if _, err := store.Register(ctx, second); err != nil {
+		t.Fatalf("new Project after Company is ready: %v", err)
+	}
+	if err := store.companySchemaReady(readCompany("ready")); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyTODOHistoryCollections(ctx, tenant); err != nil {
+		t.Fatalf("winning registration left invalid TODO history schema: %v", err)
+	}
+}
+
 func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	uri := os.Getenv("REGISTRY_TEST_MONGODB_URI")
 	if uri == "" {
@@ -651,6 +799,9 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	register := func(companyID string) (Project, error) {
 		return store.Register(ctx, Registration{CompanyID: companyID, CompanyName: companyID, ProjectID: "shared", ProjectName: "Shared"})
 	}
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-a", CompanyName: "company-a", ProjectID: "seed", ProjectName: "Seed"}); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	results := make(chan error, 8)
 	for range 8 {
@@ -663,6 +814,10 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 		if err != nil {
 			t.Fatalf("same-pair concurrent registration failed: %v", err)
 		}
+	}
+	projects := store.client.Database(store.tenantDatabase("company-a")).Collection(projectsCollection)
+	if count, err := projects.CountDocuments(ctx, bson.M{"id": "shared"}); err != nil || count != 1 {
+		t.Fatalf("same-pair concurrent creation: count=%d err=%v", count, err)
 	}
 	startConflict := make(chan struct{})
 	type registrationResult struct {
@@ -691,7 +846,7 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 				t.Fatalf("conflicting Company identities both registered: %q and %q", winningName, result.companyName)
 			}
 			winningName = result.companyName
-		} else if result.err == ErrConflict {
+		} else if errors.Is(result.err, ErrConflict) {
 			conflictCount++
 		} else {
 			t.Fatalf("concurrent conflicting registration returned unexpected error: %v", result.err)
@@ -878,7 +1033,7 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 		t.Fatalf("identity retry after binding: %v", err)
 	}
 	catalog, err := store.Catalog(ctx)
-	if err != nil || len(catalog.Projects) != 5 {
+	if err != nil || len(catalog.Projects) != 6 {
 		t.Fatalf("catalog Projects = %d, %v", len(catalog.Projects), err)
 	}
 	for _, companyID := range []string{"company-a", "company-b"} {
@@ -914,6 +1069,24 @@ func TestMongoRegistrationIsCompanyScopedAndRetryable(t *testing.T) {
 	roadmap, err := store.Roadmap(ctx, "shared", "company-b")
 	if err != nil || !bytes.Contains(roadmap, []byte(`"epics":[]`)) {
 		t.Fatalf("empty Roadmap = %s, %v", roadmap, err)
+	}
+	if _, err := store.control.Collection(companiesCollection).UpdateOne(ctx, bson.M{"id": "company-empty"}, bson.M{"$set": bson.M{"schema_state": "failed"}}); err != nil {
+		t.Fatal(err)
+	}
+	var operatorTeach *TODOValidationError
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-empty", CompanyName: "Empty", ProjectID: "first", ProjectName: "First"}); !errors.Is(err, ErrConflict) ||
+		!errors.As(err, &operatorTeach) || operatorTeach.Field != "company.schema_migrations" ||
+		!strings.HasPrefix(operatorTeach.Expected, "be recovered with the Registry migrate-all") {
+		t.Fatalf("failed Company did not return the operator TEACH: %v", err)
+	}
+	if _, err := store.control.Collection(companiesCollection).UpdateOne(ctx, bson.M{"id": "company-empty"}, bson.M{
+		"$set":   bson.M{"schema_state": "ready"},
+		"$unset": bson.M{"schema_migrations.0.applied_at": ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Register(ctx, Registration{CompanyID: "company-empty", CompanyName: "Empty", ProjectID: "first", ProjectName: "First"}); !errors.Is(err, ErrConflict) || !strings.Contains(err.Error(), "immutable ordered migration catalog") {
+		t.Fatalf("ready Company with a missing migration timestamp was accepted: %v", err)
 	}
 }
 

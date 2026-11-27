@@ -22,6 +22,7 @@ type portfolioProxyProject struct {
 	ProjectID         string               `json:"project_id"`
 	State             string               `json:"state"`
 	Teach             string               `json:"teach,omitempty"`
+	TeachDetail       *proxyTeachDetail    `json:"teach_detail,omitempty"`
 	RepositoryID      string               `json:"repository_id,omitempty"`
 	PublicationBranch string               `json:"publication_branch,omitempty"`
 	BindingRevision   int64                `json:"binding_revision,omitempty"`
@@ -32,8 +33,9 @@ type portfolioProxyProject struct {
 	Files             []portfolioProxyFile `json:"files,omitempty"`
 }
 type portfolioProxyCatalog struct {
-	CompanyID string                  `json:"company_id"`
-	Projects  []portfolioProxyProject `json:"projects"`
+	CompanyID   string                  `json:"company_id"`
+	Projects    []portfolioProxyProject `json:"projects"`
+	TeachDetail *proxyTeachDetail       `json:"teach_detail,omitempty"`
 }
 
 func (p *registeredPreview) portfolioAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +64,9 @@ func (p *registeredPreview) portfolioAPIHandler(w http.ResponseWriter, r *http.R
 		return
 	}
 	defer response.Body.Close()
+	if response.Header.Get("Cache-Control") == "no-store" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	if response.StatusCode != http.StatusOK {
 		portfolioRegistryFailure(w, response)
 		return
@@ -72,6 +77,7 @@ func (p *registeredPreview) portfolioAPIHandler(w http.ResponseWriter, r *http.R
 		landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: A Registry retornou catálogo de portfólios inválido ou acima do limite.")
 		return
 	}
+	catalog.TeachDetail = sanitizeProxyTeachDetail(catalog.TeachDetail, "portfolio_access_filtered", "TEACH: Restore GitHub App access for any missing Project portfolios.")
 	seen := map[string]bool{}
 	for i := range catalog.Projects {
 		item := &catalog.Projects[i]
@@ -80,13 +86,21 @@ func (p *registeredPreview) portfolioAPIHandler(w http.ResponseWriter, r *http.R
 			return
 		}
 		seen[item.ProjectID] = true
+		if item.Teach != "" && !safeProxyTeachText(item.Teach) {
+			item.Teach = "TEACH: Revise a publicação Portfolio atual antes de continuar."
+		}
 		if item.State != "available" {
 			if item.State != "not_authored" && item.State != "invalid" && item.State != "unavailable" {
 				landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: Estado do portfólio não reconhecido.")
 				return
 			}
+			item.TeachDetail = sanitizeProxyTeachDetail(item.TeachDetail, "portfolio_"+item.State, item.Teach)
+			if item.TeachDetail == nil {
+				item.TeachDetail = proxyTeachDetailFromLegacy("portfolio_"+item.State, item.Teach)
+			}
 			continue
 		}
+		item.TeachDetail = sanitizeProxyTeachDetail(item.TeachDetail, "portfolio_diagnostic", item.Teach)
 		if item.BindingRevision < 0 || !designSystemSHA.MatchString(item.Revision) || !validDigest(item.InventoryDigest) || len(item.Files) == 0 || len(item.Files) > 2 {
 			landingProxyError(w, http.StatusServiceUnavailable, "portfolio_response_invalid", "TEACH: A seleção do portfólio não contém SHA e inventário válidos.")
 			return
@@ -164,7 +178,11 @@ func (p *registeredPreview) portfolioRelativeFile(w http.ResponseWriter, r *http
 	}
 	w.Header().Set("ETag", response.Header.Get("ETag"))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if response.Header.Get("Cache-Control") == "no-store" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	}
 	w.WriteHeader(response.StatusCode)
 	if r.Method != http.MethodHead && response.StatusCode != http.StatusNotModified {
 		_, _ = w.Write(data)

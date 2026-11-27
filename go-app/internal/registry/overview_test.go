@@ -495,6 +495,10 @@ func overviewTestIndexSpecs() []overviewIndexSpec {
 
 func TestMongoOverviewFreshTenantHTTPPublicationAndReadback(t *testing.T) {
 	store, ctx := overviewMongoFixture(t, "fresh-http")
+	initial, err := store.ReadOverview(ctx, "company-overview", "project-a", 0)
+	if err != nil || initial.State != "not_authored" || initial.TeachDetail == nil || initial.TeachDetail.Code != "overview_not_authored" || initial.TeachDetail.Effects != TeachEffectsNotApplicable {
+		t.Fatalf("not-authored Overview guidance=%+v, err=%v", initial, err)
+	}
 	db, _, err := store.overviewProject(ctx, "company-overview", "project-a")
 	if err != nil {
 		t.Fatal(err)
@@ -535,6 +539,13 @@ func TestMongoOverviewFreshTenantHTTPPublicationAndReadback(t *testing.T) {
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), media.want) {
 			t.Fatalf("fresh tenant exact media read %s status=%d", media.slot, response.Code)
 		}
+	}
+	if _, err := db.Collection(overviewVersionsCollection).UpdateOne(ctx, bson.D{{Key: "project_id", Value: "project-a"}, {Key: "revision", Value: int64(1)}}, bson.M{"$set": bson.M{"content.schema_version": "unsupported"}}); err != nil {
+		t.Fatal(err)
+	}
+	invalid, err := store.ReadOverview(ctx, "company-overview", "project-a", 0)
+	if err != nil || invalid.State != "invalid" || invalid.TeachDetail == nil || invalid.TeachDetail.Code != "overview_invalid" || invalid.TeachDetail.Effects != TeachEffectsNotApplicable {
+		t.Fatalf("invalid Overview guidance=%+v, err=%v", invalid, err)
 	}
 }
 
@@ -739,7 +750,9 @@ func TestMongoOverviewHTTPRejectsIncompatibleIndexWithoutRepair(t *testing.T) {
 	response := httptest.NewRecorder()
 	path := "/internal/v1/companies/company-overview/projects/project-a/overview"
 	NewHandler(store).ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body)))
-	if response.Code != http.StatusServiceUnavailable || strings.Contains(strings.ToLower(response.Body.String()), "index") || strings.Contains(strings.ToLower(response.Body.String()), "mongo") {
+	var failure errorResponse
+	decodeErr := json.Unmarshal(response.Body.Bytes(), &failure)
+	if response.Code != http.StatusServiceUnavailable || decodeErr != nil || failure.Error != ErrUnavailable.Error() || strings.Contains(strings.ToLower(failure.Teach), "index") || strings.Contains(strings.ToLower(failure.Teach), "mongo") || failure.TeachDetail == nil || failure.TeachDetail.Effects != TeachEffectsUnknown || failure.TeachDetail.OperationID != input.OperationID || strings.Contains(strings.ToLower(failure.TeachDetail.NextAction), "index") || strings.Contains(strings.ToLower(failure.TeachDetail.NextAction), "mongo") {
 		t.Fatalf("incompatible index response exposed internals or was not unavailable: status=%d body=%s", response.Code, response.Body.String())
 	}
 	cursor, err := indexes.List(ctx)
@@ -911,7 +924,7 @@ func TestMongoOverviewIdenticalReplayPrecedesCurrentManifestValidation(t *testin
 		t.Fatal(err)
 	}
 	replayed, err := store.WriteOverview(ctx, "company-overview", "project-a", input)
-	if err != nil || replayed.State != "stale" || replayed.Revision != first.Revision {
+	if err != nil || replayed.State != "stale" || replayed.Revision != first.Revision || replayed.TeachDetail == nil || replayed.TeachDetail.Code != "overview_stale" || replayed.TeachDetail.Effects != TeachEffectsNotApplicable {
 		t.Fatalf("identical replay was rejected after manifest changed: response=%+v err=%v", replayed, err)
 	}
 }

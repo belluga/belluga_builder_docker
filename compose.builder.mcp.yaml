@@ -1,0 +1,24 @@
+services:
+  builder-mcp:
+    profiles: [mcp]
+    image: belluga-builder-mcp:local
+    build:
+      context: ./mcp-app
+      dockerfile: Dockerfile
+      target: runtime
+    environment:
+      BUILDER_MCP_LISTEN_ADDR: 0.0.0.0:8098
+      BUILDER_MCP_REGISTRY_URL: http://builder-registry:8080
+      BUILDER_MCP_COMPANY_IDS: ${BUILDER_MCP_COMPANY_IDS:?set the Company discovery allowlist}
+      BUILDER_MCP_BEARER_TOKEN: ${BUILDER_MCP_BEARER_TOKEN:?set a distinct runtime-only MCP bearer}
+      BUILDER_MCP_ALLOWED_HOSTS: 127.0.0.1:8098,localhost:8098
+      GOMEMLIMIT: 768MiB
+    ports:
+      - "127.0.0.1:8098:8098"
+    networks:
+      - builder-registry-private
+    mem_limit: 1g
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true

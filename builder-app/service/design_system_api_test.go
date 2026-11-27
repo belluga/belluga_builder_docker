@@ -7,7 +7,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
+
+type designSystemRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f designSystemRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func designSystemResponseFixture(companyID, projectID, revision string) []byte {
 	digest := "sha256:" + strings.Repeat("b", 64)
@@ -94,6 +101,38 @@ func TestDesignSystemAPIWorksAfterSnapshotRoutesAreRetiredAndForwardsExactSHAAss
 	presentation := read("/api/design-system/presentation/belluga/builder/"+revision+"/examples.html", nil)
 	if presentation.Code != http.StatusOK || !strings.Contains(presentation.Body.String(), "Selected example") || !strings.Contains(presentation.Header().Get("Content-Security-Policy"), "style-src 'self'") || !strings.Contains(presentation.Header().Get("Content-Security-Policy"), "sandbox") || presentation.Header().Get("X-Design-System-Revision") != revision {
 		t.Fatalf("selected HTML presentation was not safely rendered: %d headers=%v body=%s", presentation.Code, presentation.Header(), presentation.Body.String())
+	}
+}
+
+func TestDesignSystemAPIUsesHundredSecondTimeoutForInjectedClient(t *testing.T) {
+	const revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	var remaining time.Duration
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(designSystemResponseFixture("belluga", "builder", revision))
+	}))
+	defer upstream.Close()
+	transport := designSystemRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		deadline, ok := request.Context().Deadline()
+		if !ok {
+			t.Error("Registry request did not receive an HTTP client deadline")
+		} else {
+			remaining = time.Until(deadline)
+		}
+		return http.DefaultTransport.RoundTrip(request)
+	})
+	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
+	consumer := &registeredPreview{registryURL: upstream.URL, client: client}
+	response := httptest.NewRecorder()
+	consumer.designSystemAPIHandler(response, httptest.NewRequest(http.MethodGet, "/api/design-system?company_id=belluga&project_id=builder", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("Design System request with injected client failed: %d %s", response.Code, response.Body.String())
+	}
+	if remaining < 99*time.Second || remaining > 100*time.Second {
+		t.Fatalf("cloned Registry client deadline has %s remaining; want close to 100s", remaining)
+	}
+	if client.Timeout != 15*time.Second {
+		t.Fatalf("the injected client was mutated instead of cloning its timeout: %s", client.Timeout)
 	}
 }
 

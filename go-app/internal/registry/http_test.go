@@ -1,11 +1,18 @@
 package registry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,6 +46,8 @@ type testDesignSystemMutationService struct {
 	recoverOperation string
 	recoverDeadline  bool
 	recoverCalls     int
+	beginErr         error
+	recoverErr       error
 }
 
 type testDesignSystemReadService struct {
@@ -70,13 +79,13 @@ func (s *testDesignSystemMutationService) ReadDesignSystemState(_ context.Contex
 }
 func (s *testDesignSystemMutationService) BeginDesignSystemMutation(_ context.Context, companyID, projectID string, intent DesignSystemMutationIntent) (DesignSystemMutationIntent, error) {
 	s.beginCompany, s.beginProject, s.intent = companyID, projectID, intent
-	return intent, nil
+	return intent, s.beginErr
 }
 func (s *testDesignSystemMutationService) RecoverDesignSystemMutation(ctx context.Context, companyID, projectID, operationID string) (DesignSystemMutationResult, error) {
 	s.recoverCalls++
 	_, s.recoverDeadline = ctx.Deadline()
 	s.recoverCompany, s.recoverProject, s.recoverOperation = companyID, projectID, operationID
-	return s.result, nil
+	return s.result, s.recoverErr
 }
 
 func (s *testRepositoryBindingService) ReadRepositoryBinding(context.Context, string, string) (RepositoryBinding, error) {
@@ -118,7 +127,7 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	base := "/internal/v1/companies/company-a/projects/project-a/design-system"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+"/state", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"repository_id":"belluga/repo"`) || !strings.Contains(response.Body.String(), `"pending_operation"`) || service.readCompany != "company-a" || service.readProject != "project-a" {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"repository_id":"belluga/repo"`) || !strings.Contains(response.Body.String(), `"pending_operation"`) || !strings.Contains(response.Body.String(), `"code":"design_system_operation_pending"`) || !strings.Contains(response.Body.String(), `"effects":"unknown"`) || !strings.Contains(response.Body.String(), `"retry":"recover_operation"`) || service.readCompany != "company-a" || service.readProject != "project-a" {
 		t.Fatalf("Design System state GET status=%d scope=%s/%s body=%s", response.Code, service.readCompany, service.readProject, response.Body)
 	}
 
@@ -128,13 +137,13 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(string(body))))
-	if response.Code != http.StatusOK || service.beginCompany != "company-a" || service.beginProject != "project-a" || service.intent != intent {
+	if response.Code != http.StatusOK || service.beginCompany != "company-a" || service.beginProject != "project-a" || service.intent != intent || !strings.Contains(response.Body.String(), `"effects":"committed"`) || !strings.Contains(response.Body.String(), `"operation_id":"ds-op-1"`) {
 		t.Fatalf("Design System begin route status=%d scope=%s/%s intent=%+v body=%s", response.Code, service.beginCompany, service.beginProject, service.intent, response.Body)
 	}
 
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", nil))
-	if response.Code != http.StatusOK || !service.recoverDeadline || service.recoverCalls != 1 || service.recoverCompany != "company-a" || service.recoverProject != "project-a" || service.recoverOperation != intent.OperationID || !strings.Contains(response.Body.String(), `"outcome":"published"`) {
+	if response.Code != http.StatusOK || !service.recoverDeadline || service.recoverCalls != 1 || service.recoverCompany != "company-a" || service.recoverProject != "project-a" || service.recoverOperation != intent.OperationID || !strings.Contains(response.Body.String(), `"outcome":"published"`) || !strings.Contains(response.Body.String(), `"effects":"committed"`) || !strings.Contains(response.Body.String(), `"retry":"none"`) {
 		t.Fatalf("Design System recover route status=%d service=%+v body=%s", response.Code, service, response.Body)
 	}
 	response = httptest.NewRecorder()
@@ -146,6 +155,20 @@ func TestDesignSystemMutationRoutesAreScopedBoundedAndProofFree(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(`{"operation":"create","remote_head":"`+strings.Repeat("f", 40)+`"}`)))
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("begin route accepted caller-supplied verification fields: %d %s", response.Code, response.Body)
+	}
+	service.recoverErr = ErrUnavailable
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations/ds-op-1/recover", nil))
+	var recoveryFailure errorResponse
+	if json.Unmarshal(response.Body.Bytes(), &recoveryFailure) != nil || response.Code != http.StatusServiceUnavailable || recoveryFailure.TeachDetail == nil || recoveryFailure.TeachDetail.Code != "design_system_recovery_uncertain" || recoveryFailure.TeachDetail.OperationID != "ds-op-1" || recoveryFailure.TeachDetail.Effects != TeachEffectsUnknown || recoveryFailure.TeachDetail.Retry != TeachRetryRecoverOperation {
+		t.Fatalf("uncertain recovery lacks safe operation guidance: status=%d body=%s", response.Code, response.Body)
+	}
+	service.beginErr = todoTeach("expected_binding_revision", "reload the current binding and reassess", ErrConflict)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, base+"/mutations", strings.NewReader(string(body))))
+	var rejectedBegin errorResponse
+	if json.Unmarshal(response.Body.Bytes(), &rejectedBegin) != nil || response.Code != http.StatusConflict || rejectedBegin.TeachDetail == nil || rejectedBegin.TeachDetail.Code != "registry_validation" || rejectedBegin.TeachDetail.FieldPath != "expected_binding_revision" || !strings.HasPrefix(rejectedBegin.TeachDetail.NextAction, "reload the current binding and reassess") || !strings.Contains(rejectedBegin.TeachDetail.NextAction, "only if it is the pending operation") || rejectedBegin.TeachDetail.Effects != TeachEffectsUnknown || rejectedBegin.TeachDetail.OperationID != "ds-op-1" || rejectedBegin.TeachDetail.Retry != TeachRetryReadReassess {
+		t.Fatalf("begin error lost cause or conservative operation context: status=%d body=%s", response.Code, response.Body)
 	}
 }
 
@@ -333,6 +356,24 @@ func TestPrivateAPIRejectsCompanyMismatchBeforeRegister(t *testing.T) {
 	}
 }
 
+func assertRegistrationRetryTeachHTTP(t *testing.T, ctx context.Context, store *MongoStore, input Registration) {
+	t.Helper()
+	request, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/internal/v1/companies/" + input.CompanyID + "/projects"
+	response := httptest.NewRecorder()
+	NewHandler(store).ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, strings.NewReader(string(request))).WithContext(ctx))
+	var body errorResponse
+	const waitGuidance = "finish schema preparation before you retry registration"
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil || response.Code != http.StatusConflict ||
+		body.Error != ErrConflict.Error() || !strings.Contains(body.Teach, waitGuidance) || body.TeachDetail == nil ||
+		body.TeachDetail.FieldPath != "company.schema_migrations" || !strings.Contains(body.TeachDetail.NextAction, waitGuidance) {
+		t.Fatalf("registration response during schema preparation: status=%d body=%s decode=%v", response.Code, response.Body, err)
+	}
+}
+
 type testSelectedTODOImporter struct {
 	*testService
 	calls int
@@ -405,7 +446,9 @@ func TestTODOBodyLimitReturnsActionable413OnBothDecoderReads(t *testing.T) {
 			if h.decodeTODOLimit(recorder, request, &payload, 128) {
 				t.Fatal("oversized TODO body was accepted")
 			}
-			if recorder.Code != http.StatusRequestEntityTooLarge || !strings.Contains(recorder.Body.String(), `"error":"request_too_large"`) || !strings.Contains(recorder.Body.String(), "request.body") || !strings.Contains(recorder.Body.String(), "128-byte") {
+			var errorBody errorResponse
+			decodeErr := json.Unmarshal(recorder.Body.Bytes(), &errorBody)
+			if decodeErr != nil || recorder.Code != http.StatusRequestEntityTooLarge || errorBody.Error != "request_too_large" || errorBody.TeachDetail == nil || errorBody.TeachDetail.SchemaVersion != "1" || errorBody.TeachDetail.Code != "request_too_large" || errorBody.TeachDetail.FieldPath != "request.body" || errorBody.TeachDetail.Effects != TeachEffectsNone || !strings.Contains(recorder.Body.String(), "128-byte") {
 				t.Fatalf("wrong TODO limit response: status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
@@ -473,7 +516,197 @@ func TestLocalProofTransitionReturnsFieldSpecificTEACHOverHTTP(t *testing.T) {
 	body := `{"project_id":"builder","todo_id":"todo-a","expected_revision":7,"operation_id":"local-run-7","requested_stage":"Local-Implemented","proof_refs":[],"waiver_refs":[],"local_proof":{"schema_version":"builder-local-proof-result-v3"}}`
 	response := httptest.NewRecorder()
 	NewHandler(service).ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/internal/v1/companies/belluga-solutions/projects/builder/todos/todo-a/transition", strings.NewReader(body)))
-	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || service.transitionCalls != 1 {
+	var errorBody errorResponse
+	decodeErr := json.Unmarshal(response.Body.Bytes(), &errorBody)
+	if decodeErr != nil || response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"teach":"TEACH: proof_refs.criterion:criterion-build.source must be exactly paced-local-runner`) || errorBody.TeachDetail == nil || errorBody.TeachDetail.FieldPath != "proof_refs.criterion:criterion-build.source" || errorBody.TeachDetail.OperationID != "local-run-7" || errorBody.TeachDetail.Effects != TeachEffectsUnknown || service.transitionCalls != 1 {
 		t.Fatalf("field-specific local proof TEACH was not surfaced by HTTP: %d %s calls=%d", response.Code, response.Body.String(), service.transitionCalls)
+	}
+}
+
+func TestMCPDesignSystemSameOperationRecoveryAgainstMongoAndGit(t *testing.T) {
+	binary, uri := os.Getenv("BUILDER_MCP_FIXTURE_BINARY"), os.Getenv("REGISTRY_TEST_MONGODB_URI")
+	if binary == "" || uri == "" {
+		t.Skip("required MCP delivery fixture sets BUILDER_MCP_FIXTURE_BINARY and REGISTRY_TEST_MONGODB_URI")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	identity := fmt.Sprintf("mcp_ds_%d", time.Now().UnixNano())
+	store, err := OpenMongo(ctx, uri, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.tenantPrefix = identity
+	const company, project = "mcp-fixture", "design-system-recovery"
+	t.Cleanup(func() {
+		bg, stop := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stop()
+		_ = store.client.Database(store.tenantDatabase(company)).Drop(bg)
+		_ = store.control.Drop(bg)
+		_ = store.Close(bg)
+	})
+	root := t.TempDir()
+	runFixtureGit(t, root, "init", "--quiet", "--initial-branch=main")
+	runFixtureGit(t, root, "-c", "user.name=isolated fixture", "-c", "user.email=fixture@example.invalid",
+		"commit", "--quiet", "--allow-empty", "-m", "Seed recovery head")
+	head := fixtureGitOutput(t, root, "rev-parse", "HEAD")
+	var gitAvailable atomic.Bool
+	store.designSystemVerifier = gitDesignSystemVerifier{repositoryURL: func(string) string {
+		if gitAvailable.Load() {
+			return "file://" + root
+		}
+		return "file://" + filepath.Join(root, "unavailable")
+	}}
+	binding := validTestBinding()
+	binding.RepositoryID = "fixture/design-system"
+	registered, err := registerTestProjectWithBinding(ctx, store, Registration{
+		CompanyID: company, CompanyName: "MCP recovery fixture", ProjectID: project, ProjectName: "Recovery fixture", Binding: binding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const nativeID = "b1ddbc77-0361-4609-8c04-bb04ab5fbe93"
+	if _, err := store.BindSession(ctx, SessionBindingRequest{
+		Type: "codex", ExternalID: nativeID, CompanyID: company, ProjectID: project,
+		OperationID: "bind-recovery-fixture", OwnerReference: "owned test session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	registry := httptest.NewServer(NewHandler(store))
+	defer registry.Close()
+	address := startFixtureMCP(t, ctx, binary, registry.URL, company)
+	type wireReply struct {
+		Status int             `json:"http_status"`
+		Data   json.RawMessage `json:"data"`
+		Teach  TeachDiagnostic `json:"teach_detail"`
+	}
+	call := func(tool string, input map[string]any, want int) wireReply {
+		t.Helper()
+		raw, err := json.Marshal(map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": tool, "arguments": input},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+address+"/mcp", bytes.NewReader(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer "+fixtureMCPToken)
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "application/json, text/event-stream")
+		request.Header.Set("MCP-Protocol-Version", "2025-11-25")
+		request.Header.Set(sessionTypeHeader, "codex")
+		request.Header.Set(sessionExternalIDHeader, nativeID)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		var output struct {
+			Result struct {
+				IsError bool `json:"isError"`
+				Content []struct {
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"result"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&output); err != nil ||
+			response.StatusCode != http.StatusOK || len(output.Result.Content) != 1 {
+			t.Fatalf("%s unexpected MCP transport result: status=%d, output=%+v, err=%v", tool, response.StatusCode, output, err)
+		}
+		var reply wireReply
+		if err := json.Unmarshal([]byte(output.Result.Content[0].Text), &reply); err != nil ||
+			reply.Status != want || output.Result.IsError != (want >= 400) {
+			t.Fatalf("%s unexpected outcome: %s err=%v", tool, output.Result.Content[0].Text, err)
+		}
+		return reply
+	}
+	const operationID = "design-system-recovery-op"
+	digest := "sha256:" + strings.Repeat("b", 64)
+	intent := DesignSystemMutationIntent{
+		Operation: "create", OperationID: operationID, Actor: "isolated fixture", PayloadDigest: digest,
+		ExpectedBindingRevision: registered.BindingRevision, ExpectedHead: head, CandidateTreeSHA: strings.Repeat("a", 40),
+		PreparedCommitSHA: strings.Repeat("c", 40), InventoryDigest: digest,
+	}
+	call("builder_design_system_begin", map[string]any{"company_id": company, "project_id": project, "body": intent}, http.StatusOK)
+	readArgs := map[string]any{"company_id": company, "project_id": project}
+	before := call("builder_design_system_state", readArgs, http.StatusOK)
+	recoverArgs := map[string]any{"company_id": company, "project_id": project, "operation_id": operationID}
+	unknown := call("builder_design_system_recover", recoverArgs, http.StatusServiceUnavailable)
+	if unknown.Teach.Effects != TeachEffectsUnknown || unknown.Teach.OperationID != operationID {
+		t.Fatalf("owner uncertainty lost: %+v", unknown.Teach)
+	}
+	if after := call("builder_design_system_state", readArgs, http.StatusOK); !bytes.Equal(before.Data, after.Data) {
+		t.Fatalf("unknown recovery changed the selected or pending state: %s versus %s", before.Data, after.Data)
+	}
+
+	gitAvailable.Store(true)
+	recovered := call("builder_design_system_recover", recoverArgs, http.StatusOK)
+	var outcome DesignSystemMutationResult
+	if err := json.Unmarshal(recovered.Data, &outcome); err != nil ||
+		outcome.OperationID != operationID || outcome.Outcome != "not_pushed" || outcome.State != "unselected" {
+		t.Fatalf("the same operation did not recover against verified Git: %s err=%v", recovered.Data, err)
+	}
+	final := call("builder_design_system_state", readArgs, http.StatusOK)
+	var state DesignSystemState
+	if err := json.Unmarshal(final.Data, &state); err != nil ||
+		state.PendingOperation != nil || state.LastOperation == nil || *state.LastOperation != outcome {
+		t.Fatalf("MCP readback did not expose the persisted exact result: %s err=%v", final.Data, err)
+	}
+	if replay := call("builder_design_system_recover", recoverArgs, http.StatusOK); !bytes.Equal(replay.Data, recovered.Data) {
+		t.Fatalf("same operation replay changed the result: %s", replay.Data)
+	}
+	collection := store.client.Database(store.tenantDatabase(company)).Collection(projectsCollection)
+	var document projectDocument
+	if err := collection.FindOne(ctx, bson.M{"id": project}).Decode(&document); err != nil ||
+		document.PendingDesignSystemMutation != nil || document.DesignSystemLastOperation == nil ||
+		*document.DesignSystemLastOperation != outcome {
+		t.Fatalf("Mongo does not contain the one final operation result: %+v err=%v", document.DesignSystemLastOperation, err)
+	}
+	t.Logf("live adapter + Registry + Mongo + local Git: %s pending, outage effects=%s, exact recovery=%s, replay unchanged",
+		operationID, unknown.Teach.Effects, outcome.Outcome)
+}
+
+const fixtureMCPToken = "isolated-mcp-registry-fixture-token-01"
+
+func startFixtureMCP(t *testing.T, ctx context.Context, binary, upstream, company string) string {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	_ = listener.Close()
+	command := exec.CommandContext(ctx, binary)
+	command.Env = []string{
+		"BUILDER_MCP_COMPANY_IDS=" + company,
+		"BUILDER_MCP_BEARER_TOKEN=" + fixtureMCPToken,
+		"BUILDER_MCP_ALLOWED_HOSTS=" + address,
+		"BUILDER_MCP_LISTEN_ADDR=" + address,
+		"BUILDER_MCP_REGISTRY_URL=" + upstream,
+		"GOMEMLIMIT=768MiB", "GOMAXPROCS=2",
+	}
+	command.Stderr = os.Stderr
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+	})
+	wait, stop := context.WithTimeout(ctx, 10*time.Second)
+	defer stop()
+	for {
+		connection, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return address
+		}
+		select {
+		case <-wait.Done():
+			t.Fatal("owned MCP fixture did not start")
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }

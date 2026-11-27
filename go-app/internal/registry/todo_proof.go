@@ -8,17 +8,68 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 )
+
+// The production Reader verifies the same original commits in the selected
+// deployment repositories. Recover legacy PACED aliases from the verified Local
+// proof when an older typed scope omitted the repository_id.
+func verifyMVPLocalDelivery(todo TODORecord, contentDigest string, localIDs map[string]string, boundDockerRepository string) error {
+	builder, paced, _, err := mvpImplementationClaims(todo)
+	if err != nil {
+		return err
+	}
+	dockerRepository := mvpApprovedDockerRepository(todo)
+	if dockerRepository == "" {
+		dockerRepository = boundDockerRepository
+	}
+	commits := todoOriginalCommitSet{CommitOwner: make(map[string]string, len(builder)+len(paced))}
+	for _, sha := range builder {
+		if !validGitRepositoryID(dockerRepository) {
+			return todoTeach("project.docker_repository_id", "select the approved or bound Docker repository for the original production commits", ErrConflict)
+		}
+		commits.CommitOwner[sha] = dockerRepository
+	}
+	if len(paced) != 0 {
+		repository, _, err := mvpPACEDRepository(todo, paced)
+		if err != nil {
+			return err
+		}
+		for _, sha := range paced {
+			commits.CommitOwner[sha] = repository
+		}
+	}
+	if len(commits.CommitOwner) == 0 || len(commits.CommitOwner) != len(todo.ImplementationCommits) {
+		return todoTeach("implementation_commits", "match distinct original production commits and repository identities", ErrConflict)
+	}
+	for _, claim := range todo.ImplementationCommits {
+		if claim.SourceDigest != contentDigest || claim.VerificationState != "unverified" {
+			return todoTeach("implementation_commits", "bind the original implementation claims to the current immutable content", ErrConflict)
+		}
+	}
+	if len(localIDs) != 0 {
+		aliases := make(map[string]bool, len(localIDs))
+		for _, alias := range commits.CommitOwner {
+			aliases[alias] = true
+			if localIDs[alias] == "" {
+				return todoTeach("local_history.proof.repository_identity", "cover every exact implementation repository in the deployment", ErrConflict)
+			}
+		}
+		if len(aliases) != len(localIDs) {
+			return todoTeach("local_history.proof.repository_identity", "cover only the implementation repositories in the deployment", ErrConflict)
+		}
+	}
+	return requireLocalProofCommitIdentity(todo.VerifiedTransitionRef, commits)
+}
 
 func (m *MongoStore) verifyMVPProduction(ctx context.Context, companyID string, todo TODORecord, request TODOActionRequest, projectDockerRepository string) (TODOProofReference, error) {
 	if todo.ReleaseID == "" || todo.Stage != "Local-Implemented" || todo.StageVerification != "verified" || todo.VerifiedTransitionRef == nil || todo.VerifiedTransitionRef.VerificationState != "verified" || containsTODOString(todo.Qualifiers, "Blocked") {
@@ -362,69 +413,27 @@ type todoOriginalCommitSet struct {
 	CommitOwner  map[string]string
 }
 
-func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, companyID string, record TODORecord, current todoConstitutionPin, targets map[string]string, fixedBranch string) (TODOProofReference, []implementationRepositoryIdentity, error) {
-	var err error
-	if record.Source.Kind != "mongo-content-revision" || record.StageVerification != "verified" || record.VerifiedTransitionRef == nil || containsTODOString(record.Qualifiers, "Blocked") {
-		return TODOProofReference{}, nil, todoTeach("local_proof", "require an unblocked verified current-v2 code proof", ErrConflict)
-	}
-	localProof := record.VerifiedTransitionRef
-	var promotionPin todoConstitutionPin
-	if record.Stage == "Promotion-Lane" {
-		localProof, _, err = m.readCompleteLocalProof(ctx, companyID, record)
-		if err != nil {
-			return TODOProofReference{}, nil, err
-		}
-		if err := m.requireCompleteCurrentStageEvent(ctx, companyID, record, "Promotion-Lane"); err != nil {
-			return TODOProofReference{}, nil, err
-		}
-		promotionPin, err = todoProofConstitutionPin(record.VerifiedTransitionRef)
-		if err != nil {
-			return TODOProofReference{}, nil, err
-		}
-		if err := requireTODOConstitutionPin(record.VerifiedTransitionRef, current); err != nil {
-			return TODOProofReference{}, nil, err
-		}
-		if err := verifyCompleteArrivalReference(record.VerifiedTransitionRef, "promotion"); err != nil {
-			return TODOProofReference{}, nil, err
-		}
-	} else if record.Stage != "Local-Implemented" || !verifiedCodeDeliveryIdentity(localProof) {
-		return TODOProofReference{}, nil, todoTeach("local_proof", "require the exact verified Local-Implemented code proof", ErrConflict)
-	} else if err := m.requireCompleteCurrentStageEvent(ctx, companyID, record, "Local-Implemented"); err != nil {
-		return TODOProofReference{}, nil, err
-	}
-	localPin, err := m.resolveTODOConstitutionPin(ctx, companyID, record, localProof)
-	if err != nil {
-		return TODOProofReference{}, nil, err
-	}
-	if len(localPin.Repositories) == 0 && len(promotionPin.Repositories) > 0 {
-		localPin.Repositories = promotionPin.Repositories
-	}
-	if localPin.Repositories == nil {
-		localPin.Repositories = map[string]string{}
-	}
-	if !sameTODOConstitutionPin(localPin, current) {
-		return TODOProofReference{}, nil, todoTeach("local_proof.constitution", "match the active constitution mode and immutable identity pinned at Local-Implemented", ErrConflict)
-	}
-	company, err := m.company(ctx, companyID)
-	if err != nil {
-		return TODOProofReference{}, nil, err
-	}
-	database := m.client.Database(company.DatabaseName)
-	content, contentErr := m.contentAtRevision(ctx, database, record.ProjectID, record.ID, record.Revision)
-	if contentErr != nil {
-		return TODOProofReference{}, nil, contentErr
-	}
-	if content.SchemaVersion != todoContentSchemaVersion {
-		return TODOProofReference{}, nil, todoTeach("content_revision", "use the current typed Mongo v2 TODO content", ErrConflict)
-	}
-	record.Content = &content.TODOContent
-	contentRevision, contentDigest, _, available, err := currentTODOContentSubject(ctx, database, record)
-	if err != nil {
-		return TODOProofReference{}, nil, err
-	}
-	if !available || !validSourceDigest(contentDigest) {
-		return TODOProofReference{}, nil, todoTeach("content_revision", "resolve the current immutable TODO content digest", ErrConflict)
-	}
+type completeArrivalRepository struct {
+	Repository string   `json:"repository"`
+	NodeID     string   `json:"repository_node_id"`
+	Branch     string   `json:"branch"`
+	HeadSHA    string   `json:"head_sha"`
+	Commits    []string `json:"commits"`
+}
+
+type completeArrivalProof struct {
+	Stage              string                      `json:"arrival_stage"`
+	ContentRevision    int64                       `json:"content_revision"`
+	ContentDigest      string                      `json:"content_digest"`
+	Mode               string                      `json:"mode,omitempty"`
+	LocalEventRevision int64                       `json:"local_event_revision,omitempty"`
+	LocalProofDigest   string                      `json:"local_proof_digest,omitempty"`
+	Constitution       *todoConstitutionPin        `json:"constitution,omitempty"`
+	Repositories       []completeArrivalRepository `json:"repositories"`
+}
+
+func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, companyID string, record TODORecord, localEvent TODOHistoryEvent, localIDs map[string]string, contentRevision int64, contentDigest string, targets map[string]string) (TODOProofReference, []implementationRepositoryIdentity, error) {
+	localProof := localEvent.Changes.VerifiedTransitionRef
 	commits, err := todoOriginalCommits(record, contentDigest)
 	if err != nil {
 		return TODOProofReference{}, nil, err
@@ -433,17 +442,24 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 		return TODOProofReference{}, nil, err
 	}
 	if record.Stage == "Promotion-Lane" {
-		if err := requireCompleteArrivalMatches(record.VerifiedTransitionRef, commits, localPin, "promotion", contentRevision, contentDigest); err != nil {
+		remoteIDs, err := requireCompleteArrivalMatches(record.VerifiedTransitionRef, commits, localEvent, contentRevision, contentDigest)
+		if err != nil {
 			return TODOProofReference{}, nil, err
+		}
+		for alias, nodeID := range remoteIDs {
+			if localIDs[alias] != "" && localIDs[alias] != nodeID {
+				return TODOProofReference{}, nil, todoTeach("promotion_history.proof.repositories", "match the immutable GitHub identity in the original Local delivery", ErrConflict)
+			}
+			localIDs[alias] = nodeID
 		}
 	}
 	aliases := make([]string, 0, len(record.DiffExpectation))
-	if len(localPin.Repositories) != 0 && len(localPin.Repositories) != len(record.DiffExpectation) {
+	if len(localIDs) != 0 && len(localIDs) != len(record.DiffExpectation) {
 		return TODOProofReference{}, nil, todoTeach("local_proof.repository_identity", "contain either no pre-pin identities or one immutable ID for every approved repository", ErrConflict)
 	}
 	for _, scope := range record.DiffExpectation {
 		alias := scope.RepositoryID
-		if len(localPin.Repositories) != 0 && localPin.Repositories[alias] == "" {
+		if len(localIDs) != 0 && localIDs[alias] == "" {
 			return TODOProofReference{}, nil, todoTeach("local_proof.repository_identity", "contain an immutable ID for every approved repository alias", ErrConflict)
 		}
 		aliases = append(aliases, alias)
@@ -456,45 +472,31 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 	if m.proofReaderURL == "" || m.proofReaderToken == "" || m.proofHTTPClient == nil {
 		return TODOProofReference{}, nil, todoTeach("remote_proof", "configure the private Reader before checking Complete-mode Git arrival", ErrUnavailable)
 	}
-	branch := fixedBranch
-	if fixedBranch == "" {
+	arrivalStage := "main"
+	if record.Stage == "Local-Implemented" {
+		arrivalStage = "promotion"
 		if err := validateCompletePromotionTargets(record.DiffExpectation, targets); err != nil {
 			return TODOProofReference{}, nil, err
 		}
 	}
 	sort.Strings(aliases)
-	type evidence struct {
-		Repository string   `json:"repository"`
-		NodeID     string   `json:"repository_node_id"`
-		Branch     string   `json:"branch"`
-		HeadSHA    string   `json:"head_sha"`
-		Commits    []string `json:"commits"`
-	}
-	verified := make([]evidence, 0, len(aliases))
+	verified := make([]completeArrivalRepository, 0, len(aliases))
 	identityPins := make([]implementationRepositoryIdentity, 0, len(aliases))
 	for _, alias := range aliases {
 		if _, ok := confirmed[alias]; !ok || !validGitRepositoryID(alias) {
 			return TODOProofReference{}, nil, todoTeach("diff_expectation.repository_id", "use the currently owner-confirmed Project repository alias", ErrConflict)
 		}
-		if pinnedID := set.GitHubNodeIDs[alias]; pinnedID != "" && localPin.Repositories[alias] != "" && pinnedID != localPin.Repositories[alias] {
+		if pinnedID := set.GitHubNodeIDs[alias]; pinnedID != "" && localIDs[alias] != "" && pinnedID != localIDs[alias] {
 			return TODOProofReference{}, nil, todoTeach("repository_identity.github_node_id", "match the immutable Project alias-to-GitHub-ID CAS binding", ErrConflict)
 		}
-		target := branch
-		if fixedBranch == "" {
+		target := "main"
+		if arrivalStage == "promotion" {
 			target = targets[alias]
 		}
-		if fixedBranch == "" && target != "dev" && target != "stage" {
-			return TODOProofReference{}, nil, todoTeach("promotion_targets."+alias, "select dev or stage for each original repository", ErrConflict)
-		}
 		query := url.Values{"company_id": {companyID}, "project_id": {record.ProjectID}, "repository": {alias}, "branch": {target}, "commit_shas": {strings.Join(commits.Repositories[alias], ",")}, "todo_authority": {"mongo-v2"}}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.proofReaderURL+"/internal/v1/proofs/arrival?"+query.Encode(), nil)
+		response, lease, err := m.requestReaderProof(ctx, "/internal/v1/proofs/arrival", query, true)
 		if err != nil {
-			return TODOProofReference{}, nil, ErrUnavailable
-		}
-		request.Header.Set("Authorization", "Bearer "+m.proofReaderToken)
-		response, err := m.proofHTTPClient.Do(request)
-		if err != nil {
-			return TODOProofReference{}, nil, todoTeach("remote_proof", "retry when the private Reader is available", ErrUnavailable)
+			return TODOProofReference{}, nil, err
 		}
 		data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
 		_ = response.Body.Close()
@@ -523,7 +525,7 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 			} `json:"commits"`
 			Outcome string `json:"outcome"`
 		}
-		if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != record.ProjectID || result.Repository != alias || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || localPin.Repositories[alias] != "" && result.RepositoryNodeID != localPin.Repositories[alias] || set.GitHubNodeIDs[alias] != "" && result.RepositoryNodeID != set.GitHubNodeIDs[alias] || result.Branch != target || !validGitCommit(result.HeadSHA) || result.Outcome != "verified" || len(result.Commits) != len(commits.Repositories[alias]) {
+		if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != record.ProjectID || result.Repository != alias || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || localIDs[alias] != "" && result.RepositoryNodeID != localIDs[alias] || set.GitHubNodeIDs[alias] != "" && result.RepositoryNodeID != set.GitHubNodeIDs[alias] || result.Branch != target || !validGitCommit(result.HeadSHA) || result.Outcome != "verified" || len(result.Commits) != len(commits.Repositories[alias]) {
 			return TODOProofReference{}, nil, todoTeach("remote_proof.repository_identity", "match the original alias, pinned immutable GitHub ID, branch and bounded commit set", ErrConflict)
 		}
 		commitSHAs := make([]string, len(result.Commits))
@@ -533,35 +535,20 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 			}
 			commitSHAs[i] = item.CommitSHA
 		}
-		identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest})
-		localPin.Repositories[alias] = result.RepositoryNodeID
-		verified = append(verified, evidence{Repository: alias, NodeID: result.RepositoryNodeID, Branch: target, HeadSHA: result.HeadSHA, Commits: commitSHAs})
+		if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
+			return TODOProofReference{}, nil, err
+		}
+		identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest, githubLease: lease})
+		verified = append(verified, completeArrivalRepository{Repository: alias, NodeID: result.RepositoryNodeID, Branch: target, HeadSHA: result.HeadSHA, Commits: commitSHAs})
 	}
-	arrivalStage := "promotion"
-	if fixedBranch != "" {
-		arrivalStage = "main"
-	}
-	payload, err := json.Marshal(struct {
-		Stage           string              `json:"arrival_stage"`
-		ContentRevision int64               `json:"content_revision"`
-		ContentDigest   string              `json:"content_digest"`
-		Constitution    todoConstitutionPin `json:"constitution"`
-		Repositories    []evidence          `json:"repositories"`
-	}{arrivalStage, contentRevision, contentDigest, localPin, verified})
+	payload, err := json.Marshal(completeArrivalProof{
+		Stage: arrivalStage, ContentRevision: contentRevision, ContentDigest: contentDigest, Mode: "complete",
+		LocalEventRevision: localEvent.Revision, LocalProofDigest: localProof.SourceDigest, Repositories: verified,
+	})
 	if err != nil {
 		return TODOProofReference{}, nil, ErrInvalid
 	}
-	hash := sha256.Sum256(payload)
-	refData, _ := json.Marshal(struct {
-		Stage           string              `json:"arrival_stage"`
-		ContentRevision int64               `json:"content_revision"`
-		ContentDigest   string              `json:"content_digest"`
-		Constitution    todoConstitutionPin `json:"constitution"`
-		Repositories    []evidence          `json:"repositories"`
-	}{arrivalStage, contentRevision, contentDigest, localPin, verified})
-	proof := TODOProofReference{Kind: "complete-git-arrival", Source: "private-reader", Reference: string(refData), SourceDigest: "sha256:" + hex.EncodeToString(hash[:]), VerificationState: "verified"}
-	proof, err = bindPromotionConstitutionPin(proof, localPin)
-	return proof, identityPins, err
+	return TODOProofReference{Kind: "complete-git-arrival", Source: "private-reader", Reference: string(payload), SourceDigest: sourceHash(payload), VerificationState: "verified"}, identityPins, nil
 }
 
 func validateCompletePromotionTargets(scopes []TODORepositoryScope, targets map[string]string) error {
@@ -625,207 +612,125 @@ func todoOriginalCommits(record TODORecord, contentDigest string) (todoOriginalC
 	return result, nil
 }
 
-func bindPromotionConstitutionPin(proof TODOProofReference, pin todoConstitutionPin) (TODOProofReference, error) {
-	data, err := json.Marshal(pin)
-	if err != nil || strings.Contains(proof.Reference, ";"+todoConstitutionPinPrefix) {
-		return TODOProofReference{}, ErrInvalid
-	}
-	proof.Reference += ";" + todoConstitutionPinPrefix + string(data)
-	return proof, nil
+// The legacy proof embedded a constitution pin, including repository identity,
+// in both the hashed arrival payload and a suffix. Preserve both formats when reading.
+type todoConstitutionPin struct {
+	Mode          string            `json:"mode"`
+	GenerationID  string            `json:"generation_id"`
+	RecordID      string            `json:"record_id"`
+	Revision      int64             `json:"revision"`
+	ContentDigest string            `json:"content_digest"`
+	Repositories  map[string]string `json:"repositories"`
 }
 
-func verifyCompleteArrivalReference(proof *TODOProofReference, expectedStage string) error {
+const todoConstitutionPinPrefix = "promotion_context="
+
+func (pin todoConstitutionPin) valid() bool {
+	if !validProjectPromotionMode(pin.Mode) || pin.GenerationID == "" || pin.RecordID == "" || pin.Revision < 1 || !validSourceDigest(pin.ContentDigest) || len(pin.Repositories) == 0 {
+		return false
+	}
+	for alias, nodeID := range pin.Repositories {
+		if !validGitRepositoryID(alias) || nodeID == "" || len(nodeID) > 128 {
+			return false
+		}
+	}
+	return true
+}
+
+func localProofRepositoryIdentities(proof TODOProofReference) (map[string]string, error) {
+	identities := todoProofRepositoryNodeIDs(proof.Reference)
+	if identities == nil {
+		return nil, todoTeach("local_history.proof.repository_identity", "contain valid consistent immutable GitHub IDs", ErrConflict)
+	}
+	_, suffix, hasLegacyPin := strings.Cut(proof.Reference, ";"+todoConstitutionPinPrefix)
+	if !hasLegacyPin {
+		return identities, nil
+	}
+	var pin todoConstitutionPin
+	if json.Unmarshal([]byte(suffix), &pin) != nil || !pin.valid() {
+		return nil, todoTeach("local_history.proof.repository_identity", "contain one valid historical pin", ErrConflict)
+	}
+	if len(identities) == 0 {
+		return pin.Repositories, nil
+	}
+	if !maps.Equal(identities, pin.Repositories) {
+		return nil, todoTeach("local_history.proof.repository_identity", "match repository identities across the original tuples and historical pin", ErrConflict)
+	}
+	return identities, nil
+}
+
+func requireCompleteArrivalMatches(proof *TODOProofReference, commits todoOriginalCommitSet, localEvent TODOHistoryEvent, contentRevision int64, contentDigest string) (map[string]string, error) {
 	if proof == nil || proof.Kind != "complete-git-arrival" || proof.Source != "private-reader" || proof.VerificationState != "verified" {
-		return todoTeach("promotion_history.proof", "resolve the immutable verified Git-arrival event", ErrConflict)
+		return nil, todoTeach("promotion_history.proof", "resolve the immutable verified Git-arrival event", ErrConflict)
 	}
-	data, _, found := strings.Cut(proof.Reference, ";"+todoConstitutionPinPrefix)
-	if !found || !validSourceDigest(proof.SourceDigest) {
-		return todoTeach("promotion_history.proof", "contain the exact immutable arrival payload and constitution pin", ErrConflict)
+	data, suffix, legacy := strings.Cut(proof.Reference, ";"+todoConstitutionPinPrefix)
+	if sourceHash([]byte(data)) != proof.SourceDigest {
+		return nil, todoTeach("promotion_history.proof.source_digest", "match the immutable arrival payload", ErrConflict)
 	}
-	hash := sha256.Sum256([]byte(data))
-	if "sha256:"+hex.EncodeToString(hash[:]) != proof.SourceDigest {
-		return todoTeach("promotion_history.proof.source_digest", "match its immutable arrival payload", ErrConflict)
+	var payload completeArrivalProof
+	if json.Unmarshal([]byte(data), &payload) != nil || payload.Stage != "promotion" || payload.ContentRevision != contentRevision ||
+		payload.ContentDigest != contentDigest || len(payload.Repositories) != len(commits.Repositories) {
+		return nil, todoTeach("promotion_history.proof", "match the exact current content revision, Promotion-Lane stage, and approved repository set", ErrConflict)
 	}
-	var payload struct {
-		Stage           string              `json:"arrival_stage"`
-		ContentRevision int64               `json:"content_revision"`
-		ContentDigest   string              `json:"content_digest"`
-		Constitution    todoConstitutionPin `json:"constitution"`
-		Repositories    []struct {
-			Repository string   `json:"repository"`
-			NodeID     string   `json:"repository_node_id"`
-			Branch     string   `json:"branch"`
-			HeadSHA    string   `json:"head_sha"`
-			Commits    []string `json:"commits"`
-		} `json:"repositories"`
+	var historicalIDs map[string]string
+	if legacy {
+		var pinned todoConstitutionPin
+		if json.Unmarshal([]byte(suffix), &pinned) != nil || !pinned.valid() || pinned.Mode != "complete" || payload.Constitution == nil ||
+			payload.Mode != "" || payload.LocalEventRevision != 0 || payload.LocalProofDigest != "" {
+			return nil, todoTeach("promotion_history.proof", "contain an unambiguous legacy Complete-mode pin", ErrConflict)
+		}
+		embedded := payload.Constitution
+		if embedded.Mode != pinned.Mode || embedded.GenerationID != pinned.GenerationID || embedded.RecordID != pinned.RecordID ||
+			embedded.Revision != pinned.Revision || embedded.ContentDigest != pinned.ContentDigest || !maps.Equal(embedded.Repositories, pinned.Repositories) ||
+			len(pinned.Repositories) != len(commits.Repositories) {
+			return nil, todoTeach("promotion_history.proof", "match the mode and identities in the hashed payload and legacy pin", ErrConflict)
+		}
+		historicalIDs = pinned.Repositories
+	} else if payload.Constitution != nil || payload.Mode != "complete" || payload.LocalEventRevision != localEvent.Revision ||
+		payload.LocalProofDigest != localEvent.Changes.VerifiedTransitionRef.SourceDigest {
+		return nil, todoTeach("promotion_history.proof", "match the preserved Complete mode and exact Local-Implemented event", ErrConflict)
 	}
-	if json.Unmarshal([]byte(data), &payload) != nil || payload.Stage != expectedStage || payload.ContentRevision < 1 || !validSourceDigest(payload.ContentDigest) || len(payload.Repositories) == 0 {
-		return todoTeach("promotion_history.proof", "match a bounded verified arrival payload for the expected stage", ErrConflict)
-	}
+
+	identities := make(map[string]string, len(payload.Repositories))
 	for _, repository := range payload.Repositories {
-		if !validGitRepositoryID(repository.Repository) || repository.NodeID == "" || len(repository.NodeID) > 128 || !validGitCommit(repository.HeadSHA) {
-			return todoTeach("promotion_history.proof.repositories", "contain exact repository IDs, branch heads and immutable identity", ErrConflict)
+		want, found := commits.Repositories[repository.Repository]
+		if !found || identities[repository.Repository] != "" || repository.NodeID == "" || len(repository.NodeID) > 128 ||
+			historicalIDs != nil && historicalIDs[repository.Repository] != repository.NodeID || !validGitCommit(repository.HeadSHA) ||
+			!equalCommitClaims(repository.Commits, want) || repository.Branch != "dev" && repository.Branch != "stage" {
+			return nil, todoTeach("promotion_history.proof.repositories", "match each exact repository alias, immutable ID, promotion branch and original commit set", ErrConflict)
 		}
-		for _, commit := range repository.Commits {
-			if !validGitCommit(commit) {
-				return todoTeach("promotion_history.proof.repositories.commits", "contain full original commit SHAs", ErrConflict)
-			}
-		}
+		identities[repository.Repository] = repository.NodeID
 	}
-	pinned, err := todoProofConstitutionPin(proof)
-	if err != nil || !sameTODOConstitutionPin(payload.Constitution, pinned) || len(payload.Constitution.Repositories) != len(pinned.Repositories) {
-		return todoTeach("promotion_history.proof.constitution", "match the mode and identity pin embedded in the immutable arrival event", ErrConflict)
-	}
-	for alias, nodeID := range pinned.Repositories {
-		if payload.Constitution.Repositories[alias] != nodeID {
-			return todoTeach("promotion_history.proof.constitution.repositories", "match each pinned immutable GitHub ID", ErrConflict)
-		}
-	}
-	return nil
+	return identities, nil
 }
 
-func requireCompleteArrivalMatches(proof *TODOProofReference, expected todoOriginalCommitSet, pin todoConstitutionPin, stage string, contentRevision int64, contentDigest string) error {
-	if err := verifyCompleteArrivalReference(proof, stage); err != nil {
-		return err
-	}
-	data, _, _ := strings.Cut(proof.Reference, ";"+todoConstitutionPinPrefix)
-	var payload struct {
-		ContentRevision int64  `json:"content_revision"`
-		ContentDigest   string `json:"content_digest"`
-		Repositories    []struct {
-			Repository string   `json:"repository"`
-			NodeID     string   `json:"repository_node_id"`
-			Branch     string   `json:"branch"`
-			Commits    []string `json:"commits"`
-		} `json:"repositories"`
-	}
-	if json.Unmarshal([]byte(data), &payload) != nil || len(payload.Repositories) != len(expected.Repositories) || payload.ContentRevision != contentRevision || payload.ContentDigest != contentDigest {
-		return todoTeach("promotion_history.proof.repositories", "cover the exact current content revision and original implementation repository set", ErrConflict)
-	}
-	seen := map[string]bool{}
-	for _, repository := range payload.Repositories {
-		want, ok := expected.Repositories[repository.Repository]
-		if !ok || seen[repository.Repository] || repository.NodeID != pin.Repositories[repository.Repository] || !equalCommitClaims(repository.Commits, want) {
-			return todoTeach("promotion_history.proof.repositories", "match each original alias, immutable ID and exact commit set", ErrConflict)
-		}
-		if stage == "main" && repository.Branch != "main" || stage == "promotion" && repository.Branch != "dev" && repository.Branch != "stage" {
-			return todoTeach("promotion_history.proof.repositories.branch", "use dev or stage for Promotion-Lane and main for Completed", ErrConflict)
-		}
-		seen[repository.Repository] = true
-	}
-	return nil
-}
-
-func (m *MongoStore) readCompleteLocalProof(ctx context.Context, companyID string, record TODORecord) (*TODOProofReference, TODOHistoryEvent, error) {
-	database, err := m.todoTenantDatabase(ctx, companyID)
-	if err != nil {
-		return nil, TODOHistoryEvent{}, err
-	}
+func readVerifiedTODOStageEvent(ctx context.Context, database *mongo.Database, record TODORecord, stage string, maxRevision int64) (TODOHistoryEvent, error) {
 	var event TODOHistoryEvent
-	filter := bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: "state_changed"}, {Key: "revision", Value: bson.D{{Key: "$lt", Value: record.Revision}}}, {Key: "changes.stage", Value: "Local-Implemented"}, {Key: "changes.stage_verification", Value: "verified"}, {Key: "changes.verified_transition_ref.kind", Value: bson.D{{Key: "$in", Value: bson.A{"remote-code-delivery", "remote-local-delivery"}}}}}
-	err = database.Collection(todoEventsCollection).FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&event)
+	filter := bson.M{"project_id": record.ProjectID, "todo_id": record.ID, "kind": "state_changed",
+		"revision": bson.M{"$lte": maxRevision}, "changes.stage": stage}
+	err := database.Collection(todoEventsCollection).FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&event)
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return nil, TODOHistoryEvent{}, todoTeach("local_history", "recover the immutable verified Local-Implemented event before Complete promotion", ErrConflict)
+		return TODOHistoryEvent{}, todoTeach("promotion_history.event", "resolve the exact immutable "+stage+" event", ErrConflict)
 	}
 	if err != nil {
-		return nil, TODOHistoryEvent{}, ErrUnavailable
+		return TODOHistoryEvent{}, ErrUnavailable
 	}
-	if event.Changes.Stage == nil || *event.Changes.Stage != "Local-Implemented" || event.Changes.StageVerification == nil || *event.Changes.StageVerification != "verified" || event.Changes.VerifiedTransitionRef == nil || !verifiedCodeDeliveryIdentity(event.Changes.VerifiedTransitionRef) {
-		return nil, TODOHistoryEvent{}, todoTeach("local_history", "resolve the exact immutable verified Local-Implemented event and proof", ErrConflict)
+	if event.OperationID == "" || event.Changes.Stage == nil || *event.Changes.Stage != stage || event.Changes.StageVerification == nil ||
+		*event.Changes.StageVerification != "verified" || event.Changes.VerifiedTransitionRef == nil {
+		return TODOHistoryEvent{}, todoTeach("promotion_history.event", "resolve the exact verified state-change event and proof for "+stage, ErrConflict)
 	}
-	copy := *event.Changes.VerifiedTransitionRef
-	return &copy, event, nil
+	return event, nil
 }
 
-func (m *MongoStore) requireCompleteCurrentStageEvent(ctx context.Context, companyID string, record TODORecord, stage string) error {
-	database, err := m.todoTenantDatabase(ctx, companyID)
+func readCurrentTODOPromotionEvent(ctx context.Context, database *mongo.Database, record TODORecord) (TODOHistoryEvent, error) {
+	event, err := readVerifiedTODOStageEvent(ctx, database, record, record.Stage, record.Revision)
 	if err != nil {
-		return err
+		return TODOHistoryEvent{}, err
 	}
-	var event TODOHistoryEvent
-	filter := bson.D{{Key: "project_id", Value: record.ProjectID}, {Key: "todo_id", Value: record.ID}, {Key: "kind", Value: "state_changed"}, {Key: "revision", Value: bson.D{{Key: "$lte", Value: record.Revision}}}, {Key: "changes.stage", Value: stage}, {Key: "changes.stage_verification", Value: "verified"}}
-	if err := database.Collection(todoEventsCollection).FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "revision", Value: -1}})).Decode(&event); err != nil {
-		return todoTeach("promotion_history.event", "resolve the exact immutable current-stage event", ErrConflict)
+	if record.VerifiedTransitionRef == nil || *event.Changes.VerifiedTransitionRef != *record.VerifiedTransitionRef {
+		return TODOHistoryEvent{}, todoTeach("promotion_history.event", "match the current stage snapshot to its exact immutable state-change event and proof", ErrConflict)
 	}
-	if event.Revision > record.Revision || event.OperationID == "" || event.Changes.Stage == nil || *event.Changes.Stage != stage || event.Changes.StageVerification == nil || *event.Changes.StageVerification != "verified" || event.Changes.VerifiedTransitionRef == nil || record.VerifiedTransitionRef == nil || *event.Changes.VerifiedTransitionRef != *record.VerifiedTransitionRef {
-		return todoTeach("promotion_history.event", "match the current stage snapshot to its exact immutable state-change event and proof", ErrConflict)
-	}
-	return nil
-}
-
-func (m *MongoStore) historicalTODOConstitutionPin(ctx context.Context, companyID, projectID string, localEventAt time.Time) (todoConstitutionPin, error) {
-	database, err := m.todoTenantDatabase(ctx, companyID)
-	if err != nil {
-		return todoConstitutionPin{}, err
-	}
-	sameTimeActivations, err := database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "family", Value: "project"}, {Key: "record_id", Value: projectID}, {Key: "kind", Value: "generation_activated"}, {Key: "occurred_at", Value: localEventAt}})
-	if err != nil {
-		return todoConstitutionPin{}, ErrUnavailable
-	}
-	if sameTimeActivations != 0 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve canonical activation strictly before the Local event timestamp; same-time activation is ambiguous", ErrConflict)
-	}
-	activationFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "family", Value: "project"}, {Key: "record_id", Value: projectID}, {Key: "kind", Value: "generation_activated"}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
-	var activation CanonicalEvent
-	if err := database.Collection(canonicalEvents).FindOne(ctx, activationFilter, options.FindOne().SetSort(bson.D{{Key: "occurred_at", Value: -1}, {Key: "_id", Value: -1}})).Decode(&activation); err != nil {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve the uniquely active canonical generation before the immutable Local event", ErrConflict)
-	}
-	activationCollisions, err := database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "family", Value: "project"}, {Key: "record_id", Value: projectID}, {Key: "kind", Value: "generation_activated"}, {Key: "occurred_at", Value: activation.OccurredAt}})
-	if err != nil || activationCollisions != 1 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve one unambiguous canonical generation activation before the Local event", ErrConflict)
-	}
-	constitutionHistoryFilter := bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
-	var constitutionIDs []any
-	if err := database.Collection(canonicalEvents).Distinct(ctx, "record_id", constitutionHistoryFilter).Decode(&constitutionIDs); err != nil {
-		return todoConstitutionPin{}, ErrUnavailable
-	}
-	if len(constitutionIDs) != 1 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve exactly one constitution record in the active historical generation", ErrConflict)
-	}
-	constitutionID, ok := constitutionIDs[0].(string)
-	if !ok || !validID(constitutionID) {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve a valid historical constitution record identity", ErrConflict)
-	}
-	filter := bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: bson.D{{Key: "$lt", Value: localEventAt}}}}
-	var collisions int64
-	collisions, err = database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: localEventAt}})
-	if err != nil {
-		return todoConstitutionPin{}, ErrUnavailable
-	}
-	if collisions > 0 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve constitution history strictly before the Local event timestamp; same-time updates are ambiguous", ErrConflict)
-	}
-	var event CanonicalEvent
-	err = database.Collection(canonicalEvents).FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "occurred_at", Value: -1}, {Key: "_id", Value: -1}})).Decode(&event)
-	if errors.Is(err, mongo.ErrNoDocuments) {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "find one active constitution revision before the immutable Local event", ErrConflict)
-	}
-	if err != nil {
-		return todoConstitutionPin{}, ErrUnavailable
-	}
-	constitutionCollisions, err := database.Collection(canonicalEvents).CountDocuments(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: activation.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "occurred_at", Value: event.OccurredAt}})
-	if err != nil || constitutionCollisions != 1 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve one unambiguous constitution event at the historical timestamp", ErrConflict)
-	}
-	if event.Kind == "record_deleted" || event.GenerationID == "" || event.Revision < 1 {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "resolve a nondeleted historical constitution revision", ErrConflict)
-	}
-	var version struct {
-		Record canonicalStored `bson:"record"`
-	}
-	err = database.Collection(canonicalVersions).FindOne(ctx, bson.D{{Key: "project_id", Value: projectID}, {Key: "generation_id", Value: event.GenerationID}, {Key: "family", Value: FamilyConstitution}, {Key: "record_id", Value: constitutionID}, {Key: "revision", Value: event.Revision}}).Decode(&version)
-	if err != nil {
-		return todoConstitutionPin{}, ErrUnavailable
-	}
-	record := version.Record.toRecord()
-	if record.ContentDigest != canonicalDigest(record.Payload) || record.Deleted {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution", "match the immutable canonical payload digest and nondeleted state", ErrConflict)
-	}
-	var payload ConstitutionPayload
-	if json.Unmarshal(record.Payload, &payload) != nil || (payload.PromotionMode != "mvp" && payload.PromotionMode != "complete") {
-		return todoConstitutionPin{}, todoTeach("local_history.constitution.promotion_mode", "resolve one valid historical typed mode", ErrConflict)
-	}
-	return todoConstitutionPin{Mode: payload.PromotionMode, GenerationID: record.GenerationID, RecordID: record.ID, Revision: record.Revision, ContentDigest: record.ContentDigest}, nil
+	return event, nil
 }
 
 func requireLocalProofCommitIdentity(proof *TODOProofReference, commits todoOriginalCommitSet) error {

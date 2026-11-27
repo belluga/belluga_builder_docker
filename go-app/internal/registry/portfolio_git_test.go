@@ -2,10 +2,14 @@ package registry
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/color"
 	"image/png"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +18,70 @@ import (
 
 	ac "delphi-local-api/artifactcatalog"
 )
+
+type portfolioCatalogGitFixture struct {
+	root, revision string
+	headErr        error
+}
+
+func (g portfolioCatalogGitFixture) BranchHead(context.Context, RepositoryBinding) (string, error) {
+	if g.headErr != nil {
+		return "", g.headErr
+	}
+	return g.revision, nil
+}
+
+func (g portfolioCatalogGitFixture) OpenRevision(_ context.Context, _, _ string, _ RepositoryBinding, revision string) (prototypeGitSource, error) {
+	source, err := ac.NewGitTree(g.root, revision)
+	if err != nil {
+		return prototypeGitSource{}, err
+	}
+	return prototypeGitSource{source: source}, nil
+}
+
+func TestMongoPortfolioCatalogEmitsTEACHForNotAuthoredInvalidAndUnavailable(t *testing.T) {
+	for _, tc := range []struct {
+		name, manifest, state, code string
+		unavailable                 bool
+	}{{"not-authored", "", "not_authored", "portfolio_not_authored", false}, {"invalid", `{"schema_version":"2","summary":"invalid"}`, "invalid", "portfolio_invalid", false}, {"unavailable", `{"schema_version":"1","summary":"valid"}`, "unavailable", "portfolio_unavailable", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, ctx := overviewMongoFixture(t, "portfolio-"+tc.name)
+			manifest := tc.manifest
+			if tc.name == "not-authored" {
+				manifest = `{"schema_version":"1","summary":"valid"}`
+			}
+			root, revision, _ := portfolioFixture(t, manifest)
+			if tc.name == "not-authored" {
+				if err := os.Remove(filepath.Join(root, "project_portfolio.json")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(root, "project_portfolio", "cover.png")); err != nil {
+					t.Fatal(err)
+				}
+				commitPortfolio(t, root)
+				revision = gitPortfolio(t, root, "rev-parse", "HEAD")
+			}
+			current, err := store.ReadRepositoryBinding(ctx, "company-overview", "project-a")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.ChangeRepositoryBinding(ctx, "company-overview", "project-a", RepositoryBindingRequest{Action: "replace", ProjectID: "project-a", ExpectedRevision: current.Revision, OperationID: "portfolio-bind-" + tc.name, Actor: "owner", RepositoryID: "belluga/repo", Branch: "main"}); err != nil {
+				t.Fatal(err)
+			}
+			git := portfolioCatalogGitFixture{root: root, revision: revision}
+			if tc.unavailable {
+				git.headErr = ErrUnavailable
+			}
+			store.prototypeGit = git
+			response := httptest.NewRecorder()
+			NewHandler(store).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/internal/v1/companies/company-overview/portfolios", nil))
+			var catalog PortfolioCatalogResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &catalog); err != nil || response.Code != http.StatusOK || len(catalog.Projects) != 1 || catalog.Projects[0].State != tc.state || catalog.Projects[0].TeachDetail == nil || catalog.Projects[0].TeachDetail.Code != tc.code || catalog.Projects[0].TeachDetail.Effects != TeachEffectsNotApplicable {
+				t.Fatalf("portfolio catalog state=%+v status=%d err=%v body=%s", catalog.Projects, response.Code, err, response.Body)
+			}
+		})
+	}
+}
 
 func TestPortfolioV1ProjectionUsesPinnedGitBytesAndOptionalCover(t *testing.T) {
 	root, revision, binding := portfolioFixture(t, `{"schema_version":"1","summary":"A bounded portfolio summary"}`)

@@ -21,6 +21,11 @@ import (
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "discovery-indexes":
+			if err := runDiscoveryIndexes(os.Args[2:]); err != nil {
+				log.Fatal(err)
+			}
+			return
 		case "import":
 			if err := runImport(os.Args[2:]); err != nil {
 				log.Fatal(err)
@@ -75,12 +80,28 @@ func main() {
 	if err := store.ConfigureProofReader(strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_URL")), strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_TOKEN"))); err != nil {
 		log.Fatal("private proof Reader is unavailable")
 	}
-	if stateRoot := strings.TrimSpace(os.Getenv("DELPHI_PROJECT_READER_STATE_ROOT")); stateRoot != "" {
-		if err := store.ConfigureDesignSystemSourceMapRoot(stateRoot); err != nil {
-			log.Fatal("private Design System source-map state is unavailable")
-		}
+	if err := store.ConfigureGitHubApp(registry.GitHubAppConfig{
+		AppID:                     os.Getenv("BUILDER_GITHUB_APP_ID"),
+		Slug:                      os.Getenv("BUILDER_GITHUB_APP_SLUG"),
+		ClientID:                  os.Getenv("BUILDER_GITHUB_APP_CLIENT_ID"),
+		ClientSecret:              os.Getenv("BUILDER_GITHUB_APP_CLIENT_SECRET"),
+		PrivateKeyFile:            os.Getenv("BUILDER_GITHUB_APP_PRIVATE_KEY_FILE"),
+		AdminOrigin:               os.Getenv("BUILDER_GITHUB_ADMIN_ORIGIN"),
+		AccessIssuer:              os.Getenv("BUILDER_GITHUB_ACCESS_ISSUER"),
+		AccessAudience:            os.Getenv("BUILDER_GITHUB_ACCESS_AUDIENCE"),
+		AccessOperators:           os.Getenv("BUILDER_GITHUB_ACCESS_OPERATORS"),
+		CompanyCreators:           os.Getenv("BUILDER_ADMIN_COMPANY_CREATORS"),
+		SharedAuthenticatedAccess: os.Getenv("BUILDER_ADMIN_SHARED_AUTHENTICATED_ACCESS") == "true",
+	}); err != nil {
+		log.Fatal("GitHub App administration configuration is invalid or unavailable")
 	}
-
+	if err := store.ConfigureScopedProofReader(os.Getenv("DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN")); err != nil {
+		log.Fatal("GitHub App scoped proof Reader credential is invalid or unavailable")
+	}
+	// The OAuth client holds this runtime secret in memory. Git child
+	// processes and evaluators never need it in their environment.
+	_ = os.Unsetenv("BUILDER_GITHUB_APP_CLIENT_SECRET")
+	_ = os.Unsetenv("DELPHI_PROJECT_READER_SCOPED_PROOF_TOKEN")
 	address := strings.TrimSpace(os.Getenv("LISTEN_ADDR"))
 	if address == "" {
 		address = "0.0.0.0:8080"

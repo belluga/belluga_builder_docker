@@ -15,18 +15,19 @@ import (
 // RoadmapChange is a Project-scoped planning operation. The action is selected
 // by the private route, never by a caller-authored body field.
 type RoadmapChange struct {
-	ProjectID               string                `json:"project_id"`
-	ExpectedRoadmapRevision *int64                `json:"expected_roadmap_revision"`
-	OperationID             string                `json:"operation_id"`
-	ID                      string                `json:"id,omitempty"`
-	EpicID                  string                `json:"epic_id,omitempty"`
-	Name                    string                `json:"name,omitempty"`
-	Description             string                `json:"description,omitempty"`
-	OrderedIDs              []string              `json:"ordered_ids,omitempty"`
-	Investigation           *ReleaseInvestigation `json:"investigation,omitempty"`
-	RepositoryID            string                `json:"repository_id,omitempty"`
-	Branch                  string                `json:"branch,omitempty"`
-	OwnerReference          string                `json:"owner_reference,omitempty"`
+	ProjectID               string                 `json:"project_id"`
+	ExpectedRoadmapRevision *int64                 `json:"expected_roadmap_revision"`
+	OperationID             string                 `json:"operation_id"`
+	ID                      string                 `json:"id,omitempty"`
+	EpicID                  string                 `json:"epic_id,omitempty"`
+	Name                    string                 `json:"name,omitempty"`
+	Description             string                 `json:"description,omitempty"`
+	OrderedIDs              []string               `json:"ordered_ids,omitempty"`
+	Investigation           *ReleaseInvestigation  `json:"investigation,omitempty"`
+	SequencingPlan          *ReleaseSequencingPlan `json:"sequencing_plan,omitempty"`
+	RepositoryID            string                 `json:"repository_id,omitempty"`
+	Branch                  string                 `json:"branch,omitempty"`
+	OwnerReference          string                 `json:"owner_reference,omitempty"`
 }
 
 type RoadmapChangeResult struct {
@@ -125,6 +126,9 @@ func validRoadmapChange(action string, request RoadmapChange) bool {
 	if !validID(request.ProjectID) || request.ExpectedRoadmapRevision == nil || *request.ExpectedRoadmapRevision < 0 || *request.ExpectedRoadmapRevision == math.MaxInt64 || !todoOperationIDPattern.MatchString(request.OperationID) {
 		return false
 	}
+	if action != "set-sequencing-plan" && action != "clear-sequencing-plan" && request.SequencingPlan != nil {
+		return false
+	}
 	switch action {
 	case "create-epic", "edit-epic", "create-release", "edit-release":
 		return validID(request.ID) && validName(request.Name) && utf8.ValidString(request.Description) && len(request.Description) <= 1024 && (action != "create-release" || validID(request.EpicID)) && (action != "edit-release" || request.EpicID == "" || validID(request.EpicID))
@@ -140,6 +144,10 @@ func validRoadmapChange(action string, request RoadmapChange) bool {
 		return validID(request.ID) && validateReleaseInvestigation(request.Investigation) == nil
 	case "clear-investigation":
 		return validID(request.ID) && request.Investigation == nil
+	case "set-sequencing-plan":
+		return validID(request.ID) && request.EpicID == "" && request.Name == "" && request.Description == "" && request.OrderedIDs == nil && request.Investigation == nil && request.RepositoryID == "" && request.Branch == "" && request.OwnerReference == "" && validateReleaseSequencingPlan(request.SequencingPlan) == nil
+	case "clear-sequencing-plan":
+		return validID(request.ID) && request.EpicID == "" && request.Name == "" && request.Description == "" && request.OrderedIDs == nil && request.Investigation == nil && request.SequencingPlan == nil && request.RepositoryID == "" && request.Branch == "" && request.OwnerReference == ""
 	default:
 		return false
 	}
@@ -148,6 +156,11 @@ func validRoadmapChange(action string, request RoadmapChange) bool {
 func (m *MongoStore) ChangeRoadmap(ctx context.Context, companyID, action string, request RoadmapChange) (RoadmapChangeResult, error) {
 	if action == "set-investigation" {
 		if err := validateReleaseInvestigation(request.Investigation); err != nil {
+			return RoadmapChangeResult{}, err
+		}
+	}
+	if action == "set-sequencing-plan" {
+		if err := validateReleaseSequencingPlan(request.SequencingPlan); err != nil {
 			return RoadmapChangeResult{}, err
 		}
 	}
@@ -214,7 +227,7 @@ func (m *MongoStore) ChangeRoadmap(ctx context.Context, companyID, action string
 		op := roadmapOperation{ID: request.OperationID, Action: action, RequestDigest: digest, ResultID: request.ID, Revision: next}
 		result, err := database.Collection(projectsCollection).UpdateOne(txCtx, cas, bson.D{{Key: "$inc", Value: bson.D{{Key: "roadmap_revision", Value: 1}}}, {Key: "$set", Value: bson.D{{Key: "roadmap_last_operation", Value: op}}}})
 		if err != nil {
-			return nil, normalizeMongoError(err)
+			return nil, normalizeMongoTransactionError(err)
 		}
 		if result.MatchedCount != 1 {
 			return nil, todoTeach("expected_roadmap_revision", "reload after a competing planning operation", ErrConflict)
@@ -308,6 +321,20 @@ func changeRoadmapCollections(ctx context.Context, db *mongo.Database, projectID
 		return updateRoadmapFields(ctx, releases, identity(req.ID), bson.D{{Key: "investigation", Value: req.Investigation}}, "release_id")
 	case "clear-investigation":
 		result, err := releases.UpdateOne(ctx, identity(req.ID), bson.D{{Key: "$unset", Value: bson.D{{Key: "investigation", Value: ""}}}})
+		if err != nil {
+			return normalizeMongoError(err)
+		}
+		if result.MatchedCount == 0 {
+			return todoTeach("release_id", "name an existing item in the same Project", ErrNotFound)
+		}
+		return nil
+	case "set-sequencing-plan":
+		if err := validateReleaseSequencingMembership(ctx, todos, projectID, req.ID, req.SequencingPlan); err != nil {
+			return err
+		}
+		return updateRoadmapFields(ctx, releases, identity(req.ID), bson.D{{Key: "sequencing_plan", Value: req.SequencingPlan}}, "release_id")
+	case "clear-sequencing-plan":
+		result, err := releases.UpdateOne(ctx, identity(req.ID), bson.D{{Key: "$unset", Value: bson.D{{Key: "sequencing_plan", Value: ""}}}})
 		if err != nil {
 			return normalizeMongoError(err)
 		}

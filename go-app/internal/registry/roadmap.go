@@ -31,6 +31,7 @@ type roadmapRelease struct {
 	Position         int                     `bson:"position"`
 	DeliveryBranches []releaseDeliveryBranch `bson:"delivery_branches,omitempty"`
 	Investigation    *ReleaseInvestigation   `bson:"investigation,omitempty"`
+	SequencingPlan   *ReleaseSequencingPlan  `bson:"sequencing_plan,omitempty"`
 }
 
 // releaseDeliveryBranch is an immutable owner-confirmed destination for one
@@ -71,6 +72,7 @@ type roadmapTODOView struct {
 	DeliveryStageState       string                        `json:"delivery_stage_state"`
 	DeliveryStageBasis       string                        `json:"delivery_stage_basis,omitempty"`
 	DeliveryStageTeach       string                        `json:"delivery_stage_teach,omitempty"`
+	TeachDetail              *TeachDiagnostic              `json:"teach_detail,omitempty"`
 	DeliveryKind             string                        `json:"delivery_kind,omitempty"`
 	DocumentaryCompletion    bool                          `json:"documentary_completion,omitempty"`
 	AdministrativeAcceptance *TODOAdministrativeAcceptance `json:"administrative_acceptance,omitempty"`
@@ -212,8 +214,10 @@ func roadmapTODOViewFromRecord(record TODORecord) roadmapTODOView {
 	} else {
 		if record.Source.Kind == "mongo-content-revision" && record.Stage == "Planning" {
 			view.DeliveryStageTeach = fmt.Sprintf("TEACH: Planning needs current-stage verification. Run builder-project status --company-id <company-id> --project-id %s --todo-id %s to obtain the exact recovery command; no Foundation path is involved.", record.ProjectID, record.ID)
+			view.TeachDetail = readTeach("todo_stage_unverified", "stage_verification", "Run the Project status operation to obtain the exact recovery command, then reassess the current stage.")
 		} else {
 			view.DeliveryStageTeach = fmt.Sprintf("TEACH: authored stage %s has no verified current-stage proof; have the private verifier validate the current stage before treating it as effective.", record.Stage)
+			view.TeachDetail = readTeach("todo_stage_unverified", "stage_verification", "Have the private verifier validate the current stage before treating it as effective.")
 		}
 	}
 	return view

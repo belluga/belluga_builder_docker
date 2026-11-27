@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -54,6 +55,19 @@ func TestReadPrototypeFileUsesOneEpochFenceAndRejectsStalePinnedURLs(t *testing.
 	project.KnowledgeGenerationID = "generation-b"
 	if _, err := store.ReadPrototypeFile(context.Background(), project.CompanyID, project.ID, revision, pathA); err != ErrConflict {
 		t.Fatalf("stale URL survived Knowledge activation change: %v", err)
+	}
+}
+
+func TestPrototypeFileInventoryRejectsTODOReferenceImage(t *testing.T) {
+	const revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	project := Project{ID: "builder", CompanyID: "company-a", Binding: &Binding{RepositoryID: "owner/repo", PublicationBranch: "main"}, BindingRevision: 3, KnowledgeGenerationID: "generation-a", CanonicalWriteEpoch: 9}
+	catalog := identityTestCatalog(project.CompanyID, project.ID, project.Binding.RepositoryID, revision, project.BindingRevision, project.CanonicalWriteEpoch, project.KnowledgeGenerationID, "prototypes/demo/index.html")
+	store := &MongoStore{prototypeHot: newPrototypeHotCache(), prototypeFileCache: newPrototypeFileCache()}
+	store.prototypeHot.replace(project.CompanyID, project.ID, &catalog)
+	store.prototypeIdentityReader = func(context.Context, string, string) (Project, error) { return project, nil }
+	path := "todo-reference-images/company-a/builder/image-reference-todo/" + strings.Repeat("b", 64) + ".png"
+	if _, err := store.ReadPrototypeFile(context.Background(), project.CompanyID, project.ID, revision, path); err != ErrNotFound {
+		t.Fatalf("TODO image escaped the Prototype inventory: %v", err)
 	}
 }
 

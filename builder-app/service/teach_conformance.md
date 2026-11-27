@@ -1,0 +1,13 @@
+# Viewer TEACH v1 conformance
+
+The shared decoder/projection is in `teach_proxy.go`. It reads complete error envelopes up to 64 KiB including a trailing newline, using a 64 KiB plus one byte reader. Duplicate-key, malformed, invalid UTF-8, trailing-value and oversized JSON are rejected. Error output always retains the handler's mapped status and legacy `error`/`teach` fields, and adds a minimal v1 `teach_detail` when the upstream omitted or supplied unsafe optional detail. The whole encoded output, including newline, is checked against 64 KiB before writing. Successful JSON DTOs use the same allowlist sanitizer; private `record_id`, `operation_id`, and `object_purpose` properties are absent from the viewer DTO type and cannot be re-emitted.
+
+| Owner | Real route/fixture coverage | Public detail projection |
+| --- | --- | --- |
+| Design System | `TestDesignSystemAPIForwardsOnlySafeBoundedRegistryTeach` | Mapped upstream status/code and safe legacy TEACH; no arbitrary private detail. |
+| Overview | `TestOverviewProxyRequiresRegistryIdentityAndValidatesInvalidState`, `TestOverviewProxyRegistryErrorsProjectTeachDetail` | not-authored/invalid/stale use common detail; upstream 404/409 status mappings remain unchanged. |
+| Canonical Knowledge/index | `TestCanonicalDocumentsReadBoundary`, `TestCanonicalIndexErrorBodyIsProjected` | Pending state and legacy TEACH survive; index errors do not forward raw body. |
+| Artifact roadmap | `artifact_preview_test.go:TestRoadmapHandlerProjectsNestedTODOTeachDetailsAndPreservesLegacyPayload`, `teach_proxy_test.go:TestRoadmapProxyDoesNotForwardRawRegistryClientErrors` | Real `/api/roadmap` 2xx sanitizes only known TODO diagnostic nodes in epic/release TODOs, backlog TODOs, direct folder TODOs and recursive nested folders. It omits record/operation IDs and purpose, filters identifier-shaped values, falls back from URL/secret/oversized actions and unsafe legacy `delivery_stage_teach`, and preserves Roadmap state, status, legacy fields and unrelated extension data. Error route keeps its mapped 4xx behavior. |
+| Landing, Portfolio, Prototype | `TestLandingPortfolioAndPrototypeProjectTEACHDetails` | Public state/code/action and conservative field/value allowlists; private IDs/purpose are omitted. |
+
+Required tests also exercise exact 64 KiB, oversize, trailing JSON, duplicate keys, secret-bearing values, legacy error/status fields, and whole-envelope output bounds in `teach_proxy_test.go`. The proxy does not copy arbitrary upstream errors or unknown properties. Existing 2xx domain payload and binary, HEAD and 304 limits/semantics remain owned by their route handlers.

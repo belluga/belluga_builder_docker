@@ -236,6 +236,15 @@ func (m *MongoStore) EditTODOEvidence(ctx context.Context, companyID string, req
 	if err != nil {
 		return TODOContentEditResponse{}, err
 	}
+	currentContent, contentErr := m.contentAtRevision(ctx, collection.Database(), current.ProjectID, current.ID, current.Revision)
+	if contentErr != nil && !errors.Is(contentErr, ErrNotFound) {
+		return TODOContentEditResponse{}, contentErr
+	}
+	if contentErr == nil && currentContent.SchemaVersion == todoContentSchemaVersion {
+		if err := validatePrototypeNoCodeFields(&currentContent.TODOContent, current, commits); err != nil {
+			return TODOContentEditResponse{}, err
+		}
+	}
 	if current.Content != nil && current.Content.SchemaVersion == todoContentSchemaVersion {
 		for _, commit := range commits {
 			if foundationScope(commit.Repository) {

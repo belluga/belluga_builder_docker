@@ -88,7 +88,7 @@ func (v gitDesignSystemVerifier) BranchHead(ctx context.Context, binding Reposit
 	if binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || v.repositoryURL == nil {
 		return "", ErrUnavailable
 	}
-	remote := v.repositoryURL(binding.RepositoryID)
+	remote := v.readRemote(ctx, binding.RepositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		return "", ErrUnavailable
 	}
@@ -107,8 +107,20 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, pr
 	if !validID(companyID) || !validID(projectID) || binding.State != "configured" || !validGitRepositoryIdentity(binding.RepositoryID) || !validGitBranch(binding.PublicationBranch) || !validFullGitSHA(revision) || v.repositoryURL == nil {
 		return prototypeGitSource{}, ErrUnavailable
 	}
+	if _, sameScope := githubVisualCacheSuffix(ctx, companyID, projectID, binding.RepositoryID); !sameScope {
+		return prototypeGitSource{}, ErrConflict
+	}
 	if v.prototypeCacheRoot != "" {
-		return v.openCachedPrototypeRevision(ctx, companyID, projectID, binding, revision)
+		cached, err := v.openCachedPrototypeRevision(ctx, companyID, projectID, binding, revision)
+		if err != nil {
+			return prototypeGitSource{}, err
+		}
+		cached.source, err = ac.NewGitTree(cached.workspace, revision)
+		if err != nil {
+			cached.close()
+			return prototypeGitSource{}, ErrUnavailable
+		}
+		return cached, nil
 	}
 	workspace, err := os.MkdirTemp("", ".builder-prototype-read-*")
 	if err != nil {
@@ -126,7 +138,7 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, pr
 	if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
 		return prototypeGitSource{}, ErrUnavailable
 	}
-	remote := v.repositoryURL(binding.RepositoryID)
+	remote := v.readRemote(ctx, binding.RepositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -156,25 +168,40 @@ func (v gitDesignSystemVerifier) OpenRevision(ctx context.Context, companyID, pr
 // checkout. Git's immutable objects are retained across container restarts;
 // a new branch SHA fetches only objects absent from this repository.
 func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context, companyID, projectID string, binding RepositoryBinding, revision string) (prototypeGitSource, error) {
+	if !validGitBranch(binding.PublicationBranch) {
+		return prototypeGitSource{}, ErrUnavailable
+	}
 	root := v.prototypeCacheRoot
 	if !filepath.IsAbs(root) || ac.RejectSymlinkComponents(root) != nil {
 		return prototypeGitSource{}, ErrUnavailable
 	}
-	remote := v.repositoryURL(binding.RepositoryID)
+	remote := v.readRemote(ctx, binding.RepositoryID)
 	if remote == "" || strings.ContainsAny(remote, "\x00\r\n") {
 		return prototypeGitSource{}, ErrUnavailable
 	}
-	key := sha256.Sum256([]byte(companyID + "\x00" + projectID + "\x00" + binding.RepositoryID + "\x00" + remote))
+	suffix, sameScope := githubVisualCacheSuffix(ctx, companyID, projectID, binding.RepositoryID)
+	if !sameScope {
+		return prototypeGitSource{}, ErrConflict
+	}
+	key := sha256.Sum256([]byte(companyID + "\x00" + projectID + "\x00" + binding.RepositoryID + "\x00" + remote + suffix))
 	workspace := filepath.Join(root, hex.EncodeToString(key[:]))
-	lockValue, _ := prototypeRepositoryLocks.LoadOrStore(workspace, &sync.Mutex{})
-	lock := lockValue.(*sync.Mutex)
-	lock.Lock()
+	lockValue, _ := prototypeRepositoryLocks.LoadOrStore(workspace, make(chan struct{}, 1))
+	lock := lockValue.(chan struct{})
+	select {
+	case lock <- struct{}{}:
+	case <-ctx.Done():
+		return prototypeGitSource{}, ctx.Err()
+	}
+	release := func() { <-lock }
 	failed := true
 	defer func() {
 		if failed {
-			lock.Unlock()
+			release()
 		}
 	}()
+	if err := ctx.Err(); err != nil {
+		return prototypeGitSource{}, err
+	}
 	if err := os.Mkdir(workspace, 0o700); err != nil && !os.IsExist(err) {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -184,12 +211,19 @@ func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context
 	}
 	gitPath := filepath.Join(workspace, ".git")
 	if _, err := os.Lstat(gitPath); os.IsNotExist(err) {
+		initialized := false
+		defer func() {
+			if !initialized {
+				_ = os.RemoveAll(gitPath)
+			}
+		}()
 		if _, err := v.git(ctx, workspace, false, "init", "--quiet"); err != nil {
 			return prototypeGitSource{}, ErrUnavailable
 		}
 		if _, err := v.git(ctx, workspace, false, "remote", "add", "origin", remote); err != nil {
 			return prototypeGitSource{}, ErrUnavailable
 		}
+		initialized = true
 	} else if err != nil {
 		return prototypeGitSource{}, ErrUnavailable
 	}
@@ -221,12 +255,8 @@ func (v gitDesignSystemVerifier) openCachedPrototypeRevision(ctx context.Context
 			return prototypeGitSource{}, ErrUnavailable
 		}
 	}
-	source, err := ac.NewGitTree(workspace, revision)
-	if err != nil {
-		return prototypeGitSource{}, ErrUnavailable
-	}
 	failed = false
-	return prototypeGitSource{workspace: workspace, source: source, sha: revision, release: lock.Unlock}, nil
+	return prototypeGitSource{workspace: workspace, sha: revision, release: release}, nil
 }
 
 func canonicalManifestForPrototype(manifest CanonicalManifest, projectID string) (*ac.CanonicalManifest, string, error) {
@@ -447,6 +477,9 @@ func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, proje
 	if err != nil {
 		return err
 	}
+	if !prototypeBindingMatchesCatalog(binding, catalog) {
+		return ErrConflict
+	}
 	reader := m.prototypeGit
 	if reader == nil {
 		return ErrUnavailable
@@ -458,7 +491,18 @@ func (m *MongoStore) fencePrototypeCurrent(ctx context.Context, companyID, proje
 	if head != catalog.Revision {
 		return ErrConflict
 	}
-	return nil
+	if err := m.fencePrototypeIdentity(ctx, companyID, projectID, catalog); err != nil {
+		return err
+	}
+	manifest, err := m.readPrototypeCanonicalManifest(ctx, companyID, projectID)
+	if err != nil {
+		return err
+	}
+	_, knowledgeDigest, err := canonicalManifestForPrototype(manifest, projectID)
+	if err != nil || manifest.GenerationID != catalog.KnowledgeGeneration || knowledgeDigest != catalog.KnowledgeDigest {
+		return ErrConflict
+	}
+	return m.fencePrototypeIdentity(ctx, companyID, projectID, catalog)
 }
 
 func prototypeEvaluationError(evaluation ac.Response) error {
@@ -508,6 +552,12 @@ type prototypeFileResponse struct {
 }
 
 func (m *MongoStore) ReadPrototypes(ctx context.Context, companyID, projectID string) (PrototypeCatalogResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (PrototypeCatalogResponse, error) {
+		return m.readPrototypes(ctx, companyID, projectID)
+	})
+}
+
+func (m *MongoStore) readPrototypes(ctx context.Context, companyID, projectID string) (PrototypeCatalogResponse, error) {
 	m.prototypeHot.replace(companyID, projectID, nil)
 	catalog, err := m.prototypeSnapshot(ctx, companyID, projectID, "")
 	if err != nil {
@@ -521,6 +571,12 @@ func (m *MongoStore) ReadPrototypes(ctx context.Context, companyID, projectID st
 }
 
 func (m *MongoStore) ReadPrototype(ctx context.Context, companyID, projectID, revision, prototypeID string) (PrototypeReadResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (PrototypeReadResponse, error) {
+		return m.readPrototype(ctx, companyID, projectID, revision, prototypeID)
+	})
+}
+
+func (m *MongoStore) readPrototype(ctx context.Context, companyID, projectID, revision, prototypeID string) (PrototypeReadResponse, error) {
 	if !validFullGitSHA(revision) || !validStableArtifactID(prototypeID) {
 		return PrototypeReadResponse{}, ErrInvalid
 	}
@@ -560,6 +616,12 @@ func (m *MongoStore) ReadPrototype(ctx context.Context, companyID, projectID, re
 }
 
 func (m *MongoStore) ReadPrototypeFile(ctx context.Context, companyID, projectID, revision, requestedPath string) (prototypeFileResponse, error) {
+	return readGitHubVisual(ctx, m, companyID, projectID, func(ctx context.Context) (prototypeFileResponse, error) {
+		return m.readPrototypeFile(ctx, companyID, projectID, revision, requestedPath)
+	})
+}
+
+func (m *MongoStore) readPrototypeFile(ctx context.Context, companyID, projectID, revision, requestedPath string) (prototypeFileResponse, error) {
 	if !validFullGitSHA(revision) || ac.ValidateRelativePath(requestedPath) != nil {
 		return prototypeFileResponse{}, ErrInvalid
 	}

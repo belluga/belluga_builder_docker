@@ -83,7 +83,8 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 	t.Run("pending is explicit and cannot reveal inactive draft", func(t *testing.T) {
 		value = map[string]any{"project_id": "builder", "active": false, "state": "pending", "documents": []any{}, "teach": "TEACH: import and activate this Project"}
 		response := read("/api/knowledge?company_id=belluga&project_id=builder")
-		if response.Code != 200 || !strings.Contains(response.Body.String(), `"state":"pending"`) || !strings.Contains(response.Body.String(), "TEACH:") {
+		var got knowledgeManifest
+		if json.Unmarshal(response.Body.Bytes(), &got) != nil || response.Code != 200 || got.State != "pending" || got.Teach != knowledgePendingTeach || got.TeachDetail == nil || !safeProxyTeachDetail(*got.TeachDetail) || got.TeachDetail.Code != "canonical_pending" || strings.TrimSpace(got.TeachDetail.NextAction) == "" || got.TeachDetail.Effects != "" || got.TeachDetail.Retry != "" || got.TeachDetail.Revision != nil {
 			t.Fatalf("pending: %d %s", response.Code, response.Body.String())
 		}
 	})
@@ -134,6 +135,47 @@ func TestCanonicalDocumentsReadBoundary(t *testing.T) {
 			t.Fatalf("invalid request reached Registry: status=%d calls=%d", response.Code, len(paths)-before)
 		}
 	})
+}
+
+func TestCanonicalIndexErrorBodyIsProjected(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/internal/v1/catalog" {
+			_, _ = w.Write([]byte(`{"schema_version":"1","companies":[{"id":"belluga","name":"Belluga"}],"projects":[{"id":"builder","name":"Builder","company_id":"belluga"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"/private/registry/config","teach":"TEACH: Correct the selected filter.","teach_detail":{"schema_version":"1","code":"canonical_request_invalid","field_path":"family","next_action":"Choose an allowed family."},"secret":"credential"}`))
+	}))
+	defer upstream.Close()
+	p := &registeredPreview{registryURL: upstream.URL, client: upstream.Client()}
+	w := httptest.NewRecorder()
+	p.knowledgeIndexAPIHandler(w, httptest.NewRequest(http.MethodGet, "/api/knowledge/index?company_id=belluga&project_id=builder&family=module", nil))
+	if w.Code != http.StatusBadRequest || strings.Contains(w.Body.String(), "private/registry") || strings.Contains(w.Body.String(), "credential") || !strings.Contains(w.Body.String(), `"teach_detail"`) || !strings.Contains(w.Body.String(), `"field_path":"family"`) {
+		t.Fatalf("canonical index error projection: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCanonicalPending404PreservesLegacyShapeAndSafeOwnerDetail(t *testing.T) {
+	const ownerTeach = "TEACH: Registry's canonical generation is pending publication."
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/internal/v1/catalog":
+			serveLandingTestCatalog(w)
+		case "/internal/v1/companies/company/projects/project/knowledge/manifest":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":"not_found","state":"pending","teach":"` + ownerTeach + `","teach_detail":{"schema_version":"1","code":"canonical_pending","field_path":"generation_id","next_action":"Run delphi-ai/local-api/builder-project to import and activate the generation.","revision":4,"effects":"not_applicable","retry":"read_reassess"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+	p := &registeredPreview{registryURL: upstream.URL, client: upstream.Client()}
+	w := httptest.NewRecorder()
+	p.knowledgeAPIHandler(w, httptest.NewRequest(http.MethodGet, "/api/knowledge?company_id=company&project_id=project", nil))
+	var got proxyTeachEnvelope
+	if json.Unmarshal(w.Body.Bytes(), &got) != nil || w.Code != http.StatusNotFound || got.State != "pending" || got.Error != "" || got.Teach != knowledgePendingTeach || got.TeachDetail == nil || !safeProxyTeachDetail(*got.TeachDetail) || got.TeachDetail.Code != "canonical_pending" || got.TeachDetail.FieldPath != "generation_id" || got.TeachDetail.Revision == nil || *got.TeachDetail.Revision != 4 || got.TeachDetail.Effects != "not_applicable" || got.TeachDetail.Retry != "read_reassess" || strings.Contains(w.Body.String(), "delphi-ai/local-api") {
+		t.Fatalf("canonical pending response changed legacy shape or lost safe owner facts: status=%d body=%s", w.Code, w.Body.String())
+	}
 }
 
 func TestCatalogProjectContainsOnlyIdentity(t *testing.T) {

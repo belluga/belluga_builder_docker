@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -33,6 +34,7 @@ type knowledgeManifest struct {
 	Active       bool                     `json:"active"`
 	State        string                   `json:"state"`
 	Teach        string                   `json:"teach,omitempty"`
+	TeachDetail  *proxyTeachDetail        `json:"teach_detail,omitempty"`
 	Documents    []knowledgeManifestEntry `json:"documents"`
 }
 
@@ -49,7 +51,7 @@ type knowledgeRecord struct {
 const knowledgePendingTeach = "TEACH: O conhecimento canônico deste Project está pending. Importe e valide uma geração tipada pela API privada e solicite sua ativação explícita."
 
 func knowledgeError(w http.ResponseWriter, status int, code, teach string) {
-	writeJSON(w, status, map[string]string{"error": code, "teach": teach})
+	writeProxyTeachError(w, status, code, teach, proxyTeachEnvelope{})
 }
 
 func (p *registeredPreview) knowledgeBase() string {
@@ -171,10 +173,18 @@ func (p *registeredPreview) knowledgeAPIHandler(w http.ResponseWriter, r *http.R
 		}
 		_ = json.Unmarshal(body, &failure)
 		if failure.State == "pending" {
-			writeJSON(w, 404, map[string]string{"state": "pending", "teach": knowledgePendingTeach})
+			envelope, _ := readProxyTeach(bytes.NewReader(body))
+			envelope.State = "pending"
+			// Keep the established public pending message and state-only top-level shape;
+			// only the additive structured detail is projected from the Registry.
+			envelope.Teach = knowledgePendingTeach
+			envelope.Error = ""
+			writeProxyTeachError(w, 404, "", knowledgePendingTeach, envelope)
 			return
 		}
-		knowledgeError(w, 404, "canonical_not_found", "TEACH: Documento não encontrado neste Project. Abra a lista atual de Documents e selecione um ID existente.")
+		fallback := "TEACH: Documento não encontrado neste Project. Abra a lista atual de Documents e selecione um ID existente."
+		envelope, _ := readProxyTeach(bytes.NewReader(body))
+		writeProxyTeachError(w, 404, "canonical_not_found", fallback, envelope)
 		return
 	}
 	invalid := func() {
@@ -216,6 +226,13 @@ func (p *registeredPreview) knowledgeAPIHandler(w http.ResponseWriter, r *http.R
 			}
 			seen[key] = true
 		}
+	}
+	if !safeProxyTeachText(manifest.Teach) {
+		manifest.Teach = ""
+	}
+	manifest.TeachDetail = sanitizeProxyTeachDetail(manifest.TeachDetail, "knowledge_diagnostic", manifest.Teach)
+	if manifest.State == "pending" && manifest.TeachDetail == nil {
+		manifest.TeachDetail = proxyTeachDetailFromLegacy("canonical_pending", manifest.Teach)
 	}
 	writeJSON(w, 200, manifest)
 }
@@ -277,9 +294,11 @@ func (p *registeredPreview) knowledgeIndexAPIHandler(w http.ResponseWriter, r *h
 		return
 	}
 	if status != 200 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(body)
+		envelope, ok := readProxyTeach(bytes.NewReader(body))
+		if !ok {
+			envelope = proxyTeachEnvelope{}
+		}
+		writeProxyTeachError(w, status, "", "TEACH: A Registry rejeitou a consulta do índice canônico; revise os filtros e recarregue a página.", envelope)
 		return
 	}
 	var page struct {

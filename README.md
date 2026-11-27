@@ -157,3 +157,11 @@ O seam temporário de validação específico do projeto downstream foi retirado
 base root/docker. A prova local autoritativa agora depende apenas dos
 inputs locais `laravel-app/` e `web-app/`, mais as contracts root-owned em
 `tools/ci/contracts/**`.
+
+## Builder no servidor dedicado
+
+O pacote da Release Conexão GitHub fica em [compose.builder.remote.yaml](compose.builder.remote.yaml).
+O [runbook de publicação do Builder](builder-app/README.md#publicação-remota-do-builder)
+descreve o ensaio obrigatório com as mesmas imagens por digest, a migração do
+MongoDB e a verificação no servidor. O pacote de runtime usa Docker Compose e
+um Cloudflare Tunnel autorizado. Não exige checkout ou compilação no servidor.

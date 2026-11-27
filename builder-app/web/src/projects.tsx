@@ -38,7 +38,7 @@ function validRoadmapProjection(value: unknown, projectID: string): value is Roa
     && Array.isArray(item.unclassified) && Array.isArray(item.diagnostics);
 }
 type MongoTODOContentItem = { id: string; text: string };
-type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included?: string[]; excluded?: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
+type MongoTODORead = { company_id: string; project_id: string; todo_revision: number; content_revision?: number; content_digest?: string; image_reference_teach?: string; file_urls?: { path: string; url: string }[]; todo: { id: string; project_id: string; revision: number; title: string; objective: string; next_exact_step: string; stage: string; content?: { schema_version?: number; context?: string; scope?: { included?: string[]; excluded?: string[] }; criteria?: MongoTODOContentItem[]; validation_scenarios?: { id: string; criterion_ids: string[]; method: string; expected: string }[]; implementation_plan?: MongoTODOContentItem[]; decisions?: MongoTODOContentItem[]; risks?: { id: string; text: string; mitigation: string }[]; references?: { kind: string; ref: string }[]; image_attachments?: { id: string; path: string; digest: string; verified_revision: string; description?: string }[]; legacy_context?: { source_revision: string; section_position: number; ownership: string; title: string; body: string; digest: string }[]; architecture?: { decision: string; rationale: string; protection: string } }; sections: { key: string; title: string; body_markdown: string; position: number }[] } };
 type ReleaseStatus = "completed" | "blocked" | "in-progress" | "planned" | "unknown";
 const releaseStatusLabel: Record<ReleaseStatus, string> = { completed: "Concluída", blocked: "Bloqueada", "in-progress": "Em andamento", planned: "Planejada", unknown: "Status indisponível" };
 const deliveryStageLabels: Record<DeliveryStage, string> = {
@@ -96,7 +96,7 @@ function releaseCompletion(release: RoadmapRelease) {
 function initialRelease(epic?: RoadmapEpic): RoadmapRelease | undefined {
   return epic?.releases.find((release) => releaseStatus(release) !== "completed") || epic?.releases.at(-1);
 }
-function TypedTODOContent({ content, legacySections }: { content: NonNullable<MongoTODORead["todo"]["content"]>; legacySections: MongoTODORead["todo"]["sections"] }) {
+function TypedTODOContent({ content, legacySections, fileURLs, imageReferenceTeach }: { content: NonNullable<MongoTODORead["todo"]["content"]>; legacySections: MongoTODORead["todo"]["sections"]; fileURLs: NonNullable<MongoTODORead["file_urls"]>; imageReferenceTeach?: string }) {
   const panels: ReactNode[] = [];
   if (content.context) panels.push(<section className="todo-panel" key="context"><h2>Context</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{content.context}</ReactMarkdown></div></section>);
   if (content.scope?.included?.length || content.scope?.excluded?.length) panels.push(<section className="todo-panel" key="scope"><h2>Scope</h2>{content.scope.included?.length ? <><h3>Included</h3><ul>{content.scope.included.map((value, index) => <li key={`included:${index}`}>{value}</li>)}</ul></> : null}{content.scope.excluded?.length ? <><h3>Excluded</h3><ul>{content.scope.excluded.map((value, index) => <li key={`excluded:${index}`}>{value}</li>)}</ul></> : null}</section>);
@@ -106,6 +106,8 @@ function TypedTODOContent({ content, legacySections }: { content: NonNullable<Mo
   if (content.decisions?.length) panels.push(<section className="todo-panel" key="decisions"><h2>Decisions</h2><ul>{content.decisions.map((item) => <li key={item.id}>{item.text}</li>)}</ul></section>);
   if (content.risks?.length) panels.push(<section className="todo-panel" key="risks"><h2>Risks</h2><ul>{content.risks.map((risk) => <li key={risk.id}><strong>{risk.text}</strong><p>{risk.mitigation}</p></li>)}</ul></section>);
   if (content.references?.length) panels.push(<section className="todo-panel" key="references"><h2>References</h2><ul>{content.references.map((reference, index) => <li key={`${reference.kind}:${index}`}><strong>{reference.kind}:</strong> {reference.ref}</li>)}</ul></section>);
+  if (imageReferenceTeach) panels.push(<p className="todo-image-teach" role="note" key="image-teach">TEACH: {imageReferenceTeach}</p>);
+  if (content.image_attachments?.length) panels.push(<section className="todo-panel" key="images"><h2>Reference images</h2><div className="todo-reference-images">{content.image_attachments.map((attachment) => { const href = fileURLs.find((link) => link.path === attachment.path)?.url; return <figure key={attachment.id}>{href ? <a href={href} target="_blank" rel="noreferrer"><img src={href} alt={attachment.description || "TODO reference image"} loading="lazy" /></a> : <p role="alert">Image link unavailable.</p>}{attachment.description && <figcaption>{attachment.description}</figcaption>}</figure>; })}</div></section>);
   if (content.architecture) panels.push(<section className="todo-panel" key="architecture"><h2>Architecture decision</h2><p><strong>Decision:</strong> {content.architecture.decision}</p><p><strong>Rationale:</strong> {content.architecture.rationale}</p><p><strong>Protection:</strong> {content.architecture.protection}</p></section>);
   if (legacySections.length) panels.push(<section className="todo-panel" key="legacy-source"><h2>Historical v1 source</h2><details><summary>Show preserved v1 sections</summary>{legacySections.map((section) => <section key={`${section.position}:${section.key}`}><h3>{section.title}</h3><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</details></section>);
   if (content.legacy_context?.length) panels.push(<section className="todo-panel" key="legacy"><h2>Preserved legacy sections</h2>{content.legacy_context.map((section) => <details key={`${section.source_revision}:${section.section_position}`}><summary>{section.title} · {section.ownership}</summary><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body}</ReactMarkdown></div></details>)}</section>);
@@ -302,6 +304,8 @@ function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: R
       const value = await response.json() as MongoTODORead & { error?: string; teach?: string };
       if (!response.ok) throw new Error(value.teach || "TEACH: The current Mongo TODO revision is unavailable.");
       if (value.company_id !== companyID || value.project_id !== projectID || value.todo?.id !== mongoSummary.id || value.todo_revision !== mongoSummary.todo_revision || value.todo.revision !== mongoSummary.todo_revision) throw new Error("TEACH: Mongo TODO identity or revision changed. Reload Roadmap.");
+      const attachments = value.todo.content?.image_attachments || [];
+      if (attachments.length && (!Array.isArray(value.file_urls) || attachments.some((attachment) => value.file_urls?.find((link) => link.path === attachment.path)?.url !== `/api/todo-images/${encodeURIComponent(companyID)}/${encodeURIComponent(projectID)}/${encodeURIComponent(todoID)}/${encodeURIComponent(attachment.id)}`))) throw new Error("TEACH: TODO image links do not match this exact TODO. Reload Roadmap.");
       return value;
     }).then((value) => { if (!controller.signal.aborted) setMongoRead({ key: mongoKey, state: "ready", value }); })
       .catch((error: unknown) => { if (!controller.signal.aborted) setMongoRead({ key: mongoKey, state: "error", message: error instanceof Error ? error.message : "TEACH: Mongo TODO unavailable." }); });
@@ -310,7 +314,7 @@ function TodoDetailView({ roadmap, companyID, projectID, todoID }: { roadmap?: R
   if (mongoSummary) {
     const loadedMongo = mongoRead.key === mongoKey ? mongoRead : { key: mongoKey, state: "loading" as const };
     const item = loadedMongo.value?.todo;
-    return <article className="todo-page" aria-label="Mongo TODO detail"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: mongoInBacklog ? "backlog" : "roadmap" })}>{mongoInBacklog ? "Backlog" : "Roadmap"}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav><header className="todo-hero"><h1>{mongoSummary.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={mongoSummary} className="todo-stage"/><span className="todo-source-label">Fonte: Mongo · revisão {mongoSummary.todo_revision}</span></div>{mongoSummary.administrative_acceptance && <p>Aceite administrativo de {mongoSummary.administrative_acceptance.owner_reference}: {mongoSummary.administrative_acceptance.reason}. Não é uma promoção verificada.</p>}</header>{loadedMongo.state === "loading" && <p role="status">Carregando contrato Mongo…</p>}{loadedMongo.state === "error" && <p className="project-notice" role="alert">{loadedMongo.message || "TEACH: Mongo TODO readback failed. Reload Roadmap and retry."}</p>}{item && <><section className="todo-objective"><div><h2>Objective</h2><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.objective}</ReactMarkdown></div></section><section className="todo-facts"><div><span><small>Next exact step</small><strong>{item.next_exact_step}</strong></span></div><div><span><small>Stage</small><strong>{item.stage}</strong></span></div></section>{item.content ? <TypedTODOContent content={item.content} legacySections={item.sections}/> : item.sections.map((section) => <section className="todo-panel" key={`${section.position}:${section.key}`}><h2>{section.title}</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</>}</article>;
+    return <article className="todo-page" aria-label="Mongo TODO detail"><nav className="todo-breadcrumb"><button onClick={() => navigate({ page: mongoInBacklog ? "backlog" : "roadmap" })}>{mongoInBacklog ? "Backlog" : "Roadmap"}</button><span aria-hidden="true">›</span><span aria-current="page">TODO</span></nav><header className="todo-hero"><h1>{mongoSummary.title}</h1><div className="todo-hero-meta"><TodoStageStatus todo={mongoSummary} className="todo-stage"/><span className="todo-source-label">Fonte: Mongo · revisão {mongoSummary.todo_revision}</span></div>{mongoSummary.administrative_acceptance && <p>Aceite administrativo de {mongoSummary.administrative_acceptance.owner_reference}: {mongoSummary.administrative_acceptance.reason}. Não é uma promoção verificada.</p>}</header>{loadedMongo.state === "loading" && <p role="status">Carregando contrato Mongo…</p>}{loadedMongo.state === "error" && <p className="project-notice" role="alert">{loadedMongo.message || "TEACH: Mongo TODO readback failed. Reload Roadmap and retry."}</p>}{item && <><section className="todo-objective"><div><h2>Objective</h2><ReactMarkdown remarkPlugins={[remarkGfm]}>{item.objective}</ReactMarkdown></div></section><section className="todo-facts"><div><span><small>Next exact step</small><strong>{item.next_exact_step}</strong></span></div><div><span><small>Stage</small><strong>{item.stage}</strong></span></div></section>{item.content ? <TypedTODOContent content={item.content} legacySections={item.sections} fileURLs={loadedMongo.value?.file_urls || []} imageReferenceTeach={loadedMongo.value?.image_reference_teach}/> : item.sections.map((section) => <section className="todo-panel" key={`${section.position}:${section.key}`}><h2>{section.title}</h2><div className="todo-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{section.body_markdown}</ReactMarkdown></div></section>)}</>}</article>;
   }
   return <section className="project-notice" role="alert"><h1>TODO indisponível</h1><p>TEACH: Este item não possui uma revisão exata no Mongo Roadmap. Markdown Foundation é proveniência de migração e não será usado como conteúdo atual.</p><button onClick={() => navigate({ page: "roadmap" })}>Voltar ao Roadmap</button></section>;
 }
@@ -526,8 +530,27 @@ function BacklogView({ roadmap, projectID, todoID }: { roadmap?: RoadmapProjecti
   </section>;
 }
 
+function AdministrationMenu({ company = "", project = "" }: { company?: string; project?: string }) {
+  const [available, setAvailable] = useState(false);
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/admin/companies", { signal: controller.signal })
+      .then(response => response.ok ? response.json() : null)
+      .then(result => { if (!controller.signal.aborted) setAvailable(!!result?.can_create_company || !!result?.companies?.length); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, []);
+  if (!available) return null;
+  const query = new URLSearchParams();
+  if (company) query.set("origin_company_id", company);
+  if (project) query.set("origin_project_id", project);
+  return <details className="onboarding-account-menu"><summary aria-label="Abrir menu da conta">♙</summary>
+    <div><a href={"/admin" + (query.size ? "?" + query : "")}><strong>⚙ Administração</strong><small>Gerenciar empresas e projetos</small></a></div>
+  </details>;
+}
+
 function PortalHeader({ children }: { children: ReactNode }) {
-  return <header className="projects-mast"><a href="/">Builder <span>Project directory</span></a>{children}</header>;
+  return <header className="projects-mast"><a href="/">Builder <span>Project directory</span></a>{children}<AdministrationMenu /></header>;
 }
 
 function ProjectCard({ project, portfolio, onOpen }: { project: Project; portfolio?: PortfolioProject; onOpen: () => void }) {
@@ -542,16 +565,17 @@ function ProjectCard({ project, portfolio, onOpen }: { project: Project; portfol
   </button>;
 }
 
-export function Projects() {
+export function Projects({ behindGitHubAdmin = false }: { behindGitHubAdmin?: boolean } = {}) {
   const [selection, setSelection] = useState(route);
   const [catalog, setCatalog] = useState<Catalog>({ companies: [], projects: [] });
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [portfolioRead, setPortfolioRead] = useState<{ companyID: string; projects: PortfolioProject[] }>({ companyID: "", projects: [] });
   const [roadmapRead, setRoadmapRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: RoadmapProjection }>({ key: "", state: "loading" });
   const [overviewRead, setOverviewRead] = useState<{ key: string; state: "loading" | "ready" | "error"; value?: OverviewRead }>({ key: "", state: "loading" });
-  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
+  const [themeRead, setThemeRead] = useState<{ key: string; state: "loading" | "ready" | "error"; theme?: ProjectTheme; diagnostic?: string; bindingUnavailable?: boolean; response?: DesignSystemReadResponse }>({ key: "", state: "loading" });
   const [reloadCounter, setReloadCounter] = useState(0);
   const [pendingCompanyID, setPendingCompanyID] = useState("");
+  const [githubAdminProject, setGitHubAdminProject] = useState("");
   useEffect(() => {
     const update = () => { setSelection(route()); setPendingCompanyID(""); };
     addEventListener("popstate", update);
@@ -569,6 +593,25 @@ export function Projects() {
   const company = catalog.companies.find((item) => item.id === selection.companyID);
   const project = catalog.projects.find((item) => item.company_id === selection.companyID && item.id === selection.projectID);
   const projects = catalog.projects.filter((item) => item.company_id === selection.companyID);
+  const githubAdminPath = project && !behindGitHubAdmin
+    ? `/admin/github/companies/${encodeURIComponent(project.company_id)}/projects/${encodeURIComponent(project.id)}`
+    : "";
+  useEffect(() => {
+    if (!githubAdminPath) return;
+    const controller = new AbortController();
+    fetch(githubAdminPath, { signal: controller.signal }).then((response) => {
+      if (!response.ok) return null;
+      return response.json();
+    }).then((roles) => {
+      if (!controller.signal.aborted && Number.isInteger(roles?.visual?.revision) && Number.isInteger(roles?.implementation?.revision)) {
+        setGitHubAdminProject(githubAdminPath);
+      }
+    }).catch(() => {});
+    return () => {
+      controller.abort();
+      setGitHubAdminProject("");
+    };
+  }, [githubAdminPath]);
   useEffect(() => {
     if (!selection.companyID || selection.projectID || !catalog.companies.some((item) => item.id === selection.companyID)) return;
     const controller = new AbortController();
@@ -605,20 +648,30 @@ export function Projects() {
     const query = new URLSearchParams({ company_id: project.company_id, project_id: project.id });
     fetch(`/api/design-system?${query}`, { signal: controller.signal }).then(async (response) => {
       if (!response.ok) {
-        const failure = await response.json().catch(() => null) as { teach?: unknown } | null;
+        const failure = await response.json().catch(() => null) as { teach?: unknown; teach_detail?: { field_path?: unknown } } | null;
         const teach = failure?.teach;
-        throw new Error(typeof teach === "string" && teach.length <= 512 && teach.startsWith("TEACH: ") && !/[\u0000-\u001f\u007f/\\]|:\/\//.test(teach) ? teach : "TEACH: The selected Design System is unavailable; reload its Registry selection.");
+        const diagnostic = typeof teach === "string" && teach.length <= 512 && teach.startsWith("TEACH: ") && !/[\u0000-\u001f\u007f/\\]|:\/\//.test(teach) ? teach : "TEACH: The Project Design System is unavailable. Try again.";
+        if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic, bindingUnavailable: failure?.teach_detail?.field_path === "repository_binding" });
+        return;
       }
-      const selected = await response.json() as DesignSystemReadResponse;
-      const evaluation = selected.evaluation;
-      if (!evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || selected.selection?.state === "selected" && (selected.selection.sha !== evaluation.revision || selected.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
+      const read = await response.json() as DesignSystemReadResponse;
+      const evaluation = read.evaluation;
+      if (!read.selection || !evaluation || evaluation.company_id !== project.company_id || evaluation.project_id !== project.id || evaluation.mode !== "committed" || evaluation.selected_level !== "project" || evaluation.outcome !== "go" || evaluation.design_system_validation !== "valid" || !evaluation.revision || !/^[a-f0-9]{40}$/.test(evaluation.revision) || !evaluation.inventory_digest || !/^sha256:[a-f0-9]{64}$/.test(evaluation.inventory_digest) || read.selection.state === "selected" && (read.selection.sha !== evaluation.revision || read.selection.inventory_digest !== evaluation.inventory_digest) || !Array.isArray(evaluation.items) || evaluation.items.length !== 1) throw new Error("Design System mismatch");
       const definition = evaluation.items[0];
-      if (!definition || typeof definition.name !== "string" || !definition.owner || typeof definition.owner.level !== "string" || !Array.isArray(definition.tokens) || !Array.isArray(definition.components) || !Array.isArray(definition.assets) || definition.components.some((component) => !component || typeof component.id !== "string" || typeof component.name !== "string" || !Array.isArray(component.states) || !Array.isArray(component.examples))) throw new Error("Design System response shape is invalid");
+      if (!definition || typeof definition.name !== "string" || !Array.isArray(definition.tokens) || !Array.isArray(definition.components) || !Array.isArray(definition.assets) || definition.components.some((component) => !component || typeof component.id !== "string" || typeof component.name !== "string" || !Array.isArray(component.states) || !Array.isArray(component.examples))) throw new Error("Design System response shape is invalid");
       if ((definition.schema_version === "2" && evaluation.presentation_validation !== "ready") || (definition.schema_version === "1" && evaluation.presentation_validation !== "not_ready")) throw new Error("Design System presentation state mismatch");
       const resolved = resolveProjectTheme(definition);
-      return { resolved, selected };
-    }).then(({ resolved, selected }) => { if (!controller.signal.aborted) setThemeRead({ key, state: "ready", theme: resolved.style, diagnostic: resolved.diagnostic || selected.evaluation.presentation_teach?.message, response: selected }); })
-      .catch((error: unknown) => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: error instanceof Error ? error.message : "TEACH: The selected Design System definition could not be read." }); });
+      return { resolved, read };
+    }).then((result) => {
+      if (!result || controller.signal.aborted) return;
+      const { resolved, read } = result;
+      const diagnostic = resolved.diagnostic || read.evaluation.presentation_teach?.message;
+      setThemeRead({
+        key, state: "ready", theme: resolved.style, response: read,
+        diagnostic: read.selection.state === "selected" ? diagnostic : diagnostic?.replace("The selected Design System", "The Project Design System"),
+      });
+    })
+      .catch((error: unknown) => { if (!controller.signal.aborted) setThemeRead({ key, state: "error", diagnostic: error instanceof Error ? error.message : "TEACH: The Project Design System definition could not be read." }); });
     return () => controller.abort();
   }, [viewKey, reloadCounter]);
   useEffect(() => {
@@ -662,10 +715,13 @@ export function Projects() {
       <label>COMPANY<select aria-label="Switch Company" value={pendingCompanyID || selection.companyID} onChange={(event) => setPendingCompanyID(event.target.value)}><option value={selection.companyID}>{company?.name}</option>{catalog.companies.filter((item) => item.id !== selection.companyID).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       <label>PROJECT<select aria-label="Switch Project" value={pendingCompanyID ? "" : project?.id} onChange={(event) => { if (event.target.value) navigate({ company_id: pendingCompanyID || selection.companyID, project_id: event.target.value, page: "overview" }); }}>{pendingCompanyID && <option value="">Choose a Project</option>}{tentativeProjects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {pendingCompanyID && <button className="project-switch-cancel" onClick={() => setPendingCompanyID("")}>Cancel</button>}
+      {!behindGitHubAdmin && <AdministrationMenu company={selection.companyID} project={selection.projectID} />}
     </div>
-    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a></header>
+    <header className="project-topbar"><a className="project-topbar-brand" href={`/?company_id=${encodeURIComponent(selection.companyID)}&project_id=${encodeURIComponent(selection.projectID)}&page=overview`} onClick={(event) => { if (!event.ctrlKey && !event.metaKey && !event.shiftKey && event.button === 0) { event.preventDefault(); navigate({ page: "overview" }); } }}><span className="project-topbar-mark" aria-hidden="true">◆</span><span>Project {project?.name}</span></a>
+      {githubAdminPath && githubAdminProject === githubAdminPath && <a className="github-admin-project-link" href={`/admin/github?${new URLSearchParams({ company_id: selection.companyID, project_id: selection.projectID })}`}>Gerenciar conexão GitHub</a>}
+    </header>
     <div className="project-layout"><nav className="project-nav" aria-label="Project pages"><div className="project-nav-links">{pages.map((item) => <button key={item.id} className={page === item.id || (page === "release" && item.id === "roadmap") || (page === "todo" && item.id === (selectedTODOInBacklog ? "backlog" : "roadmap")) ? "active" : ""} aria-label={item.label} aria-current={page === item.id ? "page" : undefined} onClick={() => navigate({ page: item.id })}><span className="project-nav-icon" aria-hidden="true">{{overview:"⌂",roadmap:"▦",backlog:"☷",documents:"▤","design-system":"◈",prototypes:"▷"}[item.id]}</span>{pageDisplayNames[item.id]}</button>)}</div></nav>
-      <section className="project-content">{page !== "design-system" && themeDiagnostic && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
+      <section className="project-content">{page !== "design-system" && themeDiagnostic && !themeRead.bindingUnavailable && <p className="project-theme-warning" role="status">Design System indisponível: {themeDiagnostic} Os demais artefatos publicados continuam navegáveis.</p>}{page !== "overview" && page !== "roadmap" && page !== "backlog" && page !== "release" && page !== "todo" && page !== "documents" && <header className="project-page-heading"><span className="project-page-tag">{page === "design-system" ? "BUILDER · IDENTIDADE DO PROJETO" : "BUILDER · PROTÓTIPOS DO PROJETO"}</span><h1>{pageDisplayNames[page as Page]}</h1>{page === "design-system" && <p>Uma linguagem visual aplicada a este projeto: cores, hierarquia e componentes derivados do seu Design System.</p>}{page === "prototypes" && <><p>Explore as telas e os estados de um protótipo registrado. A inspeção e a apresentação interativa são momentos distintos.</p><span className="prototype-page-note">Revisão Git publicada · aprovação humana não inferida</span></>}</header>}
         {page === "overview" && <div className="project-overview"><OverviewEditorial read={overviewRead.key === viewKey ? overviewRead : { key: viewKey, state: "loading" }} projectName={project?.name || "Project"} companyID={selection.companyID} projectID={selection.projectID} />
           {roadData && <RoadmapView key={viewKey} roadmap={roadData} projectID={project!.id} epicID={selection.epicID} releaseID={selection.releaseID} compact />}</div>}
         {page === "documents" && <CanonicalDocuments key={viewKey} companyID={selection.companyID} projectID={selection.projectID} family={selection.documentFamily} recordID={selection.documentID} decisionID={selection.decisionID} onSelect={(family, id, decision) => navigate({ doc_family: family, doc_id: id, decision_id: decision || null })} onOverview={() => navigate({ doc_family: null, doc_id: null, decision_id: null })} />}

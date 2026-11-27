@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	ac "belluga-builder-viewer/artifact_catalog"
 )
@@ -20,7 +19,7 @@ const maxDesignSystemJSONBytes = 4 << 20
 var designSystemSHA = regexp.MustCompile(`^[a-f0-9]{40}$`)
 
 func designSystemError(w http.ResponseWriter, status int, code, teach string) {
-	writeJSON(w, status, map[string]string{"error": code, "teach": teach})
+	writeProxyTeachError(w, status, code, teach, proxyTeachEnvelope{})
 }
 
 func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +52,7 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 	} else if revisionOK {
 		endpoint += "/" + url.PathEscape(revision)
 	}
-	response, err := p.designSystemGet(r, endpoint)
+	response, err := p.registryReadGet(r, endpoint, 100*time.Second)
 	if err != nil {
 		designSystemError(w, http.StatusServiceUnavailable, "design_system_unavailable", "TEACH: A leitura atual do Design System está indisponível. Verifique a Registry e tente novamente.")
 		return
@@ -66,11 +65,11 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 		} else if response.StatusCode == http.StatusConflict {
 			status, code, fallback = http.StatusConflict, "design_system_selection_changed", "TEACH: A seleção mudou durante a leitura. Recarregue o Design System atual."
 		}
-		teach := boundedRegistryDesignSystemTeach(response.Body)
-		if teach != "" {
-			fallback = teach
+		envelope, ok := readProxyTeach(response.Body)
+		if !ok {
+			envelope = proxyTeachEnvelope{}
 		}
-		designSystemError(w, status, code, fallback)
+		writeProxyTeachError(w, status, code, fallback, envelope)
 		return
 	}
 	if assetRequest {
@@ -81,6 +80,10 @@ func (p *registeredPreview) designSystemAPIHandler(w http.ResponseWriter, r *htt
 }
 
 func (p *registeredPreview) designSystemGet(r *http.Request, endpoint string) (*http.Response, error) {
+	return p.registryReadGet(r, endpoint, 0)
+}
+
+func (p *registeredPreview) registryReadGet(r *http.Request, endpoint string, timeout time.Duration) (*http.Response, error) {
 	base := strings.TrimRight(strings.TrimSpace(p.registryURL), "/")
 	if base == "" {
 		base = strings.TrimRight(strings.TrimSpace(env("DELPHI_BUILDER_REGISTRY_URL", "http://builder-registry:8080")), "/")
@@ -102,6 +105,9 @@ func (p *registeredPreview) designSystemGet(r *http.Request, endpoint string) (*
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	boundedClient := *client
+	if timeout > 0 {
+		boundedClient.Timeout = timeout
+	}
 	boundedClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return boundedClient.Do(request)
 }
@@ -139,27 +145,11 @@ func (p *registeredPreview) forwardDesignSystemDetail(w http.ResponseWriter, res
 }
 
 func boundedRegistryDesignSystemTeach(body io.Reader) string {
-	data, err := io.ReadAll(io.LimitReader(body, (8<<10)+1))
-	if err != nil || len(data) > 8<<10 || rejectDuplicateJSONKeys(data) != nil {
+	envelope, ok := readProxyTeach(body)
+	if !ok {
 		return ""
 	}
-	var response struct {
-		Teach string `json:"teach"`
-	}
-	if json.Unmarshal(data, &response) != nil || len(response.Teach) > 512 || !utf8.ValidString(response.Teach) || !strings.HasPrefix(response.Teach, "TEACH: ") || strings.ContainsAny(response.Teach, "\r\n\\") || strings.Contains(response.Teach, "://") || strings.Contains(response.Teach, "/") {
-		return ""
-	}
-	for _, marker := range []string{"token=", "password", "secret", "authorization", "mongodb"} {
-		if strings.Contains(strings.ToLower(response.Teach), marker) {
-			return ""
-		}
-	}
-	for _, char := range response.Teach {
-		if char < 0x20 || char == 0x7f {
-			return ""
-		}
-	}
-	return response.Teach
+	return envelope.Teach
 }
 
 func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, response *http.Response, requestedRevision string, presentation bool) {
@@ -197,7 +187,11 @@ func (p *registeredPreview) forwardDesignSystemAsset(w http.ResponseWriter, resp
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-Design-System-Revision", revision)
 	w.Header().Set("X-Design-System-Inventory-Digest", digest)
-	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	if response.Header.Get("Cache-Control") == "no-store" {
+		w.Header().Set("Cache-Control", "no-store")
+	} else {
+		w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+	}
 	w.Header().Set("Content-Security-Policy", designSystemFilePolicy(presentation, contentType))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
