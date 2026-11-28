@@ -1077,7 +1077,7 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 			guardedRepositories = append(guardedRepositories, pin.RepositoryID)
 		}
 		if len(guardedRepositories) != 0 {
-			if err := advanceImplementationRepositoryMembershipCASInTransaction(txCtx, database, record.ProjectID, guardedRepositories); err != nil {
+			if err := writeTODORepositoryProofFence(txCtx, database, record.ProjectID, guardedRepositories); err != nil {
 				return nil, err
 			}
 		}
@@ -1125,7 +1125,22 @@ func writeVerifiedTODOWithKnowledgeAndIdentityPins(ctx context.Context, database
 		if readErr == nil && current.Revision != record.Revision {
 			return TODOActionResponse{}, &todoRevisionConflict{Revision: current.Revision}
 		}
-		return TODOActionResponse{}, normalizeMongoError(err)
+		if policy != nil && len(identityPins) != 0 && mongoTransactionShouldRetry(err) {
+			return TODOActionResponse{}, withTeachDiagnostic(ErrConflict, TeachDiagnostic{
+				Code: "promotion_write_conflict", FieldPath: "operation_id", OperationID: operationID,
+				Effects: TeachEffectsNone, Retry: TeachRetrySameOperation,
+				NextAction: "Read the current TODO. Stop if the requested stage is verified. If the original revision and request are unchanged, retry the identical operation once; otherwise reassess.",
+			})
+		}
+		normalized := normalizeMongoError(err)
+		if policy != nil && len(identityPins) != 0 && errors.Is(normalized, ErrUnavailable) {
+			return TODOActionResponse{}, withTeachDiagnostic(normalized, TeachDiagnostic{
+				Code: "promotion_outcome_unknown", FieldPath: "operation_id", OperationID: operationID,
+				Effects: TeachEffectsUnknown, Retry: TeachRetryReadReassess,
+				NextAction: "Read the exact TODO (MCP: builder_todo_get). Stop if the requested stage is verified. If the outcome remains unknown, stop automatic retries and ask the operator to check this operation ID.",
+			})
+		}
+		return TODOActionResponse{}, normalized
 	}
 	if !updated {
 		return TODOActionResponse{}, ErrUnavailable

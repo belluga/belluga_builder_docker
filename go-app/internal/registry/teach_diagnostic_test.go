@@ -382,3 +382,34 @@ func TestUnavailableDiagnosticIsEmittedByHandlerWithoutChangingWireCode(t *testi
 		t.Fatalf("unavailable Handler response=%s status=%d", response.Body, response.Code)
 	}
 }
+
+func TestPromotionDiagnosticEnvelopeRetains32RowsAndBoundsEscaping(t *testing.T) {
+	detail := promotionDiagnostic{RequestedStage: "Promotion-Lane", Repositories: make([]promotionRepositoryDiagnostic, 32)}
+	for i := range detail.Repositories {
+		detail.Repositories[i] = promotionRepositoryDiagnostic{
+			RepositoryID: "example/repo", CommitSHA: fmt.Sprintf("%040x", i+1), TargetBranch: "stage", Status: "observation_unavailable",
+			NextAction: strings.Repeat("<", 80),
+		}
+	}
+	response := errorResponse{Error: "conflict", TeachDetail: &TeachDiagnostic{
+		Code: "promotion_evidence_incomplete", FieldPath: "remote_proof", NextAction: "Read the TODO.",
+		Effects: TeachEffectsNone, Retry: TeachRetryReadReassess, Promotion: &detail,
+	}}
+	recorder := httptest.NewRecorder()
+	writeErrorEnvelope(recorder, http.StatusConflict, response)
+	var decoded errorResponse
+	if json.Unmarshal(recorder.Body.Bytes(), &decoded) != nil || decoded.TeachDetail == nil || decoded.TeachDetail.Promotion == nil ||
+		len(decoded.TeachDetail.Promotion.Repositories) != 32 || recorder.Body.Len() > maxTeachErrorEnvelopeBytes {
+		t.Fatalf("bounded diagnostic did not keep all rows: %d bytes", recorder.Body.Len())
+	}
+	for i := range detail.Repositories {
+		detail.Repositories[i].NextAction = strings.Repeat("<", 200)
+	}
+	recorder = httptest.NewRecorder()
+	writeErrorEnvelope(recorder, http.StatusConflict, response)
+	decoded = errorResponse{}
+	if json.Unmarshal(recorder.Body.Bytes(), &decoded) != nil || decoded.TeachDetail == nil || decoded.TeachDetail.Promotion != nil ||
+		decoded.TeachDetail.Effects != TeachEffectsNone {
+		t.Fatalf("oversized diagnostic did not fail safely: %d bytes", recorder.Body.Len())
+	}
+}

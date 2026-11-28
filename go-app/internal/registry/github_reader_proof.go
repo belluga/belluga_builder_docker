@@ -19,19 +19,22 @@ type githubProofBinding struct {
 }
 
 type githubProofLease struct {
-	company, project, alias string
-	binding                 githubProofBinding
+	company, project, alias     string
+	binding                     githubProofBinding
+	providerName, providerToken string
 }
 
 type githubProofLeasesKey struct{}
 
 func guardGitHubProofLease(ctx context.Context, db *mongo.Database, lease githubProofLease) error {
-	err := db.Collection(projectsCollection).FindOne(ctx, bson.M{
-		"id": lease.project, "implementation_repositories": lease.alias,
-		"implementation_repositories_revision": lease.binding.membershipRevision,
-	}, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
+	filter := bson.M{"id": lease.project, "implementation_repositories": lease.alias, "implementation_repositories_revision": lease.binding.membershipRevision}
+	if lease.binding.membershipRevision == 0 {
+		delete(filter, "implementation_repositories_revision")
+		filter["$or"] = bson.A{bson.M{"implementation_repositories_revision": 0}, bson.M{"implementation_repositories_revision": bson.M{"$exists": false}}}
+	}
+	err := db.Collection(projectsCollection).FindOne(ctx, filter, options.FindOne().SetProjection(bson.M{"_id": 1})).Err()
 	if errors.Is(err, mongo.ErrNoDocuments) {
-		return githubProofBindingChanged()
+		return githubProofBindingChangedFor(&lease)
 	}
 	if err != nil {
 		return normalizeMongoTransactionError(err)
@@ -48,13 +51,30 @@ func guardGitHubProofLease(ctx context.Context, db *mongo.Database, lease github
 		return normalizeMongoTransactionError(err)
 	}
 	if result.MatchedCount != 1 {
-		return githubProofBindingChanged()
+		return githubProofBindingChangedFor(&lease)
 	}
 	return nil
 }
 
 func githubProofBindingChanged() error {
 	return todoTeach("remote_proof.repository_identity", "reload the current Project repository confirmation and connection before requesting proof", ErrConflict)
+}
+
+func githubProofBindingChangedFor(lease *githubProofLease) error {
+	return promotionRepositoryConnectionError(githubProofBindingChanged(), lease.alias, lease.binding.connection.RepositoryNodeID, true)
+}
+
+func promotionRepositoryConnectionError(err error, alias, node string, changed bool) error {
+	code, status := "repository_connection_unavailable", "connection_unavailable"
+	if changed {
+		code, status = "repository_connection_changed", "connection_changed"
+	}
+	row := promotionRepositoryDiagnostic{RepositoryID: alias, Status: status, ExpectedNodeID: node}
+	return withTeachDiagnostic(err, TeachDiagnostic{
+		Code: code, FieldPath: "remote_proof.repository_identity", Effects: TeachEffectsNone, Retry: TeachRetryReadReassess,
+		NextAction: "Read the confirmed repository (MCP: builder_implementation_repositories_get) and compare its Node ID. If installation state is unavailable, ask the operator to inspect this exact connection. Then read the TODO and reassess before retrying.",
+		Promotion:  &promotionDiagnostic{Repositories: []promotionRepositoryDiagnostic{row}},
+	})
 }
 
 func (m *MongoStore) ConfigureScopedProofReader(token string) error {
@@ -123,11 +143,13 @@ func githubProofProviderUnavailable() error {
 }
 
 func (m *MongoStore) requestReaderProof(ctx context.Context, route string, query url.Values, appEligible bool) (*http.Response, *githubProofLease, error) {
+	return m.requestReaderProofWithLease(ctx, route, query, appEligible, nil)
+}
+
+func (m *MongoStore) requestReaderProofWithLease(ctx context.Context, route string, query url.Values, appEligible bool, lease *githubProofLease) (*http.Response, *githubProofLease, error) {
 	if m.proofReaderURL == "" || m.proofHTTPClient == nil || m.proofReaderToken == "" {
 		return nil, nil, todoTeach("remote_proof", "configure the private Project Reader before requesting proof", ErrUnavailable)
 	}
-	var lease *githubProofLease
-	var token string
 	bearer := m.proofReaderToken
 	client := m.proofHTTPClient
 	if m.githubApp != nil {
@@ -143,21 +165,31 @@ func (m *MongoStore) requestReaderProof(ctx context.Context, route string, query
 			return nil, nil, todoTeach("remote_proof", "configure the dedicated Registry-to-Reader scoped proof credential", ErrUnavailable)
 		}
 		company, project, alias := query.Get("company_id"), query.Get("project_id"), query.Get("repository")
-		binding, err := m.githubProofReadBinding(ctx, company, project, alias)
-		if err != nil {
-			return nil, nil, err
+		if lease == nil {
+			binding, err := m.githubProofReadBinding(ctx, company, project, alias)
+			if err != nil {
+				return nil, nil, err
+			}
+			credential, repo, err := m.githubApp.repositoryReadToken(ctx, binding.connection)
+			if errors.Is(err, errGitHubAccessDenied) {
+				return nil, nil, githubProofAccessDenied()
+			}
+			if err != nil {
+				return nil, nil, githubProofProviderUnavailable()
+			}
+			lease = &githubProofLease{company: company, project: project, alias: alias, binding: binding, providerName: repo.FullName, providerToken: credential.value}
+		} else {
+			if route != "/internal/v1/proofs/arrival" || lease.company != company || lease.project != project || lease.alias != alias ||
+				lease.providerName == "" || lease.providerToken == "" {
+				return nil, nil, ErrInvalid
+			}
+			if err := m.fenceGitHubReaderProof(ctx, lease, lease.binding.connection.RepositoryNodeID); err != nil {
+				return nil, lease, err
+			}
 		}
-		credential, repo, err := m.githubApp.repositoryReadToken(ctx, binding.connection)
-		if errors.Is(err, errGitHubAccessDenied) {
-			return nil, nil, githubProofAccessDenied()
-		}
-		if err != nil {
-			return nil, nil, githubProofProviderUnavailable()
-		}
-		lease = &githubProofLease{company: company, project: project, alias: alias, binding: binding}
-		query.Set("github_repository", repo.FullName)
-		query.Set("github_repository_node_id", repo.NodeID)
-		token, bearer = credential.value, m.scopedProofReaderToken
+		query.Set("github_repository", lease.providerName)
+		query.Set("github_repository_node_id", lease.binding.connection.RepositoryNodeID)
+		bearer = m.scopedProofReaderToken
 		scoped := *client
 		scoped.Jar = nil
 		scoped.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
@@ -169,7 +201,7 @@ func (m *MongoStore) requestReaderProof(ctx context.Context, route string, query
 	}
 	request.Header.Set("Authorization", "Bearer "+bearer)
 	if lease != nil {
-		request.Header.Set(githubScopedProofTokenHeader, token)
+		request.Header.Set(githubScopedProofTokenHeader, lease.providerToken)
 	}
 	response, err := client.Do(request)
 	if err != nil {
@@ -189,6 +221,9 @@ func (m *MongoStore) fenceGitHubReaderProof(ctx context.Context, lease *githubPr
 	}
 	current, err := m.githubProofReadBinding(ctx, lease.company, lease.project, lease.alias)
 	if err != nil {
+		if errors.Is(err, ErrConflict) || errors.Is(err, ErrNotFound) {
+			return githubProofBindingChangedFor(lease)
+		}
 		return err
 	}
 	previous := lease.binding
@@ -196,11 +231,11 @@ func (m *MongoStore) fenceGitHubReaderProof(ctx context.Context, lease *githubPr
 		current.connection.Revision != previous.connection.Revision || current.connection.GitHubRepositoryID != previous.connection.GitHubRepositoryID ||
 		current.connection.RepositoryNodeID != previous.connection.RepositoryNodeID || current.connection.InstallationID != previous.connection.InstallationID ||
 		current.connection.AccountID != previous.connection.AccountID {
-		return githubProofBindingChanged()
+		return githubProofBindingChangedFor(lease)
 	}
 	if leases, ok := ctx.Value(githubProofLeasesKey{}).(map[string]*githubProofLease); ok {
 		if earlier := leases[lease.alias]; earlier != nil && earlier.binding != lease.binding {
-			return githubProofBindingChanged()
+			return githubProofBindingChangedFor(lease)
 		}
 		leases[lease.alias] = lease
 	}

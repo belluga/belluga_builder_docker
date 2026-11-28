@@ -16,21 +16,50 @@ const teachVersion = "1"
 
 var publicCode = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,128}$`)
 
+type promotionAlternative struct {
+	Branch                    string `json:"branch"`
+	Exists                    *bool  `json:"exists"`
+	CommitReachable           *bool  `json:"commit_reachable"`
+	OwnerConfirmationRequired bool   `json:"owner_confirmation_required"`
+}
+
+type promotionRepositoryDiagnostic struct {
+	RepositoryID   string                 `json:"repository_id"`
+	CommitSHA      string                 `json:"sha,omitempty"`
+	TargetBranch   string                 `json:"target_branch,omitempty"`
+	Status         string                 `json:"status"`
+	SourceBranch   string                 `json:"source_branch,omitempty"`
+	ExpectedNodeID string                 `json:"expected_node_id,omitempty"`
+	Alternatives   []promotionAlternative `json:"alternatives,omitempty"`
+	NextAction     string                 `json:"next_action,omitempty"`
+}
+
+type promotionDiagnostic struct {
+	RequestedStage string                          `json:"requested_stage,omitempty"`
+	Repositories   []promotionRepositoryDiagnostic `json:"repositories"`
+}
+
+var diagnosticRepositoryID = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,255}/[A-Za-z0-9_.-]{1,255}$`)
+var diagnosticCommit = regexp.MustCompile(`^[a-f0-9]{40}$`)
+var diagnosticBranch = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$`)
+var diagnosticNodeID = regexp.MustCompile(`^[A-Za-z0-9_=-]{1,128}$`)
+
 type teachDiagnostic struct {
-	SchemaVersion  string   `json:"schema_version"`
-	Code           string   `json:"code"`
-	FieldPath      string   `json:"field_path"`
-	RecordID       string   `json:"record_id,omitempty"`
-	AcceptedValues []string `json:"accepted_values,omitempty"`
-	NextAction     string   `json:"next_action"`
-	ObjectPurpose  string   `json:"object_purpose,omitempty"`
-	RequiredFields []string `json:"required_fields,omitempty"`
-	AcceptedFields []string `json:"accepted_fields,omitempty"`
-	NotPersisted   []string `json:"not_persisted_fields,omitempty"`
-	OperationID    string   `json:"operation_id,omitempty"`
-	Revision       *int64   `json:"revision,omitempty"`
-	Effects        string   `json:"effects,omitempty"`
-	Retry          string   `json:"retry,omitempty"`
+	Promotion      *promotionDiagnostic `json:"promotion,omitempty"`
+	SchemaVersion  string               `json:"schema_version"`
+	Code           string               `json:"code"`
+	FieldPath      string               `json:"field_path"`
+	RecordID       string               `json:"record_id,omitempty"`
+	AcceptedValues []string             `json:"accepted_values,omitempty"`
+	NextAction     string               `json:"next_action"`
+	ObjectPurpose  string               `json:"object_purpose,omitempty"`
+	RequiredFields []string             `json:"required_fields,omitempty"`
+	AcceptedFields []string             `json:"accepted_fields,omitempty"`
+	NotPersisted   []string             `json:"not_persisted_fields,omitempty"`
+	OperationID    string               `json:"operation_id,omitempty"`
+	Revision       *int64               `json:"revision,omitempty"`
+	Effects        string               `json:"effects,omitempty"`
+	Retry          string               `json:"retry,omitempty"`
 }
 
 type errorEnvelope struct {
@@ -82,7 +111,7 @@ func validTeach(d *teachDiagnostic) bool {
 	if d == nil {
 		return true
 	}
-	if d.SchemaVersion != teachVersion || !publicCode.MatchString(d.Code) {
+	if d.SchemaVersion != teachVersion || !publicCode.MatchString(d.Code) || !validPromotionDiagnostic(d.Promotion) {
 		return false
 	}
 	for _, text := range []string{d.FieldPath, d.RecordID, d.NextAction, d.ObjectPurpose, d.OperationID, d.Effects, d.Retry} {
@@ -96,6 +125,38 @@ func validTeach(d *teachDiagnostic) bool {
 		}
 		for _, value := range list {
 			if !boundedText(value) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func validPromotionDiagnostic(detail *promotionDiagnostic) bool {
+	if detail == nil {
+		return true
+	}
+	if detail.RequestedStage != "" && detail.RequestedStage != "Promotion-Lane" && detail.RequestedStage != "Completed" {
+		return false
+	}
+	encoded, err := json.Marshal(detail)
+	if err != nil || len(encoded) > 24<<10 || len(detail.Repositories) < 1 || len(detail.Repositories) > 32 {
+		return false
+	}
+	for _, row := range detail.Repositories {
+		if !diagnosticRepositoryID.MatchString(row.RepositoryID) || row.CommitSHA != "" && !diagnosticCommit.MatchString(row.CommitSHA) ||
+			row.TargetBranch != "" && !diagnosticBranch.MatchString(row.TargetBranch) || row.SourceBranch != "" && !diagnosticBranch.MatchString(row.SourceBranch) ||
+			row.ExpectedNodeID != "" && !diagnosticNodeID.MatchString(row.ExpectedNodeID) || !boundedText(row.NextAction) ||
+			len(row.Alternatives) > 1 {
+			return false
+		}
+		switch row.Status {
+		case "verified", "commit_not_reachable", "branch_missing", "observation_unavailable", "unchecked", "connection_changed", "connection_unavailable":
+		default:
+			return false
+		}
+		for _, alternative := range row.Alternatives {
+			if alternative.Branch != "dev" && alternative.Branch != "stage" || !alternative.OwnerConfirmationRequired || alternative.CommitReachable != nil && (alternative.Exists == nil || !*alternative.Exists) {
 				return false
 			}
 		}
@@ -143,6 +204,8 @@ func unavailable(tool toolSpec, operation string, status int, writeDispatched bo
 		message, retry = "Registration outcome is unknown. Use builder_project_search with the exact ID and Company. Compare Company, Project and canonical name before binding. An inconclusive read keeps the outcome unknown.", "read_reassess"
 	case "builder_design_system_begin", "builder_design_system_recover":
 		message, retry = "Design System outcome is unknown. Read builder_design_system_state and use the existing exact operation's recovery path.", "recover_operation"
+	case "builder_todo_transition":
+		message, retry = "The transition outcome is unknown. Read the exact TODO with builder_todo_get. Stop if the requested stage is verified. If the outcome remains unknown, stop automatic retries and ask the operator to check this operation ID.", "read_reassess"
 	case "builder_session_bind":
 		message, retry = "Binding outcome is unknown. Read builder_session_get for this native session and compare the exact Company and Project before proceeding.", "read_reassess"
 	default:

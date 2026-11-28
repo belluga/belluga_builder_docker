@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"errors"
 	"unicode/utf8"
 )
@@ -135,24 +136,48 @@ const (
 	TeachRetryRecoverOperation = "recover_operation"
 )
 
+type promotionAlternative struct {
+	Branch                    string `json:"branch"`
+	Exists                    *bool  `json:"exists"`
+	CommitReachable           *bool  `json:"commit_reachable"`
+	OwnerConfirmationRequired bool   `json:"owner_confirmation_required"`
+}
+
+type promotionRepositoryDiagnostic struct {
+	RepositoryID   string                 `json:"repository_id"`
+	CommitSHA      string                 `json:"sha,omitempty"`
+	TargetBranch   string                 `json:"target_branch,omitempty"`
+	Status         string                 `json:"status"`
+	SourceBranch   string                 `json:"source_branch,omitempty"`
+	ExpectedNodeID string                 `json:"expected_node_id,omitempty"`
+	Alternatives   []promotionAlternative `json:"alternatives,omitempty"`
+	NextAction     string                 `json:"next_action,omitempty"`
+}
+
+type promotionDiagnostic struct {
+	RequestedStage string                          `json:"requested_stage,omitempty"`
+	Repositories   []promotionRepositoryDiagnostic `json:"repositories"`
+}
+
 // TeachDiagnostic is the shared, additive diagnostic carried by eligible JSON
 // responses. Effects and retry remain empty unless the owning operation can
 // prove them; this transport layer does not infer either from an error code.
 type TeachDiagnostic struct {
-	SchemaVersion  string   `json:"schema_version"`
-	Code           string   `json:"code"`
-	FieldPath      string   `json:"field_path"`
-	RecordID       string   `json:"record_id,omitempty"`
-	AcceptedValues []string `json:"accepted_values,omitempty"`
-	NextAction     string   `json:"next_action"`
-	ObjectPurpose  string   `json:"object_purpose,omitempty"`
-	RequiredFields []string `json:"required_fields,omitempty"`
-	AcceptedFields []string `json:"accepted_fields,omitempty"`
-	NotPersisted   []string `json:"not_persisted_fields,omitempty"`
-	OperationID    string   `json:"operation_id,omitempty"`
-	Revision       *int64   `json:"revision,omitempty"`
-	Effects        string   `json:"effects,omitempty"`
-	Retry          string   `json:"retry,omitempty"`
+	Promotion      *promotionDiagnostic `json:"promotion,omitempty"`
+	SchemaVersion  string               `json:"schema_version"`
+	Code           string               `json:"code"`
+	FieldPath      string               `json:"field_path"`
+	RecordID       string               `json:"record_id,omitempty"`
+	AcceptedValues []string             `json:"accepted_values,omitempty"`
+	NextAction     string               `json:"next_action"`
+	ObjectPurpose  string               `json:"object_purpose,omitempty"`
+	RequiredFields []string             `json:"required_fields,omitempty"`
+	AcceptedFields []string             `json:"accepted_fields,omitempty"`
+	NotPersisted   []string             `json:"not_persisted_fields,omitempty"`
+	OperationID    string               `json:"operation_id,omitempty"`
+	Revision       *int64               `json:"revision,omitempty"`
+	Effects        string               `json:"effects,omitempty"`
+	Retry          string               `json:"retry,omitempty"`
 }
 
 // normalizedForResponse enforces the diagnostic text/list bounds. Envelope
@@ -176,6 +201,12 @@ func safeTeachText(value, fallback string) string {
 }
 
 func (d TeachDiagnostic) withinFieldBounds() bool {
+	if d.Promotion != nil {
+		serialized, err := json.Marshal(d.Promotion)
+		if err != nil || len(serialized) > 24<<10 || len(d.Promotion.Repositories) > 32 {
+			return false
+		}
+	}
 	for _, value := range []string{d.Code, d.FieldPath, d.RecordID, d.NextAction, d.ObjectPurpose, d.OperationID} {
 		if len(value) > 2<<10 || !utf8.ValidString(value) {
 			return false

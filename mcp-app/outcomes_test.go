@@ -7,6 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -281,5 +284,132 @@ func TestFixedOwnerTODOBodyLimitBeforeRegistry(t *testing.T) {
 	}
 	if !result.IsError || !strings.Contains(resultText(t, result), `"http_status":413`) || invoked.Load() != 0 {
 		t.Fatalf("owning Registry body limit was not enforced: result=%v calls=%d", result.Content, invoked.Load())
+	}
+}
+
+func TestPromotionDiagnosticReachesMCPWithoutOpaqueFields(t *testing.T) {
+	payload := `{"error":"conflict","teach":"Review target","teach_detail":{"schema_version":"1","code":"promotion_evidence_incomplete","field_path":"remote_proof","next_action":"Read the TODO.","effects":"none","retry":"read_reassess","promotion":{"requested_stage":"Promotion-Lane","repositories":[{"repository_id":"belluga/push","sha":"3333333333333333333333333333333333333333","target_branch":"stage","status":"branch_missing","alternatives":[{"branch":"dev","exists":true,"commit_reachable":true,"owner_confirmation_required":true}],"secret_token":"PRIVATE"}]}}}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/todos/todo-id/transition") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusConflict)
+		fmt.Fprint(w, payload)
+	}))
+	defer upstream.Close()
+	client, _ := sdkFixture(t, upstream.URL, "2026-07-28", fixtureSelection())
+	result, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+		Name:      "builder_todo_transition",
+		Arguments: json.RawMessage(`{"company_id":"company-id","project_id":"project-id","todo_id":"todo-id","body":{"project_id":"project-id","todo_id":"todo-id","expected_revision":6,"operation_id":"promote-fixture","requested_stage":"Promotion-Lane","promotion_targets":{"belluga/push":"stage"}}}`),
+	})
+	if err != nil || !result.IsError {
+		t.Fatalf("expected structured MCP conflict: result=%+v err=%v", result, err)
+	}
+	text := resultText(t, result)
+	var data errorEnvelope
+	if json.Unmarshal([]byte(text), &data) != nil || data.HTTPStatus != 409 || data.TeachDetail == nil ||
+		data.TeachDetail.Promotion == nil || len(data.TeachDetail.Promotion.Repositories) != 1 ||
+		data.TeachDetail.Promotion.Repositories[0].Status != "branch_missing" || strings.Contains(text, "PRIVATE") {
+		t.Fatalf("unexpected MCP diagnostic: %s", text)
+	}
+	if output := os.Getenv("BUILDER_TEACH_MCP_FIXTURE"); output != "" {
+		if err := os.WriteFile(output, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestPromotionRegistryHTTPDiagnosticsRoundTrip(t *testing.T) {
+	input := os.Getenv("BUILDER_TEACH_EVIDENCE_DIRECTORY")
+	if input == "" {
+		t.Skip("run with the disposable-Mongo Registry HTTP evidence directory")
+	}
+	transitions := []string{"registry-http.json", "registry-relink.json", ""}
+	var attempts atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := int(attempts.Add(1)) - 1
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/todos/todo-id/transition") || index >= len(transitions) {
+			t.Errorf("unexpected Registry request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(500)
+			return
+		}
+		if transitions[index] == "" {
+			w.WriteHeader(http.StatusBadGateway)
+			fmt.Fprint(w, "upstream response lost")
+			return
+		}
+		body, err := os.ReadFile(filepath.Join(input, transitions[index]))
+		if err != nil {
+			t.Error(err)
+			w.WriteHeader(500)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		w.Write(body)
+	}))
+	defer upstream.Close()
+	client, _ := sdkFixture(t, upstream.URL, "2026-07-28", fixtureSelection())
+	for _, name := range transitions {
+		result, err := client.CallTool(context.Background(), &mcp.CallToolParams{
+			Name:      "builder_todo_transition",
+			Arguments: json.RawMessage(`{"company_id":"company-id","project_id":"project-id","todo_id":"todo-id","body":{"project_id":"project-id","todo_id":"todo-id","expected_revision":6,"operation_id":"promote-fixture","requested_stage":"Promotion-Lane","promotion_targets":{"owner/repo":"stage","owner/secondary":"stage"}}}`),
+		})
+		if err != nil || !result.IsError {
+			t.Fatalf("missing transition error: %+v %v", result, err)
+		}
+		text := resultText(t, result)
+		var got errorEnvelope
+		if json.Unmarshal([]byte(text), &got) != nil || got.TeachDetail == nil {
+			t.Fatalf("invalid MCP diagnostic: %s", text)
+		}
+		if name == "" {
+			if got.TeachDetail.Effects != "unknown" || got.TeachDetail.OperationID != "promote-fixture" || !strings.Contains(got.TeachDetail.NextAction, "builder_todo_get") {
+				t.Fatalf("unknown-effect guidance was lost: %s", text)
+			}
+			name = "unknown.json"
+		} else {
+			raw, err := os.ReadFile(filepath.Join(input, name))
+			var want errorEnvelope
+			if err != nil || json.Unmarshal(raw, &want) != nil || got.HTTPStatus != 409 || !reflect.DeepEqual(got.TeachDetail, want.TeachDetail) {
+				t.Fatalf("MCP and Registry diagnostics differ: %s vs %s (%v)", text, raw, err)
+			}
+		}
+		if err := os.WriteFile(filepath.Join(input, "mcp-"+name), []byte(text), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("unexpected retry count: %d", attempts.Load())
+	}
+}
+
+func TestPromotionDiagnosticMCPBoundsEscapedRows(t *testing.T) {
+	detail := promotionDiagnostic{RequestedStage: "Promotion-Lane", Repositories: make([]promotionRepositoryDiagnostic, 32)}
+	for i := range detail.Repositories {
+		detail.Repositories[i] = promotionRepositoryDiagnostic{
+			RepositoryID: "example/repo", CommitSHA: fmt.Sprintf("%040x", i+1), TargetBranch: "stage", Status: "observation_unavailable",
+			NextAction: strings.Repeat("<", 80),
+		}
+	}
+	envelope := errorEnvelope{HTTPStatus: 409, Error: "conflict", TeachDetail: &teachDiagnostic{SchemaVersion: teachVersion, Code: "promotion_evidence_incomplete",
+		FieldPath: "remote_proof", NextAction: "Read the exact TODO.", Effects: "none", Retry: "read_reassess", Promotion: &detail}}
+	if !validTeach(envelope.TeachDetail) {
+		t.Fatal("thirty-two bounded rows were refused")
+	}
+	result := errorResult(envelope)
+	if !result.IsError {
+		t.Fatal("expected MCP error")
+	}
+	var decoded errorEnvelope
+	text := resultText(t, result)
+	if json.Unmarshal([]byte(text), &decoded) != nil || decoded.TeachDetail == nil || decoded.TeachDetail.Promotion == nil ||
+		len(decoded.TeachDetail.Promotion.Repositories) != 32 {
+		t.Fatalf("MCP lost bounded diagnostic: %d bytes", len(text))
+	}
+	for i := range detail.Repositories {
+		detail.Repositories[i].NextAction = strings.Repeat("<", 200)
+	}
+	if validTeach(envelope.TeachDetail) {
+		t.Fatal("escaped diagnostic exceeded the budget but was accepted")
 	}
 }

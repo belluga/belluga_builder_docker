@@ -139,6 +139,16 @@ func pinImplementationRepositoryNodeIDInTransaction(ctx context.Context, databas
 // owner removal contend on the same revisioned document, including aliases
 // whose immutable GitHub IDs were pinned by an earlier TODO transition.
 func advanceImplementationRepositoryMembershipCASInTransaction(ctx context.Context, database *mongo.Database, projectID string, repositoryIDs []string) error {
+	return writeImplementationRepositoryFence(ctx, database, projectID, repositoryIDs, "implementation_repositories_revision")
+}
+
+// TODO proof writes contend with a membership change without invalidating
+// evidence from another TODO that observed the same repository configuration.
+func writeTODORepositoryProofFence(ctx context.Context, database *mongo.Database, projectID string, repositoryIDs []string) error {
+	return writeImplementationRepositoryFence(ctx, database, projectID, repositoryIDs, "promotion_policy_fence")
+}
+
+func writeImplementationRepositoryFence(ctx context.Context, database *mongo.Database, projectID string, repositoryIDs []string, counter string) error {
 	if !validID(projectID) || len(repositoryIDs) == 0 || len(repositoryIDs) > 32 {
 		return todoTeach("repository_identity", "guard a bounded non-empty set of owner-confirmed aliases", ErrInvalid)
 	}
@@ -162,7 +172,7 @@ func advanceImplementationRepositoryMembershipCASInTransaction(ctx context.Conte
 	} else {
 		filter["implementation_repositories_revision"] = project.ImplementationRepositoriesRevision
 	}
-	result, err := database.Collection(projectsCollection).UpdateOne(ctx, filter, bson.M{"$inc": bson.M{"implementation_repositories_revision": 1}})
+	result, err := database.Collection(projectsCollection).UpdateOne(ctx, filter, bson.M{"$inc": bson.M{counter: 1}})
 	if err != nil {
 		if mongoTransactionShouldRetry(err) {
 			return err

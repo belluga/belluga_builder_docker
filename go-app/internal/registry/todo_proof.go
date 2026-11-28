@@ -516,64 +516,91 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 	sort.Strings(aliases)
 	verified := make([]completeArrivalRepository, 0, len(aliases))
 	identityPins := make([]implementationRepositoryIdentity, 0, len(aliases))
+	diagnostic := promotionDiagnostic{RequestedStage: "Completed"}
+	if arrivalStage == "promotion" {
+		diagnostic.RequestedStage = "Promotion-Lane"
+	}
+	var releaseBranches map[string]string
+	supplemental := 2
+	blocked := false
 	for _, alias := range aliases {
-		if _, ok := confirmed[alias]; !ok || !validGitRepositoryID(alias) {
-			return TODOProofReference{}, nil, todoTeach("diff_expectation.repository_id", "use the currently owner-confirmed Project repository alias", ErrConflict)
+		expectedNode := set.GitHubNodeIDs[alias]
+		if _, ok := confirmed[alias]; !ok {
+			err := todoTeach("diff_expectation.repository_id", "use the currently owner-confirmed Project repository alias", ErrConflict)
+			return TODOProofReference{}, nil, promotionRepositoryConnectionError(err, alias, expectedNode, false)
 		}
-		if pinnedID := set.GitHubNodeIDs[alias]; pinnedID != "" && localIDs[alias] != "" && pinnedID != localIDs[alias] {
-			return TODOProofReference{}, nil, todoTeach("repository_identity.github_node_id", "match the immutable Project alias-to-GitHub-ID CAS binding", ErrConflict)
+		if localNode := localIDs[alias]; localNode != "" {
+			if expectedNode != "" && expectedNode != localNode {
+				err := todoTeach("repository_identity.github_node_id", "match the immutable Project alias-to-GitHub-ID CAS binding", ErrConflict)
+				return TODOProofReference{}, nil, promotionRepositoryConnectionError(err, alias, localNode, true)
+			}
+			expectedNode = localNode
 		}
 		target := "main"
 		if arrivalStage == "promotion" {
 			target = targets[alias]
 		}
-		query := url.Values{"company_id": {companyID}, "project_id": {record.ProjectID}, "repository": {alias}, "branch": {target}, "commit_shas": {strings.Join(commits.Repositories[alias], ",")}, "todo_authority": {"mongo-v2"}}
-		response, lease, err := m.requestReaderProof(ctx, "/internal/v1/proofs/arrival", query, true)
+		shas := commits.Repositories[alias]
+		if ctx.Err() != nil && blocked {
+			for _, sha := range shas {
+				diagnostic.Repositories = append(diagnostic.Repositories, promotionRepositoryDiagnostic{RepositoryID: alias, CommitSHA: sha, TargetBranch: target, Status: "unchecked"})
+			}
+			continue
+		}
+		result, lease, err := m.readCompleteArrival(ctx, companyID, record.ProjectID, alias, target, expectedNode, shas, nil)
+		if err != nil {
+			// Preserve legacy failure behavior until a typed diagnostic is
+			// available. Keep any prior observations if another repo times out.
+			detail := explicitTeachDiagnostic(err)
+			if detail != nil && detail.Code == "github_proof_access_denied" {
+				connection := explicitTeachDiagnostic(promotionRepositoryConnectionError(err, alias, expectedNode, false))
+				blocked = true
+				for _, sha := range shas {
+					row := connection.Promotion.Repositories[0]
+					row.CommitSHA, row.TargetBranch, row.NextAction = sha, target, connection.NextAction
+					diagnostic.Repositories = append(diagnostic.Repositories, row)
+				}
+				continue
+			}
+			if !blocked || detail != nil && detail.Code == "repository_connection_changed" {
+				return TODOProofReference{}, nil, err
+			}
+			for _, sha := range shas {
+				diagnostic.Repositories = append(diagnostic.Repositories, promotionRepositoryDiagnostic{RepositoryID: alias, CommitSHA: sha, TargetBranch: target, Status: "observation_unavailable", NextAction: "Verify access to this repository and retry the proof."})
+			}
+			continue
+		}
+		if result.Outcome == "verified" {
+			identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest, githubLease: lease})
+			verified = append(verified, completeArrivalRepository{Repository: alias, NodeID: result.RepositoryNodeID, Branch: target, HeadSHA: result.HeadSHA, Commits: shas})
+		} else {
+			blocked = true
+			if releaseBranches == nil && supplemental > 0 {
+				releaseBranches, _ = confirmedTODOReleaseBranches(ctx, m, companyID, record)
+				if releaseBranches == nil {
+					releaseBranches = map[string]string{}
+				}
+			}
+		}
+		source := releaseBranches[alias]
+		rows, err := m.completeArrivalDiagnosticRows(ctx, companyID, record.ProjectID, result, lease, shas, source, arrivalStage == "promotion", &supplemental)
 		if err != nil {
 			return TODOProofReference{}, nil, err
 		}
-		data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
-		_ = response.Body.Close()
-		if readErr != nil || len(data) == 0 || len(data) >= 64<<10 {
-			return TODOProofReference{}, nil, ErrUnavailable
-		}
-		if response.StatusCode != http.StatusOK {
-			var problem struct {
-				Teach string `json:"teach"`
+		diagnostic.Repositories = append(diagnostic.Repositories, rows...)
+	}
+	if blocked {
+		sort.Slice(diagnostic.Repositories, func(i, j int) bool {
+			a, b := diagnostic.Repositories[i], diagnostic.Repositories[j]
+			if a.RepositoryID != b.RepositoryID {
+				return a.RepositoryID < b.RepositoryID
 			}
-			if json.Unmarshal(data, &problem) == nil && problem.Teach != "" {
-				return TODOProofReference{}, nil, todoTeach("remote_proof", problem.Teach, ErrConflict)
-			}
-			return TODOProofReference{}, nil, todoTeach("remote_proof", "verify original commits on the target Git branch", ErrConflict)
-		}
-		var result struct {
-			CompanyID        string `json:"company_id"`
-			ProjectID        string `json:"project_id"`
-			Repository       string `json:"repository"`
-			RepositoryNodeID string `json:"repository_node_id"`
-			Branch           string `json:"branch"`
-			HeadSHA          string `json:"head_sha"`
-			Commits          []struct {
-				CommitSHA string `json:"commit_sha"`
-				Reachable bool   `json:"reachable"`
-			} `json:"commits"`
-			Outcome string `json:"outcome"`
-		}
-		if json.Unmarshal(data, &result) != nil || result.CompanyID != companyID || result.ProjectID != record.ProjectID || result.Repository != alias || result.RepositoryNodeID == "" || len(result.RepositoryNodeID) > 128 || localIDs[alias] != "" && result.RepositoryNodeID != localIDs[alias] || set.GitHubNodeIDs[alias] != "" && result.RepositoryNodeID != set.GitHubNodeIDs[alias] || result.Branch != target || !validGitCommit(result.HeadSHA) || result.Outcome != "verified" || len(result.Commits) != len(commits.Repositories[alias]) {
-			return TODOProofReference{}, nil, todoTeach("remote_proof.repository_identity", "match the original alias, pinned immutable GitHub ID, branch and bounded commit set", ErrConflict)
-		}
-		commitSHAs := make([]string, len(result.Commits))
-		for i, item := range result.Commits {
-			if !item.Reachable || item.CommitSHA != commits.Repositories[alias][i] {
-				return TODOProofReference{}, nil, todoTeach("remote_proof.commits", "prove each original commit reachable from one target branch head", ErrConflict)
-			}
-			commitSHAs[i] = item.CommitSHA
-		}
-		if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
-			return TODOProofReference{}, nil, err
-		}
-		identityPins = append(identityPins, implementationRepositoryIdentity{ProjectID: record.ProjectID, RepositoryID: alias, GitHubNodeID: result.RepositoryNodeID, ProofDigest: localProof.SourceDigest, githubLease: lease})
-		verified = append(verified, completeArrivalRepository{Repository: alias, NodeID: result.RepositoryNodeID, Branch: target, HeadSHA: result.HeadSHA, Commits: commitSHAs})
+			return a.CommitSHA < b.CommitSHA
+		})
+		action := "Resolve each blocked repository, read the current TODO (MCP: builder_todo_get), then submit a promotion with its current revision. Use a new operation ID if the request changes."
+		return TODOProofReference{}, nil, withTeachDiagnostic(todoTeach("remote_proof", "verify original commits on the target Git branch", ErrConflict), TeachDiagnostic{
+			Code: "promotion_evidence_incomplete", FieldPath: "remote_proof", NextAction: action, Effects: TeachEffectsNone, Retry: TeachRetryReadReassess, Promotion: &diagnostic,
+		})
 	}
 	payload, err := json.Marshal(completeArrivalProof{
 		Stage: arrivalStage, ContentRevision: contentRevision, ContentDigest: contentDigest, Mode: "complete",
@@ -583,6 +610,202 @@ func (m *MongoStore) verifyCompletePromotionArrival(ctx context.Context, company
 		return TODOProofReference{}, nil, ErrInvalid
 	}
 	return TODOProofReference{Kind: "complete-git-arrival", Source: "private-reader", Reference: string(payload), SourceDigest: sourceHash(payload), VerificationState: "verified"}, identityPins, nil
+}
+
+type completeReaderArrival struct {
+	CompanyID        string `json:"company_id"`
+	ProjectID        string `json:"project_id"`
+	Repository       string `json:"repository"`
+	RepositoryNodeID string `json:"repository_node_id"`
+	Branch           string `json:"branch"`
+	HeadSHA          string `json:"head_sha"`
+	BranchNotFound   bool   `json:"branch_not_found"`
+	Commits          []struct {
+		CommitSHA string `json:"commit_sha"`
+		Reachable bool   `json:"reachable"`
+	} `json:"commits"`
+	Observations []struct {
+		CommitSHA string `json:"commit_sha"`
+		Status    string `json:"status"`
+	} `json:"observations"`
+	Outcome string `json:"outcome"`
+	Teach   string `json:"teach"`
+}
+
+func (m *MongoStore) readCompleteArrival(ctx context.Context, company, project, alias, target, expectedNode string, shas []string, prior *githubProofLease) (completeReaderArrival, *githubProofLease, error) {
+	var result completeReaderArrival
+	query := url.Values{"company_id": {company}, "project_id": {project}, "repository": {alias}, "branch": {target}, "commit_shas": {strings.Join(shas, ",")}, "todo_authority": {"mongo-v2"}}
+	response, lease, err := m.requestReaderProofWithLease(ctx, "/internal/v1/proofs/arrival", query, true, prior)
+	if err != nil {
+		return result, lease, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	_ = response.Body.Close()
+	if readErr != nil || len(data) == 0 || len(data) >= 64<<10 {
+		return result, lease, ErrUnavailable
+	}
+	decodeErr := json.Unmarshal(data, &result)
+	identityMatches := decodeErr == nil && result.CompanyID == company && result.ProjectID == project && result.Repository == alias && result.Branch == target &&
+		result.RepositoryNodeID != "" && len(result.RepositoryNodeID) <= 128 && (expectedNode == "" || result.RepositoryNodeID == expectedNode)
+	if response.StatusCode != http.StatusOK {
+		if len(result.Observations) == 0 {
+			if decodeErr == nil && result.Teach != "" {
+				return result, lease, todoTeach("remote_proof", result.Teach, ErrConflict)
+			}
+			return result, lease, todoTeach("remote_proof", "verify original commits on the target Git branch", ErrConflict)
+		}
+		if !identityMatches || result.Outcome != "" || len(result.Commits) != 0 || len(result.Observations) != len(shas) ||
+			(result.HeadSHA != "" && !validGitCommit(result.HeadSHA)) || result.BranchNotFound && result.HeadSHA != "" {
+			return result, lease, ErrUnavailable
+		}
+		allVerified := true
+		for i, observation := range result.Observations {
+			if observation.CommitSHA != shas[i] {
+				return result, lease, todoTeach("remote_proof.commits", "match the approved commit list in the Reader diagnostic", ErrConflict)
+			}
+			switch observation.Status {
+			case "verified", "commit_not_reachable":
+				if result.HeadSHA == "" {
+					return result, lease, ErrUnavailable
+				}
+			case "observation_unavailable", "unchecked":
+			default:
+				return result, lease, ErrUnavailable
+			}
+			if observation.Status != "verified" {
+				allVerified = false
+			}
+		}
+		if allVerified {
+			return result, lease, ErrUnavailable
+		}
+	} else {
+		if !identityMatches || !validGitCommit(result.HeadSHA) || result.Outcome != "verified" || len(result.Commits) != len(shas) {
+			return result, lease, todoTeach("remote_proof.repository_identity", "match the original alias, pinned immutable GitHub ID, branch and bounded commit set", ErrConflict)
+		}
+		for i, commit := range result.Commits {
+			if !commit.Reachable || commit.CommitSHA != shas[i] {
+				return result, lease, todoTeach("remote_proof.commits", "prove each original commit reachable from one target branch head", ErrConflict)
+			}
+		}
+	}
+	return result, lease, m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID)
+}
+
+func (m *MongoStore) completeArrivalDiagnosticRows(ctx context.Context, company, project string, result completeReaderArrival, lease *githubProofLease, shas []string, source string, promotion bool, budget *int) ([]promotionRepositoryDiagnostic, error) {
+	rows := make([]promotionRepositoryDiagnostic, 0, len(shas))
+	for i, sha := range shas {
+		row := promotionRepositoryDiagnostic{RepositoryID: result.Repository, CommitSHA: sha, TargetBranch: result.Branch, Status: "verified"}
+		if result.Outcome != "verified" {
+			row.Status = result.Observations[i].Status
+			if result.BranchNotFound {
+				row.Status = "observation_unavailable"
+			}
+			switch row.Status {
+			case "commit_not_reachable":
+				row.NextAction = "Review and promote the original commit to the target branch with authorization, preserving its SHA."
+			case "observation_unavailable", "unchecked":
+				row.NextAction = "Verify repository access and the target ref, then read the TODO and reassess."
+			}
+		}
+		rows = append(rows, row)
+	}
+	// A 404 alone can hide a lack of authorization. A visible ref under
+	// the same Contents credential is required to diagnose absence.
+	alternative := ""
+	if promotion && result.BranchNotFound {
+		alternative = "dev"
+		if result.Branch == "dev" {
+			alternative = "stage"
+		}
+		for i := range rows {
+			rows[i].Alternatives = []promotionAlternative{{Branch: alternative, OwnerConfirmationRequired: true}}
+		}
+	}
+	if result.Outcome == "verified" || lease == nil || *budget == 0 {
+		return rows, nil
+	}
+	alternativeReturned404 := false
+	contentsObserved := false
+	probes := []string{alternative, source}
+	if alternative == source {
+		probes[1] = ""
+	}
+	for _, branch := range probes {
+		if *budget == 0 || ctx.Err() != nil || !validDeliveryBranch(branch) || branch == result.Branch {
+			continue
+		}
+		*budget = *budget - 1
+		facts, probeLease, err := m.readCompleteArrival(ctx, company, project, result.Repository, branch, result.RepositoryNodeID, shas[:min(4, len(shas))], lease)
+		if probeLease != nil && probeLease.binding != lease.binding {
+			return nil, githubProofBindingChangedFor(lease)
+		}
+		if detail := explicitTeachDiagnostic(err); detail != nil && detail.Code == "repository_connection_changed" {
+			return nil, err
+		}
+		if err != nil || probeLease == nil {
+			continue
+		}
+		if branch == alternative && facts.BranchNotFound {
+			alternativeReturned404 = true
+		}
+		if !validGitCommit(facts.HeadSHA) {
+			continue
+		}
+		contentsObserved = true
+		for i := range rows {
+			reachability := optionalArrivalReachability(facts, i)
+			reachable := reachability != nil && *reachability
+			if result.BranchNotFound && rows[i].Status != "branch_missing" {
+				rows[i].Status = "branch_missing"
+				rows[i].NextAction = "Confirm the intended promotion branch with the owner before proceeding."
+			}
+			if branch == source && reachable {
+				rows[i].SourceBranch = source
+			}
+			if branch == alternative {
+				exists := true
+				rows[i].Alternatives[0].Exists = &exists
+				rows[i].Alternatives[0].CommitReachable = reachability
+				if reachable {
+					rows[i].NextAction = "Ask the owner to authorize this alternative before changing the promotion target."
+				}
+			}
+		}
+	}
+	if alternativeReturned404 && contentsObserved {
+		exists := false
+		for i := range rows {
+			rows[i].Alternatives[0].Exists = &exists
+		}
+	}
+	if err := m.fenceGitHubReaderProof(ctx, lease, result.RepositoryNodeID); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func optionalArrivalReachability(facts completeReaderArrival, index int) *bool {
+	if index >= 4 {
+		return nil
+	}
+	if facts.Outcome == "verified" {
+		value := true
+		return &value
+	}
+	if index >= len(facts.Observations) {
+		return nil
+	}
+	switch facts.Observations[index].Status {
+	case "verified":
+		value := true
+		return &value
+	case "commit_not_reachable":
+		value := false
+		return &value
+	default:
+		return nil
+	}
 }
 
 func validateCompletePromotionTargets(scopes []TODORepositoryScope, targets map[string]string) error {

@@ -137,6 +137,10 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 	var arrivalDelay atomic.Int64
 	var changeConstitutionOnArrival atomic.Bool
 	var scopedReader, relinkFirstOnSecondArrival atomic.Bool
+	var diagnosedArrival atomic.Bool
+	var scopedTokensMinted atomic.Int64
+	var legacyArrivalFailure, hideDiagnosticAlternatives, diagnosticPrimaryArrived atomic.Bool
+	var overlap atomic.Pointer[fixtureArrivalBarrier]
 	const scopedFixtureBearer = "scoped-fixture-reader-proof-bearer-01234567"
 	editConstitution := func(mode, statement, operationID string) error {
 		current, err := store.ReadCanonical(ctx, companyID, projectID, FamilyConstitution, constitutionID)
@@ -178,6 +182,47 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 			wantedCommits := commit
 			if arrivalRepository == secondaryRepository {
 				wantedCommits = secondaryCommit
+			}
+			if legacyArrivalFailure.Load() {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_, _ = w.Write([]byte(`{"state":"unavailable","teach":"TEACH: target Git branch head is unavailable"}`))
+				return
+			}
+			if diagnosedArrival.Load() {
+				if q.Get("company_id") != companyID || q.Get("project_id") != projectID || q.Get("commit_shas") != wantedCommits ||
+					q.Get("todo_authority") != "mongo-v2" || (arrivalRepository != repository && arrivalRepository != secondaryRepository) ||
+					(requestedBranch != targetBranch && requestedBranch != branch && (arrivalRepository != secondaryRepository || requestedBranch != "dev")) {
+					t.Errorf("unexpected diagnostic request: %s", r.URL)
+				}
+				node := "R_kgDOImmutable"
+				if arrivalRepository == secondaryRepository {
+					node += "-secondary"
+				}
+				if requestedBranch == targetBranch && (arrivalRepository == secondaryRepository || !diagnosticPrimaryArrived.Load()) {
+					status, missing := "commit_not_reachable", arrivalRepository == secondaryRepository
+					observedHead := heads[requestedBranch]
+					if missing {
+						status, observedHead = "unchecked", ""
+					}
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_ = json.NewEncoder(w).Encode(map[string]any{"teach": "remote branch not verified", "company_id": companyID, "project_id": projectID, "head_sha": observedHead, "repository": arrivalRepository, "repository_node_id": node, "branch": requestedBranch, "branch_not_found": missing, "observations": []map[string]string{{"commit_sha": wantedCommits, "status": status}}})
+				} else if hideDiagnosticAlternatives.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					_, _ = w.Write([]byte(`{"state":"unavailable","teach":"GitHub Contents is not available"}`))
+				} else {
+					_ = json.NewEncoder(w).Encode(map[string]any{"company_id": companyID, "project_id": projectID, "repository": arrivalRepository, "repository_node_id": node, "branch": requestedBranch, "head_sha": heads[branch], "commits": []map[string]any{{"commit_sha": wantedCommits, "reachable": true}}, "outcome": "verified"})
+				}
+				return
+			}
+			if gate := overlap.Load(); gate != nil && arrivalRepository == secondaryRepository {
+				if gate.arrived.Add(1) == 2 {
+					close(gate.ready)
+				}
+				select {
+				case <-gate.ready:
+				case <-r.Context().Done():
+					return
+				}
 			}
 			if q.Get("company_id") != companyID || q.Get("project_id") != projectID || arrivalRepository != repository && arrivalRepository != secondaryRepository || q.Get("todo_authority") != "mongo-v2" || requestedBranch != expectedArrivalBranch.Load().(string) || q.Get("commit_shas") != wantedCommits {
 				t.Errorf("Reader received wrong Complete arrival query: %s", r.URL)
@@ -444,6 +489,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		store.githubApp = githubAppTestClient(t, func(r *http.Request) (*http.Response, error) {
 			switch r.URL.Path {
 			case "/app/installations/9/access_tokens", "/app/installations/10/access_tokens":
+				scopedTokensMinted.Add(1)
 				var scope struct {
 					RepositoryIDs []int64 `json:"repository_ids"`
 				}
@@ -480,10 +526,10 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		relinkAttempt := promotion
 		relinkAttempt.OperationID = "reject-concurrent-installation-change"
 		callsBeforeRelink := readerCalls.Load()
-		if code, body := submitFixturePromotionHTTP(t, registry, companyID, relinkAttempt); code != http.StatusConflict ||
-			!strings.Contains(string(body), "reload the current Project repository confirmation and connection") || readerCalls.Load()-callsBeforeRelink != 2 ||
-			relinkFirstOnSecondArrival.Load() {
-			t.Fatalf("promotion did not reject stale connection after both proofs: status=%d body=%s", code, body)
+		relinkCode, relinkBody := submitFixturePromotionHTTP(t, registry, companyID, relinkAttempt)
+		if relinkCode != http.StatusConflict || !strings.Contains(string(relinkBody), "reload the current Project repository confirmation and connection") ||
+			!strings.Contains(string(relinkBody), "repository_connection_changed") || readerCalls.Load()-callsBeforeRelink != 2 || relinkFirstOnSecondArrival.Load() {
+			t.Fatalf("promotion did not reject stale connection after both proofs: status=%d body=%s", relinkCode, relinkBody)
 		}
 		afterRelink, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 		if err != nil || afterRelink.TODORevision != redelivered.TODORevision || afterRelink.TODO.Stage != "Local-Implemented" {
@@ -492,7 +538,116 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 
 		// Match PACED's code-promotion payload with empty proof and waiver arrays.
 		promotion.ProofReferences, promotion.WaiverReferences = []TODOProofReference{}, []TODOProofReference{}
-		assertFixturePromotionHTTP(t, registry, companyID, promotion, "Promotion-Lane")
+		if targetBranch == "stage" {
+			legacyAttempt := promotion
+			legacyAttempt.OperationID = "legacy-reader-teach-without-observations"
+			legacyArrivalFailure.Store(true)
+			callsBeforeLegacy := readerCalls.Load()
+			legacyCode, legacyBody := submitFixturePromotionHTTP(t, registry, companyID, legacyAttempt)
+			legacyArrivalFailure.Store(false)
+			if legacyCode != http.StatusConflict || !strings.Contains(string(legacyBody), "TEACH: target Git branch head is unavailable") ||
+				strings.Contains(string(legacyBody), `"promotion":`) || readerCalls.Load()-callsBeforeLegacy != 1 {
+				t.Fatalf("legacy Reader error changed: code=%d body=%s", legacyCode, legacyBody)
+			}
+			diagnosedArrival.Store(true)
+			diagnosticAttempt := promotion
+			diagnosticAttempt.OperationID = "diagnose-branches-at-stage"
+			callsBeforeDiagnostic, tokensBeforeDiagnostic := readerCalls.Load(), scopedTokensMinted.Load()
+			code, body := submitFixturePromotionHTTP(t, registry, companyID, diagnosticAttempt)
+			diagnosedArrival.Store(false)
+			var response errorResponse
+			if json.Unmarshal(body, &response) != nil || code != http.StatusConflict || response.TeachDetail == nil ||
+				response.TeachDetail.Code != "promotion_evidence_incomplete" || response.TeachDetail.Effects != TeachEffectsNone ||
+				readerCalls.Load()-callsBeforeDiagnostic != 4 || scopedTokensMinted.Load()-tokensBeforeDiagnostic != 2 {
+				t.Fatalf("unexpected diagnostic or probe budget: %d %s; calls=%d", code, body, readerCalls.Load()-callsBeforeDiagnostic)
+			}
+			detail := response.TeachDetail.Promotion
+			if detail == nil || detail.RequestedStage != "Promotion-Lane" || len(detail.Repositories) != 2 ||
+				detail.Repositories[0].RepositoryID != repository || detail.Repositories[0].SourceBranch != branch ||
+				detail.Repositories[0].Status != "commit_not_reachable" || detail.Repositories[1].Status != "branch_missing" ||
+				len(detail.Repositories[1].Alternatives) != 1 || detail.Repositories[1].Alternatives[0].Branch != "dev" ||
+				detail.Repositories[1].Alternatives[0].CommitReachable == nil || !*detail.Repositories[1].Alternatives[0].CommitReachable ||
+				!detail.Repositories[1].Alternatives[0].OwnerConfirmationRequired {
+				t.Fatalf("incomplete diagnosis: %s", body)
+			}
+			diagnosedArrival.Store(true)
+			hideDiagnosticAlternatives.Store(true)
+			diagnosticAttempt.OperationID = "diagnose-stage-without-proven-contents"
+			code, hidden := submitFixturePromotionHTTP(t, registry, companyID, diagnosticAttempt)
+			diagnosedArrival.Store(false)
+			hideDiagnosticAlternatives.Store(false)
+			if json.Unmarshal(hidden, &response) != nil || code != http.StatusConflict || response.TeachDetail == nil || response.TeachDetail.Promotion == nil {
+				t.Fatalf("unavailable branch should retain a typed diagnostic: %d %s", code, hidden)
+			}
+			unknown := response.TeachDetail.Promotion.Repositories[1]
+			if unknown.Status != "observation_unavailable" || len(unknown.Alternatives) != 1 || unknown.Alternatives[0].Exists != nil ||
+				unknown.Alternatives[0].CommitReachable != nil {
+				t.Fatalf("unobserved ref was treated as absent or known: %s", hidden)
+			}
+			diagnosedArrival.Store(true)
+			diagnosticPrimaryArrived.Store(true)
+			diagnosticAttempt.OperationID = "diagnose-mixed-verified-and-blocked"
+			code, mixed := submitFixturePromotionHTTP(t, registry, companyID, diagnosticAttempt)
+			diagnosedArrival.Store(false)
+			diagnosticPrimaryArrived.Store(false)
+			if json.Unmarshal(mixed, &response) != nil || code != http.StatusConflict || response.TeachDetail == nil ||
+				response.TeachDetail.Promotion == nil || len(response.TeachDetail.Promotion.Repositories) != 2 ||
+				response.TeachDetail.Promotion.Repositories[0].Status != "verified" ||
+				response.TeachDetail.Promotion.Repositories[1].Status != "branch_missing" {
+				t.Fatalf("verified repository was lost in a partial failure: %d %s", code, mixed)
+			}
+			stillLocal, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
+			if err != nil || stillLocal.TODORevision != redelivered.TODORevision {
+				t.Fatalf("diagnostic advanced TODO: %+v %v", stillLocal, err)
+			}
+			if output := os.Getenv("BUILDER_TEACH_HTTP_FIXTURE"); output != "" {
+				if err := os.WriteFile(output, body, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(output, 0644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(filepath.Dir(output), "registry-relink.json"), relinkBody, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			peer := admitConcurrentPromotionFixture(t, ctx, store, companyID, projectID, record, refreshed, claim, secondaryClaim, criterion, scenario, finalReview)
+			peerPromotion := promotion
+			peerPromotion.TODOID, peerPromotion.OperationID, peerPromotion.ExpectedRevision = peer.TODO.ID, "promote-peer-overlap", &peer.TODORevision
+			setBefore, err := store.ReadImplementationRepositories(ctx, companyID, projectID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			overlap.Store(&fixtureArrivalBarrier{ready: make(chan struct{})})
+			callsBeforeOverlap := readerCalls.Load()
+			result := make(chan error, 2)
+			for _, attempt := range []TODOActionRequest{promotion, peerPromotion} {
+				go func(request TODOActionRequest) {
+					response, err := store.TransitionTODO(ctx, companyID, request)
+					if err == nil && (response.Stage != "Promotion-Lane" || response.StageVerification != "verified") {
+						err = fmt.Errorf("unexpected verified transition: %+v", response)
+					}
+					result <- err
+				}(attempt)
+			}
+			for range 2 {
+				select {
+				case err := <-result:
+					if err != nil {
+						t.Errorf("overlapping promotions with stable bindings: %v", err)
+					}
+				case <-time.After(20 * time.Second):
+					t.Fatal("both promotions did not reach the Reader barrier")
+				}
+			}
+			overlap.Store(nil)
+			setAfter, err := store.ReadImplementationRepositories(ctx, companyID, projectID)
+			if err != nil || setBefore.Revision != setAfter.Revision || readerCalls.Load()-callsBeforeOverlap != 4 {
+				t.Fatalf("overlap changed public revision or grew success probes: before=%d after=%d calls=%d err=%v", setBefore.Revision, setAfter.Revision, readerCalls.Load()-callsBeforeOverlap, err)
+			}
+		} else {
+			assertFixturePromotionHTTP(t, registry, companyID, promotion, "Promotion-Lane")
+		}
 		promoted, err := store.ReadTODO(ctx, companyID, projectID, todoID, nil)
 		if err != nil || promoted.TODO.Stage != "Promotion-Lane" || promoted.TODO.VerifiedTransitionRef == nil || promoted.TODO.VerifiedTransitionRef.Kind != "complete-git-arrival" {
 			t.Fatalf("current Complete %s promotion readback: %+v err=%v", targetBranch, promoted, err)
@@ -768,7 +923,7 @@ func testMongoRemoteCodeDeliveryTransition(t *testing.T, targetBranch string, le
 		if err != nil || containsTODOString(removed.Items, secondaryRepository) {
 			return nil, fmt.Errorf("concurrent owner removal failed: set=%+v err=%v", removed, err)
 		}
-		return nil, advanceImplementationRepositoryMembershipCASInTransaction(txCtx, database, projectID, []string{repository, secondaryRepository})
+		return nil, writeTODORepositoryProofFence(txCtx, database, projectID, []string{repository, secondaryRepository})
 	})
 	if raceErr == nil {
 		t.Fatal("stale transaction membership CAS succeeded after concurrent alias removal")
@@ -832,6 +987,53 @@ func assertFixtureArrival(t *testing.T, proof TODOProofReference, stage, branch,
 			t.Fatalf("%s proof for %s used %s@%s, want %s@%s", stage, evidence.Repository, evidence.Branch, evidence.HeadSHA, branch, head)
 		}
 	}
+}
+
+type fixtureArrivalBarrier struct {
+	ready   chan struct{}
+	arrived atomic.Int32
+}
+
+func admitConcurrentPromotionFixture(t *testing.T, ctx context.Context, store *MongoStore, company, project string, record TODORecord, content TODOAuthoredContent, first, second TODOCommitReference, proofs ...TODOProofReference) TODOReadResponse {
+	t.Helper()
+	const id = "api-only-delivery-peer"
+	position := 50
+	record.ID, record.Position = id, &position
+	if _, err := store.AdmitTODO(ctx, company, project, TODOAdmissionRequest{SchemaVersion: todoCreationSchemaVersion, OperationID: "create-peer-overlap", TODO: record}); err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	edit, err := store.EditTODOContent(ctx, company, TODOContentEditRequest{ProjectID: project, TODOID: id, ExpectedRevision: &zero, OperationID: "content-peer-overlap", Content: content, Reason: "Confirm peer promotion fixture scope"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev := recordPlanningReviewSubjects(t, ctx, store, project, id, "review-peer-overlap")
+	for _, stage := range []string{"Implementation-Approval-Pending", "Ready-for-Implementation", "In-Progress"} {
+		request := TODOActionRequest{ProjectID: project, TODOID: id, ExpectedRevision: &rev, OperationID: "peer-" + stage, RequestedStage: stage}
+		if stage == "Ready-for-Implementation" {
+			request.ProofReferences = []TODOProofReference{{Kind: "owner-approval", Source: "owner-chat", Reference: "APROVADO", SourceDigest: edit.ContentDigest, VerificationState: "unverified"}}
+		}
+		if _, err := store.TransitionTODO(ctx, company, request); err != nil {
+			t.Fatalf("peer %s: %v", stage, err)
+		}
+		rev++
+	}
+	for i := range proofs {
+		proofs[i].SourceDigest = edit.ContentDigest
+	}
+	first.SourceDigest, second.SourceDigest = edit.ContentDigest, edit.ContentDigest
+	if _, err := store.EditTODOEvidence(ctx, company, TODOEvidenceEditRequest{ProjectID: project, TODOID: id, ExpectedRevision: &rev, OperationID: "evidence-peer-overlap", ProofReferences: proofs, WaiverReferences: []TODOProofReference{}, ImplementationCommits: []TODOCommitReference{first, second}, RecordSections: []TODOSection{}, Reason: "Record exact peer evidence"}); err != nil {
+		t.Fatal(err)
+	}
+	rev++
+	if _, err := store.TransitionTODO(ctx, company, TODOActionRequest{ProjectID: project, TODOID: id, ExpectedRevision: &rev, OperationID: "local-peer-overlap", RequestedStage: "Local-Implemented"}); err != nil {
+		t.Fatal(err)
+	}
+	read, err := store.ReadTODO(ctx, company, project, id, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return read
 }
 
 func submitFixturePromotionHTTP(t *testing.T, registry *httptest.Server, companyID string, request TODOActionRequest) (int, []byte) {
